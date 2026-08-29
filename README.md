@@ -161,7 +161,7 @@ Do not post API keys, cookies, session tokens, passwords, or your `secrets.json`
 
 ## Project Status
 
-AbyssBeacon is an actively developed project. The initial public release should be treated as an early release, especially for integrations that depend on third-party websites.
+AbyssBeacon is actively developed. This is the first public release, so issues may still appear, especially in integrations that depend on third-party websites and APIs.
 
 ## License
 
