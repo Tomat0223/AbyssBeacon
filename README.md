@@ -66,7 +66,7 @@ The first startup can take longer while Python packages are installed.
 Fresh installations start with conservative defaults:
 
 - All supported sources and tested model families are available.
-- All supported sources and tested model families are preselected for the first scan. You can deselect anything you don't want to scan.
+- CivitAI is preselected for the first scan. Other sources are available but remain unchecked until you enable them. All tested model families are preselected.
 - Normal scans use a global maximum of 150 results per source and architecture search.
 - Automatic Retention is off by default.
 - Mature models are hidden by default.

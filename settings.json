@@ -77,12 +77,7 @@
         "selected_search_terms": [],
         "selected_favorite": "all",
         "selected_scan_sources": [
-            "huggingface",
-            "modelscope",
-            "civitai",
-            "civitaired",
-            "tensorhub",
-            "seaart"
+            "civitai"
         ],
         "selected_creator_favorite": "all",
         "auto_cleanup_enabled": false,
@@ -97,12 +92,7 @@
         },
         "creator_cleanup_days": 30,
         "scan_sources": [
-            "huggingface",
-            "modelscope",
-            "civitai",
-            "civitaired",
-            "tensorhub",
-            "seaart"
+            "civitai"
         ],
         "scan_architectures": [
             "FLUX.2 Klein 4B",
