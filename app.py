@@ -7011,22 +7011,6 @@ def repair_preview_cache_api():
     return {"success": True, **result}
 
 
-@app.route("/api/library/backfill-descriptions", methods=["POST"])
-def backfill_descriptions():
-    from description_backfill import fetch_description
-    offset = max(0, int((request.json or {}).get("offset", 0)))
-    batch = database.get_models_missing_description(50, offset=offset)
-    updated = 0
-    checked = 0
-    for row in batch:
-        checked += 1
-        description = fetch_description(row)
-        if description:
-            database.update_description(row["id"], description)
-            updated += 1
-    remaining = database.count_models_missing_description()
-    return {"success": True, "checked": checked, "updated": updated, "remaining": remaining}
-
 @app.route("/api/library/cleanup-preview")
 def library_cleanup_preview():
     try:

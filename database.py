@@ -2379,15 +2379,6 @@ def clear_media(model_id):
 
 
 
-def update_description(model_id, description):
-    if not description:
-        return
-    conn = connect()
-    conn.execute("UPDATE models SET description = ? WHERE id = ?", (description, model_id))
-    conn.commit()
-    conn.close()
-
-
 def mark_viewed(model_id):
     """Mark one model Seen without allowing a transient SQLite lock to break
     the model-detail request.
@@ -4281,30 +4272,6 @@ def get_scan_results(scan_id):
     rows = c.fetchall()
     conn.close()
     return rows
-
-
-def get_models_missing_description(limit=100, offset=0):
-    """Return models whose description is blank, oldest IDs first for stable backfill batches."""
-    conn = connect()
-    rows = conn.execute(
-        """SELECT id, model_key, source, url, card_data, name, sha
-           FROM models
-           WHERE description IS NULL OR TRIM(description) = ''
-           ORDER BY id ASC
-           LIMIT ? OFFSET ?""",
-        (max(1, int(limit)), max(0, int(offset))),
-    ).fetchall()
-    conn.close()
-    return rows
-
-
-def count_models_missing_description():
-    conn = connect()
-    value = conn.execute(
-        "SELECT COUNT(*) FROM models WHERE description IS NULL OR TRIM(description) = ''"
-    ).fetchone()[0]
-    conn.close()
-    return int(value or 0)
 
 
 
