@@ -6,7 +6,7 @@ A local model discovery and download manager for Hugging Face, CivitAI, CivitAI 
 
 AbyssBeacon brings multiple model sources into one local interface so you can find new releases, track updates, inspect previews and metadata, follow creators, and manage downloads without checking each site individually.
 
-<img width="2048" height="1078" alt="main feed" src="https://github.com/user-attachments/assets/93e5f821-ae6a-4d22-add3-423a18196231" />
+<img width="2353" height="1235" alt="main feed" src="https://github.com/user-attachments/assets/36df0552-cdea-4e99-823a-6c942b427f75" />
 
 ## Features
 
