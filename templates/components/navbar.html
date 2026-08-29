@@ -1,0 +1,311 @@
+<div class="navbar">
+
+    <div class="navbar-bg"></div>
+
+    {% include "components/navbar/brand.html" %}
+
+    {% if not hide_scan %}
+    <div class="nav-search-area">
+        <div class="nav-search-box">
+            <span class="nav-search-icon" aria-hidden="true">⌕</span>
+            <div id="searchAutocompleteGhost" class="search-autocomplete-ghost" aria-hidden="true"><span class="autocomplete-prefix"></span><span class="autocomplete-suffix"></span></div>
+            <input id="modelSearch" type="search" autocomplete="off" spellcheck="false"
+                   placeholder="Search AbyssBeacon…"
+                   aria-label="Search and filter models">
+            <button id="clearAllSearchFilters" class="search-clear-all hidden" type="button"
+                    aria-label="Clear search and all filters" title="Clear search and all filters">×</button>
+        </div>
+        <div id="activeFilterPills" class="active-filter-pills" aria-label="Active filters"></div>
+        <div class="search-help-tooltip" role="tooltip">
+            Type anything and press Enter to pin it as a filter.<br>
+            Try <strong>search</strong> to find models or creators not currently in AbyssBeacon, or <strong>discover</strong> to find models by tags not currently in AbyssBeacon.<br>
+            Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>favorite:</strong>
+        </div>
+    </div>
+
+    <div class="nav-center-cluster">
+        <div class="nav-summary nav-library-summary" aria-live="polite">
+            <div class="nav-summary-total">
+                <strong id="modelCountValue" class="nav-count-value">{{ model_count }}</strong>
+                <button id="modelCount"
+                        class="nav-count-shortcut"
+                        type="button"
+                        title="Show all models">
+                    models
+                </button>
+            </div>
+            <div class="nav-summary-statuses">
+                <span class="nav-count-pair">
+                    <strong id="newCountValue" class="nav-count-value">{{ new_count }}</strong>
+                    <button id="newCount"
+                            class="nav-count-shortcut"
+                            type="button"
+                            title="Show new models">
+                        new
+                    </button>
+                </span>
+                <span class="summary-dot">•</span>
+                <span class="nav-count-pair">
+                    <strong id="updatedCountValue" class="nav-count-value">{{ updated_count | default(0) }}</strong>
+                    <button id="updatedCount"
+                            class="nav-count-shortcut"
+                            type="button"
+                            title="Show models updated by the latest scan">
+                        updated
+                    </button>
+                </span>
+            </div>
+        </div>
+
+        {% if creator_page_mode %}
+        <div class="nav-creator-controls">
+            <div class="nav-creator-return">
+                <a href="/" class="nav-creator-return-button" title="Return to the AbyssBeacon home feed">
+                    ← Back to AbyssBeacon
+                </a>
+            </div>
+            <button id="creatorScanDetailsButton"
+                    class="scan-details-button creator-scan-details-button"
+                    type="button"
+                    title="Show or hide Creator Scan progress">
+                Scan Details
+            </button>
+        </div>
+        {% else %}
+        <div class="nav-scan-center">
+            <button id="scanButton" type="button" title="Scan the currently enabled sources for models.">SCAN</button>
+        </div>
+
+        <div class="nav-activity-summary">
+            <div class="last-scan-row">
+                <button id="scanDetailsButton"
+                        class="last-scan-details-button"
+                        type="button"
+                        title="Show or hide Scan Details">
+                    Last scan
+                </button>
+                <span id="lastScan" class="last-scan-value">{{ last_scan }}</span>
+            </div>
+            <div class="navbar-download-links">
+                <button id="downloadHistoryButton" class="download-history-button" type="button">Download Manager</button>
+                <span id="activeDownloadPing" class="active-download-ping" hidden
+                      title="Download active" aria-label="Download active"></span>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="nav-actions">
+        <div class="options-wrapper">
+            <button id="optionsButton" class="options-button" type="button" aria-label="Options">
+                <span id="activeFilterDot" class="active-filter-dot hidden" aria-hidden="true"></span>
+                <span class="gear-icon">⚙</span>
+            </button>
+
+            <span class="options-tooltip">Options</span>
+            {% include "components/options_panel.html" %}
+        </div>
+    </div>
+
+    {% include "components/navbar/progress.html" %}
+    {% endif %}
+
+</div>
+
+
+
+<div id="downloadHistoryOverlay" class="source-search-overlay download-history-overlay" aria-hidden="true">
+  <div class="source-search-modal download-history-modal" role="dialog" aria-modal="true" aria-labelledby="downloadHistoryTitle">
+    <div class="source-search-head">
+      <div>
+        <strong id="downloadHistoryTitle">Download Manager</strong>
+        <small>Review completed downloads, release queue, and paid-file availability watches.</small>
+      </div>
+      <button id="closeDownloadHistory" type="button" aria-label="Close Download History">×</button>
+    </div>
+    <div class="download-manager-tabs" role="tablist">
+      <button id="downloadManagerActiveTab" class="download-manager-tab" type="button" role="tab">Active <span id="downloadActiveCount"></span></button>
+      <button id="downloadManagerHistoryTab" class="download-manager-tab active" type="button" role="tab">History</button>
+      <button id="downloadManagerQueueTab" class="download-manager-tab" type="button" role="tab">Queue <span id="downloadQueueCount"></span></button>
+      <button id="downloadManagerWatchTab" class="download-manager-tab" type="button" role="tab">Watchlist <span id="downloadWatchCount"></span></button>
+    </div>
+    <div id="downloadActivePane" class="download-manager-pane">
+      <div id="activeDownloadsList" class="active-downloads-list">
+        <div class="active-downloads-empty">No active downloads.</div>
+      </div>
+    </div>
+    <div id="downloadHistoryPane" class="download-manager-pane active">
+      <div id="downloadHistoryList" class="download-history-list">
+        <div class="download-history-empty">Loading…</div>
+      </div>
+    </div>
+    <div id="downloadQueuePane" class="download-manager-pane">
+      <div id="downloadQueueList" class="download-history-list">
+        <div class="download-history-empty">Loading…</div>
+      </div>
+    </div>
+    <div id="downloadWatchPane" class="download-manager-pane">
+      <div id="downloadWatchList" class="download-history-list">
+        <div class="download-history-empty">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="scanConfigOverlay" class="source-search-overlay" aria-hidden="true">
+  <div class="source-search-modal scan-config-modal" role="dialog" aria-modal="true" aria-labelledby="scanConfigTitle">
+    <div class="source-search-head">
+      <div><strong id="scanConfigTitle">Scan AbyssBeacon</strong><small>Choose what this normal scan should include. These choices are independent from the feed filters.</small></div>
+      <button id="closeScanConfig" type="button" aria-label="Close Scan">×</button>
+    </div>
+    <div class="scan-config-section"><div class="scan-config-heading"><span class="scan-config-label">Sources</span><button id="scanAllSources" type="button">Select all</button></div><div class="scan-config-grid">
+      {% for name, source in sources.items() %}<label class="scan-config-choice"><input type="checkbox" name="scanSource" value="{{ name }}" {% if name in preferences.get('scan_sources', selected_scan_sources) %}checked{% endif %}><span>{{ source.display }}</span></label>{% endfor %}
+    </div></div>
+    <div class="scan-config-section"><div class="scan-config-heading"><span class="scan-config-label">Models to Scan</span><button id="scanAllArchitectures" type="button">Select all</button></div><div class="scan-config-grid">
+      {% for architecture in architectures %}{% if architecture != 'Other' %}<label class="scan-config-choice"><input type="checkbox" name="scanArchitecture" value="{{ architecture }}" {% if architecture in preferences.get('scan_architectures', architectures) %}checked{% endif %}><span>{{ architecture }}</span></label>{% endif %}{% endfor %}
+    </div><small class="discovery-field-help">Only the selected architecture search definitions are used for this normal scan.</small></div>
+    <div id="scanConfigStatus" class="source-search-status"></div>
+    <div class="source-search-actions scan-config-actions">
+      <button
+        id="scanSettingsShortcut"
+        class="scan-settings-shortcut open-settings-overlay"
+        data-settings-url="/settings"
+        data-settings-title="Scanner Search Settings"
+        type="button"
+      >⚙ Scan Settings</button>
+      <button class="scan-definition-shortcut open-settings-overlay" data-settings-url="/settings/sources" data-settings-title="Sources to Scan" type="button">Sources to Scan</button>
+      <button class="scan-definition-shortcut open-settings-overlay" data-settings-url="/settings/architectures" data-settings-title="Models to Scan" type="button">Models to Scan</button>
+      <button id="runConfiguredScan" type="button">Start Scan</button>
+    </div>
+  </div>
+</div>
+
+<div id="searchSourcesOverlay" class="source-search-overlay" aria-hidden="true">
+  <div class="source-search-modal" role="dialog" aria-modal="true" aria-labelledby="sourceSearchTitle">
+    <div class="source-search-head">
+      <div>
+        <strong id="sourceSearchTitle">Search Sources</strong>
+        <small>Search provider catalogs for an arbitrary keyword and import matching models into AbyssBeacon.</small>
+      </div>
+      <button id="closeSourceSearch" type="button" aria-label="Close Search Sources">×</button>
+    </div>
+
+    <label>Search for
+      <input id="sourceSearchQuery" type="search" autocomplete="off" placeholder="airbags, unicycle, Rebecca Chambers…">
+    </label>
+
+    <label>Find
+      <select id="sourceSearchIntent">
+        <option value="models" selected>Models</option>
+        <option value="anything">Anything</option>
+        <option value="creators">Creators</option>
+      </select>
+      <small id="sourceSearchIntentHelp" class="discovery-field-help">Searches model names and metadata for the keyword.</small>
+    </label>
+
+    <div class="scan-config-section" id="sourceSearchArchitectureSection">
+      <div class="scan-config-heading">
+        <span class="scan-config-label">Architectures</span>
+        <div class="scan-config-inline-actions"><button id="searchAllArchitectures" type="button">Select all</button><button id="searchClearArchitectures" type="button">Any</button></div>
+      </div>
+      <div class="scan-config-grid source-search-architecture-grid">
+        <label class="scan-config-choice"><input id="sourceSearchArchitectureAny" type="checkbox" checked><span>Any architecture</span></label>
+        {% for architecture in architectures %}
+        <label class="scan-config-choice"><input type="checkbox" name="externalArchitecture" value="{{ architecture }}"><span>{{ architecture }}</span></label>
+        {% endfor %}
+      </div>
+      <small class="discovery-field-help">Search the keyword normally, then keep only models in the selected architectures. Leave Any architecture selected to keep every architecture returned by the source.</small>
+    </div>
+
+    <div class="scan-config-section">
+      <div class="scan-config-heading">
+        <span class="scan-config-label">Sources <small id="sourceSearchSourceCount" class="source-search-count"></small></span>
+        <div class="scan-config-inline-actions"><button id="searchAllSources" type="button">Select all</button><button id="searchClearSources" type="button">Clear</button></div>
+      </div>
+      <div class="scan-config-grid">
+        {% for name, source in sources.items() %}
+        <label class="scan-config-choice"><input type="checkbox" name="externalSource" value="{{ name }}" checked><span>{{ source.display }}</span></label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <label>Depth
+      <select id="sourceSearchDepth">
+        <option value="recent" selected>Recent · up to 100 per source</option>
+        <option value="deep">Deep · up to 200 per source</option>
+        <option value="all">Broad · up to 1000 per source</option>
+        <option value="maximum">Everything available from each source</option>
+      </select>
+      <small id="sourceSearchDepthHelp" class="discovery-field-help">Result limits are per source. Providers search in parallel; deeper searches can take substantially longer.</small>
+    </label>
+
+    <div id="sourceSearchStatus" class="source-search-status"></div>
+    <div class="source-search-actions"><button id="cancelSourceSearch" type="button">Cancel</button><button id="runSourceSearch" type="button">Search Sources</button></div>
+  </div>
+</div>
+
+<div id="discoveryScanOverlay" class="source-search-overlay" aria-hidden="true">
+  <div class="source-search-modal discovery-scan-modal" role="dialog" aria-modal="true" aria-labelledby="discoveryScanTitle">
+    <div class="source-search-head">
+      <div>
+        <strong id="discoveryScanTitle">Discovery Scan</strong>
+        <small>Explore models outside your normal watch list. Discovery Scan imports results into AbyssBeacon and uses the explicit-scan retention window.</small>
+      </div>
+      <button id="closeDiscoveryScan" type="button" aria-label="Close Discovery Scan">×</button>
+    </div>
+
+    <label>Source
+      <select id="discoverySource">
+        {% for source, data in discovery_sources.items() %}
+        <option value="{{ source }}" data-display="{{ data.get('display', source) }}">{{ data.get('display', source) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>Discover by
+      <select id="discoveryType">
+        <option value="tag">Tag / Category</option>
+      </select>
+    </label>
+
+    <label class="discovery-tag-label">Tag / Category
+      <div class="discovery-tag-input-wrap">
+        <input id="discoveryTag" type="search" autocomplete="off" placeholder="Enter a tag or category…">
+        <input id="discoveryTagId" type="hidden">
+        <div id="discoveryTagSuggestions" class="discovery-tag-suggestions hidden" role="listbox"></div>
+      </div>
+      <small id="discoveryTagHelp" class="discovery-field-help">Enter a tag/category. TensorHub also accepts known tag names, tag URLs, or numeric tag IDs.</small>
+      <button id="openDiscoveryTagBank" class="discovery-tag-bank-button" type="button">Browse Tags</button>
+      <div id="discoveryTagBank" class="discovery-tag-bank hidden">
+        <div class="discovery-tag-bank-head"><strong id="discoveryTagBankTitle">Available Tags</strong><button id="closeDiscoveryTagBank" type="button" aria-label="Close tag bank">×</button></div>
+        <input id="discoveryTagBankSearch" type="search" autocomplete="off" placeholder="Filter available tags…">
+        <div id="discoveryTagBankBody" class="discovery-tag-bank-body"></div>
+      </div>
+    </label>
+
+    <div class="scan-config-section discovery-architecture-section">
+      <span class="scan-config-label">Architecture targeting</span>
+      <label class="discovery-architecture-mode"><input id="discoveryWatchOnly" type="checkbox" checked> <span>Only import Models to Scan</span></label>
+      <small class="discovery-field-help">Uses your configured architecture definitions. Turn this off to discover every architecture returned by the tag.</small>
+    </div>
+
+    <label>Sort
+      <select id="discoverySort">
+        <option value="NEWEST" selected>Newest</option>
+        <option value="LATEST_UPDATE">Latest Updated</option>
+        <option value="HOT_TODAY">Hot Today</option>
+      </select>
+    </label>
+
+    <label>Maximum models
+      <input id="discoveryMaxResults" type="number" min="1" max="5000" value="100">
+      <small id="discoverySortHelp" class="discovery-field-help">Newest is the default because Discovery Scan is designed to surface newly published models.</small>
+    </label>
+
+    <div id="discoveryScanStatus" class="source-search-status"></div>
+    <div class="source-search-actions">
+      <button id="cancelDiscoveryScan" type="button">Cancel</button>
+      <button id="runDiscoveryScan" type="button">Scan Discovery</button>
+    </div>
+  </div>
+</div>

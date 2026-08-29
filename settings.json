@@ -1,0 +1,177 @@
+{
+  "sources": {
+    "huggingface": {
+      "display": "Hugging Face",
+      "enabled": true,
+      "color": "#ffff00"
+    },
+    "modelscope": {
+      "display": "ModelScope",
+      "enabled": true,
+      "color": "#a855ff"
+    },
+    "civitai": {
+      "display": "CivitAI",
+      "enabled": true,
+      "color": "#ff4d88"
+    },
+    "civitaired": {
+      "display": "CivitAI Red",
+      "enabled": true,
+      "color": "#ff2d55"
+    },
+    "tensorhub": {
+      "display": "TensorHub Art",
+      "enabled": true,
+      "color": "#ff7a45"
+    },
+    "seaart": {
+      "display": "SeaArt",
+      "enabled": true,
+      "color": "#35c7ff"
+    }
+  },
+  "search_terms": {
+    "Krea 2": [
+      "krea"
+    ],
+    "FLUX": [
+      "flux"
+    ],
+    "LTX": [
+      "ltx"
+    ],
+    "SCAIL": [
+      "scail"
+    ]
+  },
+  "architectures": [
+    "Krea 2",
+    "FLUX",
+    "LTX",
+    "SCAIL"
+  ],
+  "model_types": [
+    "LoRA",
+    "Checkpoint",
+    "Workflow",
+    "Other"
+  ],
+  "preferences": {
+    "selected_sources": [
+      "huggingface",
+      "modelscope",
+      "civitai",
+      "civitaired",
+      "tensorhub",
+      "seaart"
+    ],
+    "selected_architecture": "",
+    "selected_model_type": "",
+    "selected_status": "All",
+    "sort": "activity",
+    "show_media_only": false,
+    "selected_access": "all",
+    "selected_sensitive": "hide",
+    "selected_search": "",
+    "selected_search_terms": [],
+    "selected_favorite": "all",
+    "selected_scan_sources": [],
+    "selected_creator_favorite": "all",
+    "auto_cleanup_enabled": false,
+    "auto_cleanup_days": 7,
+    "source_card_colors": {
+      "huggingface": "#ffff00",
+      "modelscope": "#a855ff",
+      "civitai": "#ff4d88",
+      "civitaired": "#ff2d55",
+      "tensorhub": "#ff7a45",
+      "seaart": "#35c7ff"
+    },
+    "creator_cleanup_days": 30,
+    "scan_sources": [],
+    "scan_architectures": [],
+    "download_behavior": "browser",
+    "local_comfy_root": "",
+    "install_layout": "simple",
+    "friendly_filenames": "off",
+    "existing_file_behavior": "keep_both",
+    "save_model_info": true,
+    "save_model_preview": true,
+    "media_per_model_limit": 100,
+    "selected_download_status": "all",
+    "queued_download_behavior": "ask",
+    "download_missing_card_previews": false,
+    "enabled_architectures": [
+      "FLUX.2 Klein 4B",
+      "FLUX.2 Klein 9B",
+      "WAN 2.2",
+      "Z-Image Turbo",
+      "Z-Image Base",
+      "LTX-2.5",
+      "Anima",
+      "Illustrious",
+      "Pony",
+      "SDXL",
+      "Krea 2",
+      "MiniMax-H3"
+    ],
+    "verbose_scan_logging": false,
+    "seaart_browser": "firefox",
+    "track_downloads": true,
+    "show_download_status_cards": true
+  },
+  "search_settings": {
+    "huggingface": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest_updated"
+    },
+    "modelscope": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest_updated"
+    },
+    "civitai": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest"
+    },
+    "civitaired": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest"
+    },
+    "tensorhub": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest",
+      "creator_expansion_enabled": false,
+      "creator_probe_results": 20,
+      "creator_recheck_hours": 6,
+      "creator_scan_max_results": 1000
+    },
+    "seaart": {
+      "search_days": 7,
+      "max_results": 150,
+      "sort": "newest"
+    }
+  },
+  "migrations": {
+    "civitai_scanner_v1": true,
+    "civitaired_scanner_v1": true,
+    "tensorhub_scanner_v1": true,
+    "seaart_scanner_v1": true
+  },
+  "scan_limits": {
+    "global_max_results": 150,
+    "source_overrides": {
+      "huggingface": null,
+      "modelscope": null,
+      "civitai": null,
+      "civitaired": null,
+      "tensorhub": null,
+      "seaart": null
+    }
+  }
+}

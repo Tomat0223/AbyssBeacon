@@ -1,0 +1,479 @@
+#scanButton {
+    background:#080808;
+    border:1px solid rgba(0,234,255,0.35);
+    color:#00eaff;
+    border-radius:20px;
+    padding:8px 24px;
+    font-weight:600;
+    letter-spacing:.8px;
+    cursor:pointer;
+    transition:.2s ease;
+}
+
+#scanButton:hover {
+    border-color:#00eaff;
+    box-shadow:0 0 10px rgba(0,234,255,.5);
+}
+
+.scan-progress {
+
+    position:absolute;
+
+    top:100%;
+
+    right:20px;
+
+    margin-top:8px;
+
+    width:290px;
+
+    padding:12px 16px;
+
+    background:#080808;
+
+    border:1px solid rgba(0,234,255,.35);
+
+    border-radius:12px;
+
+    color:#aaa;
+
+    font-size:12px;
+
+    box-shadow:
+        0 0 20px rgba(0,234,255,.15);
+
+    z-index:3000;
+
+}
+
+
+.scan-title {
+
+    display:flex;
+
+    align-items:center;
+
+    gap:8px;
+
+    font-size:15px;
+
+    font-weight:600;
+
+    color:#00eaff;
+
+}
+
+
+.radar-dot {
+
+    width:7px;
+
+    height:7px;
+
+    border-radius:50%;
+
+    background:#00eaff;
+
+    box-shadow:
+        0 0 8px rgba(0,234,255,.8);
+
+    animation:
+        scanPulse 1.5s infinite ease-in-out;
+
+}
+
+
+@keyframes scanPulse {
+
+    0% {
+
+        opacity:1;
+
+        transform:scale(1);
+
+    }
+
+
+    50% {
+
+        opacity:.45;
+
+        transform:scale(1.5);
+
+    }
+
+
+    100% {
+
+        opacity:1;
+
+        transform:scale(1);
+
+    }
+
+}
+
+
+.scan-subtitle {
+
+    margin-top:4px;
+
+    color:#888;
+
+    font-size:12px;
+
+}
+
+
+.scan-source{
+
+    margin-top:8px;
+
+    color:#00eaff;
+
+    font-size:12px;
+
+    font-weight:600;
+
+    letter-spacing:.5px;
+
+    text-transform:capitalize;
+
+    opacity:.9;
+
+}
+
+
+.scan-subtitle{
+
+    margin-top:4px;
+
+    color:#888;
+
+    font-size:12px;
+
+    min-height:16px;
+
+}
+
+
+.scan-stats{
+
+    display:grid;
+
+    grid-template-columns:1fr 1fr;
+
+    gap:10px;
+
+    margin-top:14px;
+
+    padding-top:12px;
+
+    border-top:1px solid rgba(255,255,255,.08);
+
+}
+
+
+.scan-stats div{
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    font-size:12px;
+
+}
+
+
+.scan-stats span{
+
+    color:#777;
+
+}
+
+
+.scan-stats strong{
+
+    color:#00eaff;
+
+    font-weight:600;
+
+    font-size:13px;
+
+}
+
+
+/* ===== Live scanner card docking =====
+   Normal state: beneath the navbar at the far right.
+   Gear open: directly beneath the options panel.
+   Settings overlay open: directly beneath the modal. */
+
+.options-wrapper > .scan-progress.options-docked {
+    position:absolute;
+    top:calc(50px + var(--options-panel-height, 0px) + 10px);
+    right:0;
+    margin:0;
+    width:290px;
+    box-sizing:border-box;
+    z-index:2900;
+}
+
+/* The options panel itself always remains above its docked scan status. */
+.options-panel.open {
+    z-index:3100;
+}
+
+.settings-overlay.with-scan-status {
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:12px;
+}
+
+.settings-overlay.with-scan-status .settings-modal {
+    height:min(700px, calc(100vh - 220px));
+    flex:0 1 auto;
+    z-index:1;
+}
+
+.settings-overlay.with-scan-status > .scan-progress {
+    position:relative;
+    top:auto;
+    right:auto;
+    left:auto;
+    bottom:auto;
+    margin:0;
+    width:min(980px, 94vw);
+    min-height:0;
+    box-sizing:border-box;
+    flex:0 0 auto;
+    z-index:1;
+}
+
+.settings-overlay.with-scan-status > .scan-progress .scan-stats {
+    grid-template-columns:repeat(2, 1fr);
+}
+
+.settings-overlay.with-scan-status > .scan-progress .scan-stats div {
+    justify-content:center;
+    gap:8px;
+}
+
+@media (max-width:760px){
+    .settings-overlay.with-scan-status .settings-modal {
+        height:min(620px, calc(100vh - 270px));
+    }
+
+    .settings-overlay.with-scan-status > .scan-progress .scan-stats {
+        grid-template-columns:1fr 1fr;
+    }
+}
+
+#scanButton:disabled,
+#scanButton.is-scanning {
+    cursor:default;
+    opacity:.82;
+    border-color:rgba(0,234,255,.55);
+    box-shadow:0 0 10px rgba(0,234,255,.22);
+}
+
+.scan-stop-button{margin:10px 0 2px;padding:7px 12px;border:1px solid #70404a;border-radius:7px;background:#1b0c10;color:#ff9aa6;cursor:pointer}.scan-stop-button:hover{border-color:#ff6f82}.scan-stop-button:disabled{opacity:.6;cursor:default}
+
+.discovery-scan-button {
+    background:#080808;
+    border:1px solid rgba(255,122,69,.42);
+    color:#ff9a72;
+    border-radius:20px;
+    padding:8px 15px;
+    font-weight:600;
+    letter-spacing:.65px;
+    cursor:pointer;
+    transition:.2s ease;
+}
+.discovery-scan-button:hover {
+    border-color:#ff7a45;
+    box-shadow:0 0 10px rgba(255,122,69,.38);
+}
+.discovery-scan-button:disabled { opacity:.52; cursor:default; box-shadow:none; }
+.nav-scan-center { gap:8px; }
+
+/* ===== Per-source live scan progress ===== */
+.scan-progress {
+    width: 390px;
+    padding: 12px 14px;
+}
+
+.scan-progress-head {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+}
+
+.scan-progress-head .scan-title {
+    min-width:0;
+}
+
+.scan-progress-head .scan-stop-button {
+    margin:0;
+    flex:0 0 auto;
+}
+
+.scan-source-grid {
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    margin-top:14px;
+    border-top:1px solid rgba(255,255,255,.08);
+    border-bottom:1px solid rgba(255,255,255,.08);
+}
+
+.scan-source-row {
+    min-width:0;
+    min-height:45px;
+    padding:8px 11px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    border-bottom:1px solid rgba(255,255,255,.055);
+}
+
+.scan-source-row:nth-child(odd) {
+    border-right:1px solid rgba(255,255,255,.09);
+}
+
+.scan-source-row:nth-last-child(-n+2) {
+    border-bottom:0;
+}
+
+.scan-source-row > span:first-child {
+    color:#b5c6cb;
+    font-size:12px;
+    font-weight:600;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.scan-source-result {
+    display:flex;
+    align-items:flex-end;
+    flex-direction:column;
+    flex:0 0 auto;
+    color:#00eaff;
+    line-height:1.15;
+}
+
+.scan-source-result strong {
+    color:#00eaff;
+    font-size:12px;
+    font-weight:650;
+}
+
+.scan-source-result small {
+    margin-top:2px;
+    color:#66787e;
+    font-size:9px;
+}
+
+.scan-source-error { color:#ff788a !important; }
+.scan-source-stopped { color:#e6b36d !important; }
+
+.scan-working-dots {
+    display:inline-flex;
+    align-items:flex-end;
+    gap:3px;
+    height:13px;
+}
+
+.scan-working-dots i {
+    display:block;
+    width:4px;
+    height:4px;
+    border-radius:50%;
+    background:#00eaff;
+    box-shadow:0 0 5px rgba(0,234,255,.55);
+    animation:scanDotJump .9s ease-in-out infinite;
+}
+.scan-working-dots i:nth-child(2){animation-delay:.14s}
+.scan-working-dots i:nth-child(3){animation-delay:.28s}
+
+@keyframes scanDotJump {
+    0%, 60%, 100% { transform:translateY(0); opacity:.45; }
+    30% { transform:translateY(-5px); opacity:1; }
+}
+
+.scan-summary-message {
+    margin-top:9px;
+    min-height:0;
+    color:#71868d;
+}
+
+/* The settings-overlay dock has room for the expanded two-column source board. */
+.settings-overlay.with-scan-status > .scan-progress {
+    width:min(980px, 94vw);
+}
+
+.settings-overlay.with-scan-status > .scan-progress .scan-source-grid {
+    grid-template-columns:repeat(2, minmax(0,1fr));
+}
+
+@media (max-width:760px){
+    .scan-progress { width:min(430px, calc(100vw - 24px)); }
+    .scan-source-grid { grid-template-columns:1fr; }
+    .scan-source-row:nth-child(odd) { border-right:0; }
+    .scan-source-row:nth-last-child(-n+2) { border-bottom:1px solid rgba(255,255,255,.055); }
+    .scan-source-row:last-child { border-bottom:0; }
+}
+
+
+/* Compact normal scanner summary: New + Updated are the two numbers that
+   matter during routine scans. Detailed counts remain available in scan
+   history/terminal diagnostics without consuming navbar space. */
+.scan-stats-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 10px;
+    padding-top: 10px;
+}
+
+.scan-stats-compact div {
+    justify-content: space-between;
+}
+
+
+/* =========================================================
+   Live scan visibility controls
+   ========================================================= */
+
+.scan-progress-actions {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    flex:0 0 auto;
+}
+
+.scan-hide-button {
+    margin:0;
+    padding:7px 11px;
+    border:1px solid rgba(0,234,255,.35);
+    border-radius:7px;
+    background:#081114;
+    color:#8fefff;
+    cursor:pointer;
+    font-size:11px;
+    font-weight:600;
+    white-space:nowrap;
+}
+
+.scan-hide-button:hover {
+    border-color:#00eaff;
+    color:#d8fbff;
+    box-shadow:0 0 8px rgba(0,234,255,.18);
+}
+
+.scan-progress-actions .scan-stop-button {
+    margin:0;
+}

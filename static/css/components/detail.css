@@ -1,0 +1,1924 @@
+/* =========================
+   MODEL DETAIL OVERLAY
+========================= */
+
+.model-overlay {
+
+    display:none;
+
+    position:fixed;
+
+    inset:0;
+
+    background:rgba(0,0,0,0.65);
+
+    z-index:2000;
+
+    justify-content:center;
+
+    align-items:center;
+
+    overflow:hidden;
+
+}
+
+
+.model-overlay.open {
+
+    display:flex;
+
+}
+
+
+
+#modelDetails {
+    width:100%;
+    max-height:calc(100vh - 60px);
+    overflow-y:auto;
+    overflow-x:hidden;
+    overscroll-behavior:contain;
+    scrollbar-gutter:stable;
+}
+
+/* =========================
+   DETAIL PANEL
+========================= */
+
+.model-panel {
+
+    position:relative;
+
+    width:900px;
+
+    margin:0;
+
+    max-width:90%;
+
+    max-height:calc(100vh - 60px);
+
+    overflow:hidden;
+
+    background:#181818;
+
+    border:1px solid rgba(0,234,255,.28);
+
+    border-radius:16px;
+
+    padding:0px;
+
+    overscroll-behavior:contain;
+
+    box-shadow:
+        0 20px 60px rgba(0,0,0,.58),
+        0 0 0 1px rgba(0,234,255,.035),
+        0 0 28px rgba(0,234,255,.035);
+
+}
+
+
+.model-detail {
+
+    max-width:1000px;
+
+    margin:0 auto;
+
+    padding:0 30px 30px;
+
+}
+
+
+/* =========================
+   DETAIL ACTIONS
+========================= */
+
+.details-btn {
+
+    width:100%;
+
+    padding:8px;
+
+    border:none;
+
+    border-radius:8px;
+
+    background:#333;
+
+    color:white;
+
+    cursor:pointer;
+
+    transition:.2s;
+
+}
+
+
+.details-btn:hover {
+
+    background:#555;
+
+}
+
+
+/* =========================
+   CLOSE BUTTON
+========================= */
+
+.close-model {
+
+    position:relative;
+
+    margin-left:auto;
+
+    display:block;
+
+    z-index:100;
+
+    width:30px;
+
+    height:30px;
+
+    border:1px solid rgba(0,234,255,.35);
+
+    border-radius:50%;
+
+    background:#080808;
+
+    color:#00eaff;
+
+    font-size:18px;
+
+    cursor:pointer;
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:center;
+
+    line-height:1;
+
+    transition:.2s;
+
+}
+
+
+.close-model:hover {
+
+    border-color:#00eaff;
+
+    box-shadow:
+        0 0 10px rgba(0,234,255,.5);
+
+}
+
+
+/* =========================
+   DETAIL ACTION BUTTONS
+========================= */
+
+
+.detail-header .detail-actions {
+
+    margin:0;
+
+    padding:0;
+
+    border:none;
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:flex-end;
+
+    gap:10px;
+
+}
+
+
+.download-btn,
+.source-btn {
+
+    padding:6px 13px;
+
+    border-radius:16px;
+
+    font-size:12px;
+
+    cursor:pointer;
+
+    text-decoration:none;
+
+    transition:.2s;
+
+}
+
+
+.download-btn {
+
+    background:#2ecc71;
+
+    color:black;
+
+    border:none;
+
+}
+
+
+.download-btn:hover {
+
+    background:#58d68d;
+
+}
+
+
+
+.source-btn {
+
+    background:color-mix(in srgb, var(--button-source-color, var(--source-color, #00eaff)) 18%, #071014);
+
+    color:var(--button-source-color, var(--source-color, #00eaff));
+
+    border:1px solid color-mix(in srgb, var(--button-source-color, var(--source-color, #00eaff)) 72%, transparent);
+
+    box-shadow:0 0 12px color-mix(in srgb, var(--button-source-color, var(--source-color, #00eaff)) 18%, transparent);
+
+    white-space:nowrap;
+
+}
+
+
+.source-btn:hover {
+
+    background:color-mix(in srgb, var(--button-source-color, var(--source-color, #00eaff)) 28%, #071014);
+
+    box-shadow:0 0 16px color-mix(in srgb, var(--button-source-color, var(--source-color, #00eaff)) 30%, transparent);
+
+}
+
+
+/* =========================
+   DETAIL HEADER
+========================= */
+
+.detail-header {
+
+    position:sticky;
+
+    top:0;
+
+    z-index:20;
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    padding:8px 12px;;
+
+    background:#080808;
+
+    border-bottom:1px solid rgba(0,234,255,.35);
+
+    margin-bottom:25px;
+
+}
+
+
+.detail-header h2 {
+
+    margin:0;
+
+    font-size:18px;
+
+    color:#00eaff;
+
+    white-space:nowrap;
+
+    overflow:hidden;
+
+    text-overflow:ellipsis;
+
+}
+
+
+
+.detail-header .author {
+
+    color:#aaa;
+
+    margin-bottom:15px;
+
+}
+
+
+/* =========================
+   DETAIL BADGES
+========================= */
+
+.detail-header .badges {
+
+    display:flex;
+
+    flex-wrap:wrap;
+
+    gap:8px;
+
+}
+
+
+/* =========================
+   DETAIL STATS
+========================= */
+
+
+.detail-stats {
+
+    display:grid;
+
+    grid-template-columns:
+        repeat(auto-fit,minmax(160px,1fr));
+
+    gap:15px;
+
+    margin:25px 0;
+
+}
+
+
+
+.detail-stats div {
+
+    background:#222;
+
+    border-radius:12px;
+
+    padding:15px;
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:8px;
+
+}
+
+
+
+.detail-stats strong {
+
+    color:#888;
+
+    font-size:12px;
+
+    text-transform:uppercase;
+
+}
+
+
+
+.detail-stats span {
+
+    font-size:20px;
+
+    font-weight:700;
+
+    color:white;
+
+}
+
+
+
+/* =========================
+   DETAIL SECTIONS
+========================= */
+
+
+.model-detail section {
+
+    margin-top:25px;
+
+    padding-bottom:20px;
+
+    border-bottom:1px solid #333;
+
+}
+
+
+
+.model-detail section {
+
+    margin-top:40px !important;
+
+    padding-bottom:30px !important;
+
+}
+
+
+
+.model-detail h3 {
+
+    color:#7CFF91;
+
+    margin-bottom:12px;
+
+}
+
+
+
+
+/* =========================
+   MODEL INFORMATION
+========================= */
+
+
+.model-info p {
+
+    color:#ccc;
+
+    margin:10px 0;
+
+}
+
+
+
+.model-info strong {
+
+    color:white;
+
+}
+
+
+
+
+/* =========================
+   TAGS
+========================= */
+
+
+.tag-list {
+
+    display:flex;
+
+    flex-wrap:wrap;
+
+    gap:8px;
+
+}
+
+
+
+.tag {
+
+    background:#333;
+
+    color:#ddd;
+
+    padding:6px 12px;
+
+    border-radius:15px;
+
+    font-size:12px;
+
+}
+
+
+
+.tag:hover {
+
+    background:#555;
+
+}
+
+
+/* =========================
+   MODEL INFORMATION GRID
+========================= */
+
+
+.info-grid {
+
+    display:grid;
+
+    grid-template-columns:
+        repeat(auto-fit,minmax(220px,1fr));
+
+    gap:15px;
+
+}
+
+
+
+.info-card {
+
+    background:#222;
+
+    border:1px solid #333;
+
+    border-radius:12px;
+
+    padding:15px;
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:8px;
+
+    transition:.2s;
+
+}
+
+
+
+.info-card:hover {
+
+    border-color:#00eaff;
+
+    box-shadow:
+        0 0 12px rgba(0,234,255,.15);
+
+}
+
+
+
+.info-card strong {
+
+    color:#888;
+
+    font-size:12px;
+
+    text-transform:uppercase;
+
+    letter-spacing:.5px;
+
+}
+
+
+
+.info-card span {
+
+    color:white;
+
+    font-size:15px;
+
+    font-weight:600;
+
+    word-break:break-word;
+
+}
+/* Expanded viewer transition */
+.model-panel { transition:width .18s ease,max-width .18s ease,height .18s ease,max-height .18s ease; }
+.model-panel.viewer-expanded { overflow-y:auto; }
+
+/* Preserve the readable structure we extracted from model cards/readmes. */
+.model-description {
+    white-space:pre-line;
+    line-height:1.65;
+    color:#c7cdd0;
+}
+
+
+.detail-favorite {
+    position:static;
+    flex:0 0 auto;
+}
+
+
+/* Long descriptions start genuinely collapsed; Read more expands them. */
+.model-description.collapsed {
+    max-height:10.5em;
+    overflow:hidden;
+    position:relative;
+    -webkit-mask-image:linear-gradient(to bottom,#000 72%,transparent 100%);
+    mask-image:linear-gradient(to bottom,#000 72%,transparent 100%);
+}
+.model-description:not(.collapsed) { max-height:none; overflow:visible; -webkit-mask-image:none; mask-image:none; }
+.description-toggle[hidden] { display:none !important; }
+.detail-floating-nav {
+    position:fixed;
+    right:max(24px, calc(5vw + 10px));
+    bottom:26px;
+    z-index:2450;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(8px);
+    transition:opacity .16s ease, transform .16s ease;
+}
+
+.detail-floating-nav.visible {
+    opacity:1;
+    pointer-events:auto;
+    transform:none;
+}
+
+.detail-back-to-top,
+.detail-floating-close {
+    appearance:none;
+    border:1px solid rgba(0,234,255,.42);
+    background:rgba(5,10,12,.92);
+    color:#00eaff;
+    height:42px;
+    border-radius:999px;
+    cursor:pointer;
+    backdrop-filter:blur(8px);
+    box-shadow:0 8px 22px rgba(0,0,0,.32);
+    transition:border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+
+.detail-back-to-top {
+    padding:0 15px;
+    font:inherit;
+    font-weight:700;
+}
+
+.detail-floating-close {
+    width:42px;
+    padding:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:23px;
+    line-height:1;
+}
+
+.detail-back-to-top:hover,
+.detail-floating-close:hover {
+    border-color:#00eaff;
+    background:rgba(0,234,255,.08);
+    box-shadow:0 0 14px rgba(0,234,255,.18), 0 8px 22px rgba(0,0,0,.35);
+}
+
+/* =========================
+   VERSION PILLS
+========================= */
+.model-version-strip{
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    align-items:center;
+    gap:6px;
+    width:100%;
+    margin-top:10px;
+}
+.model-version-row{
+    display:flex;
+    flex-wrap:nowrap;
+    gap:8px;
+    width:100%;
+    min-width:0;
+    overflow-x:auto;
+    overflow-y:hidden;
+    scroll-behavior:smooth;
+    scrollbar-width:none;
+    overscroll-behavior-x:contain;
+}
+.model-version-row::-webkit-scrollbar{display:none}
+.model-version-scroll{
+    appearance:none;
+    width:34px;
+    height:34px;
+    flex:0 0 34px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:1px solid rgba(0,234,255,.38);
+    border-radius:999px;
+    background:rgba(3,13,16,.88);
+    color:#dffcff;
+    font:inherit;
+    font-size:24px;
+    line-height:1;
+    cursor:pointer;
+    transition:border-color .15s ease,background .15s ease,color .15s ease,opacity .15s ease;
+}
+.model-version-scroll:hover{border-color:#00eaff;background:rgba(0,234,255,.10);color:#00eaff}
+.model-version-scroll:disabled{opacity:.28;cursor:default}
+.model-version-scroll[hidden]{display:none}
+.model-version-pill{
+    appearance:none;
+    border:1px solid rgba(0,234,255,.35);
+    background:rgba(0,234,255,.07);
+    color:#dffcff;
+    border-radius:999px;
+    padding:7px 12px;
+    font:inherit;
+    font-size:.78rem;
+    font-weight:700;
+    white-space:nowrap;
+    cursor:pointer;
+    transition:transform .15s ease,border-color .15s ease,background .15s ease;
+}
+.model-version-pill:hover{transform:translateY(-1px);border-color:#00eaff;background:rgba(0,234,255,.12)}
+.model-version-pill.early-access{border-color:rgba(255,183,0,.55);background:rgba(255,183,0,.09);color:#ffd76a}
+.model-version-pill.gated{border-color:rgba(255,90,120,.45);background:rgba(255,90,120,.07);color:#ff9caf}
+.version-pill-state{margin-left:6px;font-size:.68rem;font-weight:800;opacity:.95}
+
+
+.model-version-pill.selected{border-color:#00eaff;background:rgba(0,234,255,.16);box-shadow:0 0 0 1px rgba(0,234,255,.12),0 0 16px rgba(0,234,255,.08)}
+.model-version-pill.early-access.selected{border-color:#ffbf36;background:rgba(255,183,0,.16);box-shadow:0 0 14px rgba(255,183,0,.08)}
+.model-version-summary{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;margin-top:8px;color:#9fb3b8;font-size:.78rem}
+.model-version-summary-text{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-height:20px}
+.model-version-summary-text span{padding:3px 7px;border:1px solid rgba(255,255,255,.08);border-radius:999px;background:rgba(255,255,255,.025)}
+.model-version-summary-text .early-access{border-color:rgba(255,183,0,.35);color:#ffd76a}
+.model-version-download{appearance:none;border:1px solid rgba(0,234,255,.35);border-radius:999px;background:transparent;color:#00eaff;padding:5px 10px;font:inherit;cursor:pointer}
+.model-version-download:hover{border-color:#00eaff;background:rgba(0,234,255,.08)}
+
+
+/* =========================
+   DETAIL STICKY COMMAND BAR
+   Full modal width; versions + downloads stay available while scrolling.
+========================= */
+.model-detail {
+    max-width:none;
+    width:100%;
+    margin:0;
+    padding:0 30px 30px;
+    box-sizing:border-box;
+}
+
+.detail-header {
+    position:relative;
+    top:auto;
+    z-index:20;
+    display:block;
+    box-sizing:border-box;
+    width:calc(100% + 60px);
+    margin:0 -30px 22px;
+    padding:14px 64px 12px 30px;
+    background:rgba(8,8,8,.985);
+    border-bottom:1px solid rgba(0,234,255,.35);
+    box-shadow:0 10px 24px rgba(0,0,0,.24);
+    backdrop-filter:blur(10px);
+}
+
+.detail-header-main {
+    display:grid;
+    grid-template-columns:minmax(240px,1fr) auto;
+    align-items:center;
+    gap:18px;
+    min-width:0;
+}
+
+.detail-header-main h2 {
+    min-width:0;
+    margin:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:20px;
+}
+
+.detail-header .detail-actions {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:10px;
+    min-width:0;
+    flex-wrap:wrap;
+}
+
+.detail-header .close-model {
+    position:absolute;
+    top:13px;
+    right:16px;
+    margin:0;
+    z-index:3;
+}
+
+.detail-version-nav {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    width:100%;
+    min-width:0;
+    padding-top:10px;
+    margin-top:10px;
+    border-top:1px solid rgba(255,255,255,.07);
+}
+
+.detail-version-nav .model-version-row {
+    width:auto;
+    min-width:0;
+    flex:0 1 auto;
+    margin:0;
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    scrollbar-width:none;
+}
+.detail-version-nav .model-version-row::-webkit-scrollbar { display:none; }
+
+.detail-version-nav .model-version-summary-text {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex:1 1 auto;
+    min-width:0;
+    overflow:hidden;
+    flex-wrap:nowrap;
+}
+.detail-version-nav .model-version-summary-text span {
+    flex:0 1 auto;
+    min-width:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.detail-version-nav .detail-version-actions {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex:0 0 auto;
+    margin-left:auto;
+}
+
+.detail-version-nav .model-version-refresh {
+    appearance:none;
+    flex:0 0 auto;
+    margin-left:0;
+    border:1px solid rgba(0,234,255,.42);
+    border-radius:999px;
+    background:rgba(8,11,12,.72);
+    color:#b7c4c7;
+    padding:6px 10px;
+    font:inherit;
+    font-size:11px;
+    font-weight:400;
+    opacity:.88;
+    white-space:nowrap;
+    cursor:pointer;
+    transition:border-color .16s ease,background .16s ease,color .16s ease,box-shadow .16s ease;
+}
+
+.detail-version-nav .model-version-refresh[hidden] {
+    display:none !important;
+}
+
+.detail-version-nav .model-version-refresh:hover {
+    border-color:#00eaff;
+    background:rgba(0,234,255,.09);
+    color:#00eaff;
+    box-shadow:0 0 12px rgba(0,234,255,.08);
+    opacity:1;
+}
+.detail-version-nav .model-version-refresh[data-refreshing="true"] {
+    cursor:wait;
+    opacity:.72;
+}
+.detail-version-nav .model-version-refresh[data-refreshing="true"]::after {
+    content:"...";
+    display:inline-block;
+    width:0;
+    margin-left:2px;
+    overflow:hidden;
+    vertical-align:bottom;
+    white-space:nowrap;
+    animation:modelReloadDots 1.05s steps(4,end) infinite;
+}
+@keyframes modelReloadDots {
+    0% { width:0; }
+    100% { width:1.35em; }
+}
+.detail-version-nav .model-version-download {
+    flex:0 0 auto;
+    margin-left:0;
+    padding:6px 13px;
+    border-radius:16px;
+    font-size:12px;
+    font-weight:400;
+}
+.detail-version-nav .model-version-download.active {
+    background:rgba(0,234,255,.12);
+    border-color:#00eaff;
+    box-shadow:0 0 14px rgba(0,234,255,.10);
+}
+
+/* Keep long content readable without constraining the sticky command bar. */
+.model-detail > .media-filebar,
+.model-detail > .media-viewer,
+.model-detail > .media-toolbar,
+.model-detail > .media-files-panel,
+.model-detail > .detail-info,
+.model-detail > .detail-stats,
+.model-detail > section {
+    max-width:1180px;
+    margin-left:auto;
+    margin-right:auto;
+}
+
+.media-file-actions { justify-content:flex-end; }
+
+
+
+
+@media (max-width:980px) {
+    .detail-header-main {
+        grid-template-columns:1fr;
+        gap:9px;
+    }
+    .detail-header .detail-actions {
+        justify-content:flex-start;
+        padding-right:0;
+    }
+    .detail-version-nav {
+        flex-wrap:wrap;
+    }
+    .detail-version-nav .model-version-summary-text {
+        order:3;
+        flex-basis:100%;
+    }
+}
+
+@media (max-width:760px) {
+    .model-detail { padding-left:16px; padding-right:16px; }
+    .detail-header {
+        width:calc(100% + 32px);
+        margin-left:-16px;
+        margin-right:-16px;
+        padding-left:16px;
+        padding-right:58px;
+    }
+    .detail-version-nav .model-version-summary-text { display:none; }
+    .detail-version-nav .model-version-refresh { padding:7px 11px; }
+    .source-fallback-btn { display:none; }
+}
+
+
+/* =========================
+   RELEASE POLISH: DOWNLOAD HEADER
+   Keep the close control inside the drawer even with very long descriptions/names.
+========================= */
+.detail-header .download-header {
+    position:relative;
+    align-items:flex-start;
+    padding-right:68px;
+}
+
+.detail-header .download-header > div {
+    min-width:0;
+    width:100%;
+}
+
+.detail-header .download-model-name {
+    max-width:100%;
+    padding-right:4px;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    line-height:1.35;
+}
+
+.detail-header .download-close {
+    position:absolute;
+    top:14px;
+    right:18px;
+    margin:0;
+    z-index:5;
+}
+
+/* The long source/version metadata belongs in the drawer, not the command row. */
+.detail-version-nav .model-version-summary-text {
+    max-width:min(42vw, 620px);
+}
+
+@media (max-width:900px) {
+    .detail-floating-nav {
+        right:18px;
+        bottom:18px;
+    }
+}
+
+
+/* =========================
+   RELEASE POLISH: FULL MODEL NAME
+   Only rendered for titles too long to fit naturally in the header.
+========================= */
+.full-model-name-section {
+    margin-top:32px !important;
+}
+
+.full-model-name {
+    padding:14px 16px;
+    border:1px solid rgba(0,234,255,.16);
+    border-radius:12px;
+    background:rgba(0,234,255,.025);
+    color:#d8e3e6;
+    line-height:1.5;
+    font-size:.96rem;
+    overflow-wrap:anywhere;
+}
+
+/* Short descriptions are never faded. The mask is reserved for genuinely
+   collapsible descriptions that also have a Read more control. */
+.model-description:not(.collapsed) {
+    color:#c7cdd0;
+    -webkit-mask-image:none;
+    mask-image:none;
+}
+
+
+/* ModelRadar confirmation dialog */
+.modelradar-confirm-overlay{
+    position:fixed;inset:0;z-index:12000;display:flex;align-items:center;justify-content:center;
+    padding:24px;background:rgba(0,0,0,.68);backdrop-filter:blur(5px);
+    opacity:0;transition:opacity .13s ease
+}
+.modelradar-confirm-overlay.open{opacity:1}
+.modelradar-confirm-box{
+    width:min(520px,calc(100vw - 48px));border:1px solid rgba(0,229,255,.35);
+    border-radius:18px;background:#080d0f;box-shadow:0 22px 70px rgba(0,0,0,.62);
+    padding:24px
+}
+.modelradar-confirm-box h3{margin:0 0 12px;color:#eefbff;font-size:22px}
+.modelradar-confirm-box p{margin:0;color:#a7bbc2;font-size:16px;line-height:1.55}
+.modelradar-confirm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+.modelradar-confirm-actions button,
+.modelradar-confirm-actions a{
+    border-radius:999px;
+    padding:10px 18px;
+    font:inherit;
+    cursor:pointer;
+    text-decoration:none;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    line-height:1.2;
+}
+.modelradar-confirm-cancel{
+    border:1px solid rgba(0,234,255,.34);
+    background:rgba(0,234,255,.06);
+    color:#bfeff5;
+}
+.modelradar-confirm-cancel:hover{
+    border-color:#00eaff;
+    background:rgba(0,234,255,.12);
+    color:#e9fcff;
+}
+.modelradar-confirm-ok{
+    border:1px solid rgba(255,104,120,.55);background:rgba(120,20,36,.22);color:#ff8b99
+}
+.modelradar-confirm-ok:hover{border-color:#ff8b99;background:rgba(120,20,36,.36)}
+
+.restricted-source-link{
+    display:inline-flex;
+    align-items:center;
+    margin-left:6px;
+    color:#00eaff;
+    font-weight:700;
+    text-decoration:none;
+    white-space:nowrap;
+}
+.restricted-source-link:hover{
+    color:#8ff7ff;
+    text-decoration:underline;
+}
+
+
+/* Long version lists: never squeeze summary/actions beside the chevrons.
+   JS toggles .versions-overflowing only when the pill row truly overflows. */
+.detail-version-nav.versions-overflowing{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    grid-template-areas:
+        "versions versions"
+        "summary actions";
+    align-items:center;
+    column-gap:12px;
+    row-gap:8px;
+}
+.detail-version-nav.versions-overflowing .model-version-strip{
+    grid-area:versions;
+    width:100%;
+    min-width:0;
+    margin:0;
+}
+.detail-version-nav.versions-overflowing .model-version-summary-text{
+    grid-area:summary;
+    width:100%;
+    min-width:0;
+    overflow-x:auto;
+    overflow-y:hidden;
+    flex-wrap:nowrap;
+    scrollbar-width:none;
+}
+.detail-version-nav.versions-overflowing .model-version-summary-text::-webkit-scrollbar{display:none}
+.detail-version-nav.versions-overflowing .model-version-summary-text span{
+    flex:0 0 auto;
+    max-width:none;
+    overflow:visible;
+    text-overflow:clip;
+}
+.detail-version-nav.versions-overflowing .detail-version-actions{
+    grid-area:actions;
+    justify-self:end;
+    margin-left:0;
+}
+
+
+/* Compact version rows should use only the space their pills need. The
+   summary/actions keep their natural width in the remaining space. */
+.detail-version-nav:not(.versions-overflowing) .model-version-strip{
+    width:auto;
+    min-width:0;
+    flex:0 1 auto;
+    margin:0;
+}
+.detail-version-nav:not(.versions-overflowing) .model-version-row{
+    width:auto;
+}
+.detail-version-nav:not(.versions-overflowing) .model-version-summary-text{
+    flex:0 1 auto;
+    overflow:visible;
+}
+.detail-version-nav:not(.versions-overflowing) .model-version-summary-text span{
+    flex:0 0 auto;
+    min-width:auto;
+    max-width:none;
+    overflow:visible;
+    text-overflow:clip;
+}
+
+/* =========================
+   DETAIL PAGE VISUAL POLISH
+   ModelRadar cyan hierarchy + consistent surfaces.
+========================= */
+.model-panel,
+.model-detail {
+    background:#050708;
+}
+
+.model-detail section {
+    border-bottom:1px solid rgba(0,234,255,.28) !important;
+}
+
+.model-detail h3 {
+    color:#00eaff;
+    font-weight:750;
+    letter-spacing:.01em;
+}
+
+.detail-stats div,
+.info-card {
+    background:rgba(17,25,27,.92);
+    border:1px solid rgba(0,234,255,.24);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.018);
+}
+
+.detail-stats div:hover,
+.info-card:hover {
+    border-color:rgba(0,234,255,.72);
+    background:rgba(0,234,255,.055);
+    box-shadow:0 0 16px rgba(0,234,255,.09);
+}
+
+.detail-stats strong,
+.info-card strong {
+    color:#55ddec;
+    letter-spacing:.07em;
+}
+
+.detail-stats span,
+.info-card span {
+    color:#f3f7f8;
+}
+
+.tag {
+    background:rgba(0,234,255,.07);
+    border:1px solid rgba(0,234,255,.25);
+    color:#d8f9fc;
+    padding:7px 13px;
+}
+.tag:hover {
+    background:rgba(0,234,255,.13);
+    border-color:rgba(0,234,255,.62);
+    color:#fff;
+}
+
+.description-toggle {
+    appearance:none;
+    margin-top:14px;
+    padding:8px 14px;
+    border:1px solid rgba(0,234,255,.42);
+    border-radius:999px;
+    background:rgba(0,234,255,.055);
+    color:#dffcff;
+    font:inherit;
+    font-size:.86rem;
+    cursor:pointer;
+    transition:border-color .15s ease,background .15s ease,color .15s ease,box-shadow .15s ease;
+}
+.description-toggle:hover {
+    border-color:#00eaff;
+    background:rgba(0,234,255,.11);
+    color:#00eaff;
+    box-shadow:0 0 12px rgba(0,234,255,.08);
+}
+
+/* Avoid the old gray footer band when detail content is shorter than the panel. */
+#modelDetails {
+    background:#050708;
+    min-height:100%;
+}
+
+
+/* =========================================================
+   Model Detail polish v2
+   Final separator/background cleanup
+   ========================================================= */
+
+/* Title/source divider: subtle ModelRadar cyan instead of neutral gray. */
+.model-detail .detail-header,
+.model-detail .model-detail-header,
+.model-detail .model-header,
+.model-detail > .detail-top,
+.model-detail > .detail-actions:first-of-type {
+    border-bottom-color: rgba(0, 234, 255, 0.34) !important;
+}
+
+/* If the current template applies the rule to the first section after header. */
+.model-detail .detail-header + *,
+.model-detail .model-header + * {
+    border-top-color: rgba(0, 234, 255, 0.34);
+}
+
+/* Eliminate the residual gray footer/inner-bottom strip. */
+.model-detail,
+.model-detail .detail-body,
+.model-detail .detail-content,
+.model-detail .model-detail-content,
+.model-detail .detail-footer,
+.model-detail .model-detail-footer,
+.model-modal,
+.model-modal .modal-content,
+.model-modal .modal-body {
+    background-color: #000 !important;
+}
+
+/* Remove any second bottom rule inside the card. */
+.model-detail .detail-footer,
+.model-detail .model-detail-footer,
+.model-detail > *:last-child {
+    border-bottom-color: transparent !important;
+}
+
+/* Catch pseudo-element/shadow footer separators. */
+.model-detail::after,
+.model-detail .detail-content::after,
+.model-detail .model-detail-content::after {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+
+/* Preserve the intended outer cyan edge as the only bottom boundary. */
+.model-detail {
+    border-bottom-color: rgba(0, 234, 255, 0.46) !important;
+}
+
+
+/* =========================================================
+   Model Detail polish v3
+   Exact remaining cleanup
+   ========================================================= */
+
+/* This is the line visually separating the title/source row from versions.
+   It belongs to the version navigation, not the header wrapper. */
+.detail-version-nav {
+    border-top:1px solid rgba(0,234,255,.34) !important;
+}
+
+/* The scroll viewport and outer panel can be visible below/around the inner
+   detail content. Keep every exposed detail surface true black so there is no
+   gray footer band or clipped-looking bottom region. */
+.model-panel,
+#modelDetails,
+.model-detail {
+    background:#000 !important;
+}
+
+#modelDetails {
+    min-height:100%;
+}
+
+/* TensorHub gated/download state should not recolor version navigation.
+   Keep sibling/version pills in the normal ModelRadar cyan treatment; actual
+   access state is communicated inside the download workflow itself. */
+.model-detail[data-source="tensorhub"] .model-version-pill,
+.model-detail[data-source="tensorhub"] .model-version-pill.gated {
+    border-color:rgba(0,234,255,.36) !important;
+    background:rgba(0,234,255,.07) !important;
+    color:#d8f9fc !important;
+    box-shadow:none;
+}
+
+.model-detail[data-source="tensorhub"] .model-version-pill:hover,
+.model-detail[data-source="tensorhub"] .model-version-pill.gated:hover {
+    border-color:#00eaff !important;
+    background:rgba(0,234,255,.12) !important;
+    color:#fff !important;
+}
+
+.model-detail[data-source="tensorhub"] .model-version-pill.selected,
+.model-detail[data-source="tensorhub"] .model-version-pill.gated.selected {
+    border-color:#00eaff !important;
+    background:rgba(0,234,255,.16) !important;
+    color:#dffcff !important;
+    box-shadow:
+        0 0 0 1px rgba(0,234,255,.12),
+        0 0 16px rgba(0,234,255,.08) !important;
+}
+
+
+/* =========================================================
+   Model Detail polish v6
+   Real footer-gap fix
+   ========================================================= */
+
+/* The old detail layout reserved its own footer space even after all footer
+   content was removed. Let the final content section define the bottom edge. */
+.model-detail {
+    padding-bottom:0 !important;
+}
+
+/* Normal sections keep ModelRadar dividers, but the final section must not draw
+   a divider that visually promises another section below it. */
+.model-detail > section:last-of-type {
+    border-bottom:0 !important;
+    margin-bottom:0 !important;
+    padding-bottom:28px !important;
+}
+
+/* Ensure the scroll surface ends in the same black as the content. */
+#modelDetails,
+.model-panel,
+.model-detail {
+    background:#000 !important;
+}
+
+
+/* =========================================================
+   Model Detail polish v7
+   Structural footer cleanup
+   ========================================================= */
+
+/* Tags is the real final content block. It should end the page naturally,
+   without drawing a divider that suggests another footer follows it. */
+.model-detail > .tags-section,
+.model-detail .tags-section {
+    background:#000 !important;
+    border-bottom:0 !important;
+    margin-bottom:0 !important;
+    padding-bottom:26px !important;
+}
+
+/* The root and scroll viewport use one continuous surface through the final
+   content block and rounded panel edge. */
+.model-detail,
+#modelDetails,
+.model-panel {
+    background:#000 !important;
+}
+
+/* No generated decoration is allowed to recreate a footer separator. */
+.model-detail .tags-section::after,
+.model-detail .tags-section::before {
+    content:none !important;
+    display:none !important;
+}
+
+
+/* =========================================================
+   Detail canvas normalization
+   One continuous pure-black viewer surface
+   ========================================================= */
+
+/* The legacy detail stylesheet used #080808 on several structural wrappers.
+   Keep content cards/pills accented, but make the viewer canvas itself #000. */
+.model-panel,
+#modelDetails,
+.model-detail,
+.model-detail > .detail-header,
+.model-detail > .media-filebar,
+.model-detail > .media-viewer,
+.model-detail > .media-toolbar,
+.model-detail > .media-files-panel,
+.model-detail > .detail-info,
+.model-detail > .detail-stats,
+.model-detail > section,
+.model-detail .model-description-section,
+.model-detail .model-info,
+.model-detail .tags-section {
+    background:#000 !important;
+}
+
+/* The header previously used rgba(8,8,8,.985), which was the most visible
+   source of the #080808 canvas difference. */
+.detail-header {
+    background:#000 !important;
+}
+
+/* Preserve transparency where a child should simply reveal the black canvas. */
+.detail-info,
+.detail-stats,
+.info-grid,
+.tag-list {
+    background:transparent !important;
+}
+
+
+/* =========================================================
+   Updates 2.0 — installed/current version summary
+   ========================================================= */
+
+.download-update-line {
+    display:flex;
+    align-items:center;
+    gap:12px;
+    flex-wrap:wrap;
+}
+
+.download-update-path {
+    color:#cfd8dc;
+    font-size:12px;
+}
+
+.download-update-path strong {
+    color:#fff;
+    font-weight:650;
+}
+
+.download-update-arrow {
+    color:#00eaff;
+    padding:0 4px;
+}
+
+.installed-versions-panel {
+    margin:0 16px 10px;
+    border:1px solid rgba(0,234,255,.18);
+    border-radius:8px;
+    background:rgba(0,234,255,.025);
+}
+
+.installed-versions-panel > summary {
+    cursor:pointer;
+    padding:9px 12px;
+    color:#dfe7e9;
+    font-size:12px;
+    user-select:none;
+}
+
+.installed-versions-panel > summary:hover {
+    color:#00eaff;
+}
+
+.installed-versions-list {
+    border-top:1px solid rgba(0,234,255,.14);
+    padding:5px 10px 8px;
+}
+
+.installed-version-row {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:7px 2px;
+    color:#c4cbcd;
+    font-size:11px;
+}
+
+.installed-version-row strong {
+    color:#fff;
+}
+
+.installed-version-newest {
+    margin-left:7px;
+    color:#00eaff;
+    font-size:10px;
+}
+
+.download-extra-files-section {
+    margin-top:10px;
+    padding-top:10px;
+    border-top:1px solid rgba(0,234,255,.16);
+}
+
+.download-extra-files-section[hidden] {
+    display:none !important;
+}
+
+.download-extra-files-heading {
+    margin:0 0 7px;
+    color:#8fdde4;
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+}
+
+/* The view toggle now belongs at the end of the drawer rather than above the
+   files it controls. */
+.download-filter-banner {
+    margin-top:14px;
+    border-top:1px solid rgba(0,234,255,.18);
+    padding-top:10px;
+}
+
+
+/* =========================================================
+   Download drawer revision summary
+   ========================================================= */
+
+.download-header {
+    align-items:flex-start;
+}
+
+.download-header-right {
+    display:flex;
+    align-items:center;
+    gap:14px;
+    margin-left:auto;
+}
+
+.download-installed-summary {
+    display:flex;
+    flex-direction:column;
+    align-items:flex-end;
+    gap:2px;
+    min-width:0;
+    color:#8da2a7;
+    font-size:11px;
+    line-height:1.2;
+}
+
+.download-installed-summary strong {
+    max-width:360px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    color:#fff;
+    font-size:13px;
+    font-weight:700;
+}
+
+.installed-versions-panel {
+    margin-bottom:6px !important;
+}
+
+.installed-versions-panel + .download-content {
+    padding-top:6px !important;
+}
+
+.download-filter-banner {
+    position:relative;
+    z-index:2;
+    margin:10px 0 !important;
+}
+
+
+/* =========================================================
+   Download drawer: right-anchored installed revision
+   ========================================================= */
+
+/* The right side owns its edge next to Close. Long installed labels grow
+   toward the left instead of moving the close button or centering themselves. */
+.download-header-right {
+    margin-left:auto;
+    display:grid;
+    grid-template-columns:minmax(0, auto) auto;
+    align-items:center;
+    justify-content:end;
+    column-gap:16px;
+    flex:0 1 58%;
+    min-width:0;
+}
+
+.download-installed-summary {
+    justify-self:end;
+    min-width:0;
+    max-width:100%;
+    align-items:flex-end;
+    text-align:right;
+}
+
+.download-installed-summary span,
+.download-installed-summary strong {
+    text-align:right;
+}
+
+.download-installed-summary strong {
+    display:block;
+    max-width:min(560px, 46vw);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+/* Keep Close pinned to the extreme right regardless of installed-name length. */
+.download-header-right .download-close {
+    justify-self:end;
+    flex:0 0 auto;
+}
+
+/* On narrower drawers give the installed label room without colliding with
+   the left-side status text. */
+@media (max-width: 980px) {
+    .download-header-right {
+        flex-basis:48%;
+    }
+
+    .download-installed-summary strong {
+        max-width:38vw;
+    }
+}
+
+
+/* =========================================================
+   Download drawer header refinement
+   - remove redundant drawer X
+   - drop installed summary one row lower
+   ========================================================= */
+
+.download-header-right .download-close {
+    display:none !important;
+}
+
+.download-header-right {
+    /* With the redundant X gone, the installed summary can own the right edge. */
+    grid-template-columns:minmax(0, auto);
+    padding-right:18px;
+}
+
+/* Move the two-line installed summary down one visual row:
+   "Newest installed" occupies the former filename row,
+   installed filename/version occupies the status row. */
+.download-installed-summary {
+    transform:translateY(25px);
+    padding-right:0;
+}
+
+.download-installed-summary strong {
+    max-width:min(620px, 50vw);
+}
+
+@media (max-width: 980px) {
+    .download-installed-summary strong {
+        max-width:44vw;
+    }
+}
+
+
+/* =========================================================
+   Download drawer final spacing polish
+   ========================================================= */
+
+/* Match the right inset of the installed summary to the drawer's left inset. */
+.download-header-right {
+    padding-right:26px;
+}
+
+/* Pull the source/file section upward so the header and file content read as
+   one compact drawer rather than two separated panels. */
+.download-body {
+    padding-top:14px !important;
+}
+
+.download-source-section:first-child,
+.download-source-group:first-child,
+.download-source:first-child {
+    margin-top:0 !important;
+}
+
+/* =========================================================
+   Download drawer: final installed-summary alignment
+   ========================================================= */
+
+/* Stop the installed summary from being positioned by the header's flex/grid
+   width. Anchor it directly to the drawer's right edge instead. This keeps the
+   right inset consistent with the drawer padding and makes long labels grow
+   leftward naturally. */
+.detail-header .download-header {
+    position:sticky;
+}
+
+.detail-header .download-header-right {
+    position:absolute;
+    right:26px;
+    bottom:20px;
+    width:auto;
+    max-width:58%;
+    margin:0;
+    padding:0;
+    display:block;
+}
+
+.detail-header .download-installed-summary {
+    transform:none;
+    margin:0;
+    padding:0;
+    display:flex;
+    flex-direction:column;
+    align-items:flex-end;
+    text-align:right;
+}
+
+.detail-header .download-installed-summary span,
+.detail-header .download-installed-summary strong {
+    width:auto;
+    max-width:min(680px, 52vw);
+    text-align:right;
+}
+
+.detail-header .download-installed-summary strong {
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+@media (max-width: 980px) {
+    .detail-header .download-header-right {
+        right:18px;
+        max-width:52%;
+    }
+
+    .detail-header .download-installed-summary span,
+    .detail-header .download-installed-summary strong {
+        max-width:46vw;
+    }
+}
+
+/* =========================================================
+   Download drawer: true symmetric right anchor
+   ========================================================= */
+
+/* An older rule gives every direct div in .download-header width:100%.
+   Override it with greater specificity so the installed summary actually
+   shrink-wraps and can sit against the right inset. */
+.detail-header .download-header > .download-header-right {
+    width:auto !important;
+    right:20px !important;
+    left:auto !important;
+    max-width:58%;
+}
+
+.detail-header .download-header > .download-header-right .download-installed-summary {
+    width:auto !important;
+    margin-left:auto;
+}
+
+
+/* =========================================================
+   Opened model frame — restore source-color ownership
+   =========================================================
+   modal.js copies the active/primary card source color onto
+   .model-panel as --detail-source-color. Keep the actual outer
+   frame tied to that value instead of the generic cyan fallback.
+*/
+.model-panel {
+    border-color:color-mix(
+        in srgb,
+        var(--detail-source-color, #00eaff) 72%,
+        transparent
+    ) !important;
+
+    box-shadow:
+        0 20px 60px rgba(0,0,0,.58),
+        0 0 0 1px color-mix(
+            in srgb,
+            var(--detail-source-color, #00eaff) 12%,
+            transparent
+        ),
+        0 0 24px color-mix(
+            in srgb,
+            var(--detail-source-color, #00eaff) 10%,
+            transparent
+        ) !important;
+}
+
+.model-version-pill.paid-access{border-color:rgba(255,92,138,.48);background:rgba(255,92,138,.08);color:#ff9db8}.model-version-pill.paid-access.selected{border-color:#ff6b96;background:rgba(255,92,138,.14);box-shadow:0 0 14px rgba(255,92,138,.08)}
+
+/* Persistent Maturity preference: keep all media in a mature detail card
+   blurred when Settings -> Maturity is set to Blur Mature. */
+.model-detail.sensitive-blurred .media-container .media-item,
+.model-detail.sensitive-blurred .media-container img,
+.model-detail.sensitive-blurred .media-container video {
+    filter: blur(18px);
+    transform: scale(1.06);
+}
+
+
+/* Per-card local-install extras and safe download management. */
+.download-management{
+    margin:18px 22px 22px;
+    padding-top:16px;
+    border-top:1px solid rgba(255,255,255,.10);
+    display:grid;
+    gap:16px;
+}
+.download-sidecar-options,.download-manage-actions{display:grid;gap:10px}
+.download-sidecar-options>strong,.download-manage-actions>strong{font-size:.92rem;color:#e8f6f8}
+.download-sidecar-options label{display:inline-flex;align-items:center;gap:8px;margin-right:18px;color:#c9dadd}
+.download-sidecar-options>span,.download-manage-actions>span{font-size:.78rem;color:#82989d;line-height:1.45}
+.download-manage-actions>div{display:flex;gap:10px;flex-wrap:wrap}
+.clear-model-download-history,.delete-model-local-files{
+    border:1px solid rgba(0,234,255,.42);background:rgba(0,0,0,.24);color:#bfeff4;
+    border-radius:10px;padding:8px 12px;cursor:pointer;font:inherit
+}
+.clear-model-download-history:hover{border-color:#00eaff;color:#00eaff}
+.delete-model-local-files{border-color:rgba(255,105,125,.5);color:#ffc1ca}
+.delete-model-local-files:hover{border-color:#ff697d;background:rgba(100,18,32,.22)}
+
+
+/* Download-management file picker */
+.download-file-picker-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, .72);
+    backdrop-filter: blur(5px);
+}
+
+.download-file-picker {
+    width: min(760px, 94vw);
+    max-height: min(760px, 88vh);
+    overflow: auto;
+    border: 1px solid rgba(0, 234, 255, .42);
+    border-radius: 22px;
+    background: #081114;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
+    padding: 22px;
+}
+
+.download-file-picker-head,
+.download-file-picker-footer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.download-file-picker-head strong {
+    flex: 1;
+    font-size: 1.35rem;
+}
+
+.download-file-picker-close {
+    border: 0;
+    background: transparent;
+    color: #d8e7eb;
+    font-size: 2rem;
+    cursor: pointer;
+}
+
+.download-file-picker-note {
+    margin: 10px 0 18px;
+    color: #91a8ae;
+    line-height: 1.5;
+}
+
+.download-file-picker-list {
+    display: grid;
+    gap: 10px;
+}
+
+.download-file-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 15px 16px;
+    border: 1px solid rgba(125, 164, 175, .25);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, .025);
+    cursor: pointer;
+}
+
+.download-file-picker-row input { width: 20px; height: 20px; }
+.download-file-picker-row span { min-width: 0; display: grid; gap: 4px; }
+.download-file-picker-row strong { overflow-wrap: anywhere; }
+.download-file-picker-row small { color: #829aa1; }
+
+.download-file-picker-footer { margin-top: 20px; }
+.download-file-picker-footer-spacer { flex: 1; }
+.download-file-picker-footer button {
+    border: 1px solid rgba(0, 234, 255, .42);
+    border-radius: 999px;
+    padding: 10px 17px;
+    background: transparent;
+    color: #d8f7fb;
+    cursor: pointer;
+}
+.download-file-picker-footer .download-file-picker-apply { color: #62f1ff; }
+.download-file-picker-footer .download-file-picker-apply.destructive {
+    border-color: rgba(255, 87, 112, .65);
+    color: #ff8ca0;
+}
+
+@media (max-width: 680px) {
+    .download-file-picker-footer { flex-wrap: wrap; }
+    .download-file-picker-footer-spacer { display: none; }
+}

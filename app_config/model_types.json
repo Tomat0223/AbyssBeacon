@@ -1,0 +1,98 @@
+{
+    "Checkpoint": {
+        "enabled": true,
+        "keywords": [
+            "checkpoint",
+            "ckpt"
+        ]
+    },
+    "LoRA": {
+        "enabled": true,
+        "keywords": [
+            "lora",
+            "lycoris",
+            "loha"
+        ]
+    },
+    "Workflow": {
+        "enabled": true,
+        "keywords": [
+            "workflow",
+            "wkfl"
+        ]
+    },
+    "Embedding": {
+        "enabled": true,
+        "keywords": [
+            "embedding",
+            "textual inversion"
+        ]
+    },
+    "ControlNet": {
+        "enabled": true,
+        "keywords": [
+            "controlnet",
+            "control net"
+        ]
+    },
+    "Upscaler": {
+        "enabled": true,
+        "keywords": [
+            "upscaler",
+            "esrgan",
+            "realesrgan"
+        ]
+    },
+    "VAE": {
+        "enabled": true,
+        "keywords": [
+            "vae"
+        ]
+    },
+    "Text Encoder": {
+        "enabled": true,
+        "keywords": [
+            "text encoder",
+            "text_encoder"
+        ]
+    },
+    "UNet": {
+        "enabled": true,
+        "keywords": [
+            "unet",
+            "u-net"
+        ]
+    },
+    "CLIP Vision": {
+        "enabled": false,
+        "keywords": [
+            "clip vision",
+            "clip_vision"
+        ]
+    },
+    "Motion": {
+        "enabled": false,
+        "keywords": [
+            "motion",
+            "motion module"
+        ]
+    },
+    "VLM": {
+        "enabled": true,
+        "keywords": [
+            "vlm",
+            "vision language"
+        ]
+    },
+    "LLM": {
+        "enabled": true,
+        "keywords": [
+            "llm",
+            "language model"
+        ]
+    },
+    "Other": {
+        "enabled": true,
+        "keywords": []
+    }
+}

@@ -1,0 +1,44 @@
+<div class="filter-dropdown type-filter" data-filter="modelType">
+
+                <input 
+                    type="hidden"
+                    id="modelTypeFilter"
+                    value="">
+
+                <button class="filter-button">
+
+                    <span>Model Types</span>
+                    <span class="filter-arrow">▾</span>
+
+                </button>
+
+
+                <div class="filter-menu">
+
+                    <div class="filter-option"
+                        data-value=""
+                        data-label="Model Types">
+                        All Model Types
+                    </div>
+
+
+                    {% for type in model_types %}
+
+                    <div class="filter-option"
+                        data-value="{{ type }}">
+                        {{ type }}
+                    </div>
+
+                    {% endfor %}
+
+
+                        <div class="filter-option"
+                        data-value="Other">
+                        Other
+                    </div>
+
+
+                </div>
+
+
+            </div>

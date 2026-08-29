@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ creator }} · AbyssBeacon</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reset.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/cards.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/badges.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/detail.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/download.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/gallery.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/fullscreen.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/creator.css') }}">
+
+    <!-- Shared AbyssBeacon navbar -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/layout.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/dropdowns.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/options.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/scan.css') }}">
+    <style>
+        /* Creator profile hierarchy polish */
+        .creator-profile-hero {
+            min-height: 0 !important;
+            padding: 22px 32px !important;
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) minmax(330px, 460px) !important;
+            align-items: center !important;
+            gap: 36px !important;
+        }
+        .creator-profile-identity {
+            align-self: center !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            justify-content: center !important;
+            gap: 0 !important;
+            min-width: 0 !important;
+        }
+        .creator-profile-identity .creator-kicker { margin-bottom: 12px !important; }
+        .creator-profile-identity .creator-name-row { width: 100% !important; min-width: 0 !important; }
+        .creator-profile-identity .creator-name-row h1 {
+            margin: 0 !important;
+            line-height: 1.02 !important;
+            overflow-wrap: anywhere;
+        }
+        .creator-profile-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 14px;
+        }
+        .creator-profile-actions .creator-header-icon { flex: 0 0 auto !important; }
+        .creator-profile-tools {
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: flex-end !important;
+            justify-content: center !important;
+            gap: 14px !important;
+        }
+        .creator-profile-tools .creator-found-sources {
+            width: 100% !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: flex-end !important;
+            gap: 10px !important;
+            margin: 0 !important;
+        }
+        .creator-profile-tools .creator-found-label { text-align: right !important; }
+        .creator-profile-tools .creator-source-pills {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            justify-content: flex-end !important;
+            gap: 10px !important;
+        }
+        .creator-profile-tools .creator-scan-choice-row {
+            width: 100% !important;
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 14px !important;
+        }
+        .creator-profile-tools .creator-mode-button {
+            width: 100% !important;
+            min-height: 44px !important;
+            padding: 8px 18px !important;
+            font-size: 15px !important;
+            border-radius: 999px !important;
+        }
+
+        /* Restore the AbyssBeacon pill treatment on dialog secondary actions. */
+        .creator-scan-dialog-actions .creator-dialog-cancel,
+        .creator-block-dialog-actions .creator-dialog-cancel {
+            appearance: none !important;
+            border: 1px solid rgba(0, 234, 255, .45) !important;
+            border-radius: 999px !important;
+            background: rgba(4, 15, 18, .92) !important;
+            color: #dffcff !important;
+            min-height: 46px !important;
+            padding: 0 22px !important;
+            font: inherit !important;
+            cursor: pointer !important;
+            transition: border-color .18s ease, background .18s ease, transform .18s ease !important;
+        }
+        .creator-scan-dialog-actions .creator-scan-btn,
+        .creator-block-dialog-actions .creator-scan-btn {
+            min-height: 46px !important;
+            padding: 0 22px !important;
+            border-radius: 999px !important;
+            font: inherit !important;
+        }
+        .creator-scan-dialog-actions {
+            align-items: center !important;
+            gap: 12px !important;
+        }
+        .creator-scan-dialog-actions .creator-dialog-cancel:hover,
+        .creator-block-dialog-actions .creator-dialog-cancel:hover {
+            border-color: #00eaff !important;
+            background: rgba(0, 234, 255, .08) !important;
+            transform: translateY(-1px);
+        }
+        
+        .creator-profile-tools .creator-single-scan-row {
+            display: flex !important;
+            justify-content: flex-end !important;
+            align-items: center !important;
+            align-self: stretch !important;
+            width: 100% !important;
+            margin-left: auto !important;
+        }
+        .creator-profile-tools .creator-single-scan-row .creator-mode-button {
+            width: 250px !important;
+            max-width: 100% !important;
+            flex: 0 0 auto !important;
+            margin-left: auto !important;
+            margin-right: 0 !important;
+        }
+        .creator-scan-mode-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 4px 0 20px; }
+        .creator-scan-mode-picker label { display: flex; gap: 12px; align-items: flex-start; min-height: 150px; padding: 18px; border: 1px solid rgba(130,160,170,.25); border-radius: 16px; cursor: pointer; }
+        .creator-scan-mode-picker label:has(input:checked) { border-color: rgba(0,234,255,.7); background: rgba(0,234,255,.055); }
+        .creator-scan-mode-picker input { margin-top: 4px; accent-color: #00eaff; }
+        .creator-scan-mode-picker span { display: grid; gap: 4px; }
+        .creator-scan-mode-picker small { color: #8fa8b0; line-height: 1.4; }
+
+        /* Deep creator scans can spend several minutes inside one source.
+           Keep their status visible regardless of where the user is on the page. */
+        .creator-page .creator-scan-status {
+            position: fixed;
+            top: 76px;
+            right: 24px;
+            z-index: 2600;
+            width: min(520px, calc(100vw - 48px));
+            margin: 0;
+            padding: 11px 14px;
+            border: 1px solid rgba(0,234,255,.55);
+            border-radius: 14px;
+            background: rgba(5, 11, 13, .96);
+            box-shadow: 0 12px 34px rgba(0,0,0,.45), 0 0 18px rgba(0,234,255,.10);
+            backdrop-filter: blur(10px);
+        }
+
+        .creator-page .creator-scan-status[hidden] {
+            display: none !important;
+        }
+
+        .creator-page .creator-scan-status-head {
+            align-items: center;
+            gap: 16px;
+        }
+
+        .creator-page #creatorScanMessage {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 650;
+        }
+
+        .creator-page #creatorScanCounts {
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+
+        .creator-page .creator-scan-track {
+            height: 2px;
+            margin-top: 8px;
+            border-radius: 999px;
+        }
+
+        @media (max-width: 760px) {
+            .creator-page .creator-scan-status {
+                top: 72px;
+                left: 12px;
+                right: 12px;
+                width: auto;
+            }
+            .creator-page .creator-scan-status-head {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 4px;
+            }
+        }
+        @media (max-width: 980px) {
+            .creator-scan-mode-picker { grid-template-columns: 1fr; }
+        }
+        .creator-targeted-options[hidden] { display: none !important; }
+        @media (max-width: 980px) {
+            .creator-profile-hero {
+                grid-template-columns: 1fr !important;
+                gap: 32px !important;
+            }
+            .creator-profile-tools { align-items: flex-start !important; }
+            .creator-profile-tools .creator-found-sources { align-items: flex-start !important; }
+            .creator-profile-tools .creator-found-label { text-align: left !important; }
+            .creator-profile-tools .creator-source-pills { justify-content: flex-start !important; }
+        }
+        @media (max-width: 620px) {
+            .creator-profile-hero { padding: 22px 22px !important; }
+            .creator-profile-tools .creator-scan-choice-row { grid-template-columns: 1fr !important; }
+        }
+
+        .creator-source-link {
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .creator-source-link:hover {
+            color: var(--source-color, #00eaff) !important;
+            border-color: var(--source-color, #00eaff) !important;
+            box-shadow: 0 0 12px color-mix(in srgb, var(--source-color, #00eaff) 28%, transparent);
+        }
+        .creator-source-discovery-details {
+            padding: 0 !important;
+            overflow: hidden;
+        }
+        .creator-source-discovery-summary {
+            min-height: 76px;
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 18px;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+        .creator-source-discovery-summary::-webkit-details-marker { display: none; }
+        .creator-source-discovery-summary > div {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .creator-source-discovery-chevron {
+            color: #00eaff;
+            font-size: 24px;
+            line-height: 1;
+            transition: transform .18s ease;
+        }
+        .creator-source-discovery-details[open] .creator-source-discovery-chevron {
+            transform: rotate(180deg);
+        }
+        .creator-source-discovery-body {
+            padding: 0 24px 20px;
+            border-top: 1px solid rgba(0,234,255,.12);
+        }
+        .creator-source-check-actions {
+            padding-top: 16px;
+        }
+        .creator-source-check-hint {
+            color: #8fa8b0;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body class="creator-page">
+    {% include "components/navbar.html" %}
+
+    <main class="creator-shell">
+        <section class="creator-hero creator-profile-hero">
+            <div class="creator-heading creator-profile-identity">
+                <div class="creator-kicker">CREATOR</div>
+                <div class="creator-name-row"><h1>{{ creator }}</h1></div>
+                <div class="creator-profile-actions" aria-label="Creator actions">
+                    <button id="creatorFavoriteBtn" class="creator-header-icon creator-favorite-btn {{ 'is-favorite' if creator_favorite else '' }}" type="button" data-favorite="{{ 'true' if creator_favorite else 'false' }}" data-tooltip="{{ 'Remove Favorite' if creator_favorite else 'Favorite Creator' }}" title="{{ 'Remove Favorite' if creator_favorite else 'Favorite Creator' }}" aria-label="{{ 'Remove Favorite' if creator_favorite else 'Favorite Creator' }}">{{ '♥' if creator_favorite else '♡' }}</button>
+                    {% if source_counts %}
+                    <button id="creatorBlockBtn" class="creator-header-icon creator-block-btn {{ 'is-blocked' if blocked_sources and blocked_sources|length >= source_counts|length else '' }}" type="button" data-blocked="{{ 'true' if blocked_sources and blocked_sources|length >= source_counts|length else 'false' }}" data-tooltip="{{ 'Unblock Creator' if blocked_sources and blocked_sources|length >= source_counts|length else 'Block Creator' }}" title="{{ 'Unblock Creator' if blocked_sources and blocked_sources|length >= source_counts|length else 'Block Creator' }}" aria-label="{{ 'Unblock Creator' if blocked_sources and blocked_sources|length >= source_counts|length else 'Block Creator' }}"><span aria-hidden="true">⊘</span></button>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="creator-quick-actions creator-profile-tools">
+                {% if source_counts %}
+                <div class="creator-found-sources" aria-label="Sources containing this creator">
+                    <span class="creator-found-label">Found on</span>
+                    <div class="creator-source-pills">
+                        {% for source, count in source_counts.items() %}
+                        {% set creator_source_url = creator_source_urls.get(source) %}
+                        {% if creator_source_url %}
+                        <a class="creator-source-pill creator-source-link"
+                           data-source="{{ source }}"
+                           href="{{ creator_source_url }}"
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           title="Open {{ sources.get(source, {}).get('display', source|capitalize) }} creator page"
+                           style="--source-color: {{ sources.get(source, {}).get('color', '#00eaff') }}">
+                            {{ sources.get(source, {}).get('display', source|capitalize) }} · {{ count }}
+                        </a>
+                        {% else %}
+                        <span class="creator-source-pill" data-source="{{ source }}" style="--source-color: {{ sources.get(source, {}).get('color', '#00eaff') }}">
+                            {{ sources.get(source, {}).get('display', source|capitalize) }} · {{ count }}
+                        </span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
+                <div class="creator-scan-choice-row creator-single-scan-row">
+                    <button id="openCreatorScanBtn" class="creator-mode-button is-primary" type="button">Creator Scan</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="creator-stats">
+            <div><strong>{{ model_count }}</strong><span>models</span></div>
+            <div><strong>{{ new_count }}</strong><span>new</span></div>
+            <div><strong>{{ "{:,}".format(total_downloads) }}</strong><span>downloads</span></div>
+            <div><strong>{{ "{:,}".format(total_likes) }}</strong><span>likes</span></div>
+        </section>
+
+        <details class="creator-source-check-card creator-source-discovery-details">
+            <summary class="creator-source-discovery-summary">
+                <div>
+                    <span class="creator-history-label">CROSS-SOURCE DISCOVERY</span>
+                    <strong>Check this username across enabled sources</strong>
+                </div>
+                <span class="creator-source-discovery-chevron" aria-hidden="true">⌄</span>
+            </summary>
+            <div class="creator-source-discovery-body">
+                <div class="creator-source-check-head creator-source-check-actions">
+                    <span class="creator-source-check-hint">Find matching creator accounts without changing this creator's stored models.</span>
+                    <button id="checkCreatorSources" class="creator-secondary-btn" type="button">Check Sources</button>
+                </div>
+                <div id="creatorSourceCheckResults" class="creator-source-check-results">
+                    {% for source in enabled_cross_source_sources %}
+                    <div class="creator-source-check-row" data-source="{{ source }}">
+                        <span class="creator-source-name">{{ sources.get(source, {}).get('display', source|capitalize) }}</span>
+                        <span class="creator-source-known">{{ source_counts.get(source, 0) }} stored</span>
+                        <span class="creator-source-status">Not checked</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="creator-source-check-note">Public username sources are checked by exact username. Sources with opaque account IDs, such as TensorHub, use creator identities AbyssBeacon has already learned from observed models. Matching usernames on another service are still only possible account matches, not proof of identity.</div>
+            </div>
+        </details>
+
+        <section class="creator-history-card">
+            <div class="creator-history-heading">
+                <div>
+                    <span class="creator-history-label">CREATOR SCAN HISTORY</span>
+                    {% if creator_last_scan %}
+                    <strong>Last creator scan {{ creator_last_scan.finished_ago }}</strong>
+                    {% else %}
+                    <strong>No creator scans recorded yet</strong>
+                    {% endif %}
+                </div>
+                {% if creator_last_scan %}
+                <span class="creator-history-summary">{{ creator_last_scan.processed }} processed · {{ creator_last_scan.added }} new · {{ creator_last_scan.updated }} updated</span>
+                {% endif %}
+            </div>
+            {% if creator_history %}
+            <details class="creator-history-details">
+                <summary>Recent scans</summary>
+                <div class="creator-history-list">
+                    {% for run in creator_history %}
+                    <div class="creator-history-row">
+                        <span>{{ run.finished_ago }}</span>
+                        <span>{{ 'Everything' if run.mode == 'everything' else ([run.architecture, run.model_type]|select|join(' · ')) }}</span>
+                        <span>{{ run.sources_list|join(' · ') }}</span>
+                        <span>{{ run.processed }} processed · {{ run.added }} new · {{ run.updated }} updated</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </details>
+            {% endif %}
+        </section>
+
+        <div class="creator-note">
+            Creator scans use an exact account/owner name on each enabled source. Targeted Scan stores only the selected architecture/type; Full Creator Scan stores the full creator catalog available from the source. ModelScope creator scans automatically continue through additional pages when a page returns 45 or more results. Matching usernames across services are shown together for discovery, but AbyssBeacon does not assume they are the same real-world person or organization.
+        </div>
+
+        <div id="creatorScanStatus" class="creator-scan-status" role="status" aria-live="polite" hidden>
+            <div class="creator-scan-status-head">
+                <span id="creatorScanMessage">Starting creator scan…</span>
+                <span id="creatorScanCounts"></span>
+            </div>
+            <div class="creator-scan-track"><div id="creatorScanPulse"></div></div>
+        </div>
+
+        <section class="creator-models-section">
+            <div class="creator-section-title">
+                <h2>Models in AbyssBeacon</h2>
+                <span>{{ model_count }} found</span>
+            </div>
+
+            {% if models %}
+            <div class="feed-grid creator-grid">
+                {% for model in models %}
+                    {% include "components/model_card.html" %}
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="creator-empty">
+                <strong>No models stored for {{ creator }} yet.</strong>
+                <span>Use Scan Creator to check the enabled model hubs for this exact account name.</span>
+            </div>
+            {% endif %}
+        </section>
+    </main>
+
+    <div id="modelOverlay" class="model-overlay">
+        <div class="model-panel"><div id="modelDetails"></div></div>
+    </div>
+
+    <div id="imageOverlay" class="image-overlay">
+        <button id="closeImage" class="close-image">×</button>
+        <button id="fullscreenPrev" class="fullscreen-nav fullscreen-prev" type="button" aria-label="Previous image">‹</button>
+        <div class="fullscreen-wrapper"><img id="fullscreenImage"></div>
+        <button id="fullscreenNext" class="fullscreen-nav fullscreen-next" type="button" aria-label="Next image">›</button>
+    </div>
+
+    <div id="settingsOverlay" class="settings-overlay" aria-hidden="true">
+        <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsOverlayTitle">
+            <div class="settings-modal-header">
+                <span id="settingsOverlayTitle">Settings</span>
+                <button id="closeSettingsOverlay" class="settings-modal-close" type="button" aria-label="Close settings">×</button>
+            </div>
+            <iframe id="settingsFrame" class="settings-frame" title="AbyssBeacon settings"></iframe>
+        </div>
+    </div>
+
+    <script id="favorite-creators-data" type="application/json">{{ favorite_creator_names | default([]) | tojson }}</script>
+    <script id="user-preferences" type="application/json">{{ preferences | default({}) | tojson }}</script>
+
+    <script>
+        try {
+            window.userPreferences = JSON.parse(
+                document.getElementById("user-preferences")?.textContent || "{}"
+            );
+        } catch (_) {
+            window.userPreferences = {};
+        }
+        window.MODELRADAR_CREATOR = {{ creator|tojson }};
+        window.MODELRADAR_CREATOR_SOURCES = {{ creator_sources|default([])|tojson }};
+        window.MODELRADAR_BLOCKED_SOURCES = {{ blocked_sources|default([])|tojson }};
+        window.MODELRADAR_ENABLED_CREATOR_SOURCES = {{ enabled_creator_sources|default([])|tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='js/scanner.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/search_sources.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/discovery.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/navbar.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/gallery.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/fullscreen.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+    <dialog id="creatorScanDialog" class="creator-scan-dialog">
+        <form method="dialog" class="creator-scan-dialog-card">
+            <div class="creator-dialog-heading">
+                <div>
+                    <span class="creator-dialog-kicker">CREATOR SCAN</span>
+                    <h2>Scan {{ creator }}</h2>
+                </div>
+                <button value="cancel" class="creator-dialog-x" aria-label="Close">×</button>
+            </div>
+
+            <div class="creator-scan-mode-picker" role="radiogroup" aria-label="Creator scan mode">
+                <label><input type="radio" name="creatorDialogScanMode" value="everything" checked><span><strong>Scan Everything</strong><small>All public models across every enabled creator source.</small></span></label>
+                <label><input type="radio" name="creatorDialogScanMode" value="matching"><span><strong>Matching Sources</strong><small>Known creator sources, limited to your enabled architectures.</small></span></label>
+                <label><input type="radio" name="creatorDialogScanMode" value="targeted"><span><strong>Targeted Scan</strong><small>Choose sources, architecture, or model type.</small></span></label>
+            </div>
+
+            <div id="creatorTargetedOptions" class="creator-targeted-options" hidden>
+                <div class="creator-dialog-fields">
+                    <label class="creator-dialog-field">
+                        <span>Architecture</span>
+                        <select id="creatorArchitecture">
+                            <option value="">All Architectures</option>
+                            {% for architecture in creator_architectures %}<option value="{{ architecture }}">{{ architecture }}</option>{% endfor %}
+                            <option value="Other">Other</option>
+                        </select>
+                    </label>
+                    <label class="creator-dialog-field">
+                        <span>Model Type</span>
+                        <select id="creatorModelType">
+                            <option value="">All Model Types</option>
+                            {% for model_type in creator_model_types %}<option value="{{ model_type }}">{{ model_type }}</option>{% endfor %}
+                            <option value="Other">Other</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="creator-dialog-sources">
+                    <span>Sources</span>
+                    <div id="creatorSourceSelect" class="creator-dialog-source-grid">
+                        {% for source in enabled_creator_sources %}
+                        <label><input type="checkbox" value="{{ source }}" checked><span>{{ sources.get(source, {}).get('display', source|capitalize) }}</span></label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <p class="creator-dialog-help">Choose an architecture or model type to narrow the creator catalog. Sources can be combined.</p>
+            </div>
+
+            <div class="creator-scan-dialog-actions">
+                <button value="cancel" class="creator-dialog-cancel">Cancel</button>
+                <button id="creatorScanSubmit" value="none" class="creator-scan-btn" type="button">Scan Creator</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog id="creatorBlockDialog" class="creator-block-dialog">
+        <form method="dialog" class="creator-block-dialog-card">
+            <h2 id="creatorBlockDialogTitle">Block Creator</h2>
+            <p id="creatorBlockDialogText"></p>
+            <label id="creatorRemoveExistingRow" class="creator-remove-existing">
+                <input id="creatorRemoveExisting" type="checkbox">
+                <span>Also remove this creator's existing AbyssBeacon models</span>
+            </label>
+            <p id="creatorBlockDialogNote" class="creator-block-dialog-note">Favorite models remain protected.</p>
+            <div class="creator-block-dialog-actions">
+                <button value="cancel" class="creator-dialog-cancel">Cancel</button>
+                <button id="creatorBlockDialogConfirm" value="default" class="creator-dialog-confirm">Block Creator</button>
+            </div>
+        </form>
+    </dialog>
+
+    <script src="{{ url_for('static', filename='js/creator.js') }}"></script>
+</body>
+</html>

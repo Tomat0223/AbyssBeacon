@@ -1,0 +1,372 @@
+.model-card {
+    position:relative;
+    aspect-ratio:5 / 6;
+    min-height:340px;
+    background:#0b0d0e;
+    border:1px solid color-mix(in srgb,var(--source-color) 38%,transparent);
+    border-radius:18px;
+    overflow:hidden;
+    cursor:pointer;
+    isolation:isolate;
+    transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease;
+}
+
+.model-card:hover {
+    transform:translateY(-5px);
+    border-color:var(--source-color);
+    box-shadow:0 0 20px color-mix(in srgb,var(--source-color) 42%,transparent),0 16px 34px rgba(0,0,0,.28);
+}
+
+/* NEW models use the whole card as the radar indicator. The brighter border is
+   always visible; the soft outer glow arrives periodically and disappears as
+   soon as data-status changes to seen. */
+.model-card[data-status="new"] {
+    border-color:color-mix(in srgb,var(--source-color) 78%,#00eaff 22%);
+    animation:modelRadarNewPulse 2.8s ease-out infinite;
+    animation-delay:var(--new-pulse-delay,0ms);
+}
+
+@keyframes modelRadarNewPulse {
+    0%,58%,100% {
+        box-shadow:0 0 0 0 rgba(0,234,255,0),0 0 10px color-mix(in srgb,var(--source-color) 16%,transparent);
+    }
+    72% {
+        box-shadow:0 0 0 1px rgba(0,234,255,.40),0 0 13px 4px rgba(0,234,255,.20),0 0 23px color-mix(in srgb,var(--source-color) 34%,transparent);
+    }
+    88% {
+        box-shadow:0 0 0 7px rgba(0,234,255,0),0 0 18px 7px rgba(0,234,255,0),0 0 13px color-mix(in srgb,var(--source-color) 18%,transparent);
+    }
+}
+
+.model-card[data-status="new"]:hover {
+    animation-play-state:paused;
+    box-shadow:0 0 22px color-mix(in srgb,var(--source-color) 48%,transparent),0 0 12px rgba(0,234,255,.16),0 16px 34px rgba(0,0,0,.28);
+}
+
+.card-image {
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    overflow:hidden;
+}
+
+.card-image img,
+.card-image video {
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    pointer-events:none;
+    transition:transform .35s ease,filter .25s ease;
+}
+
+.model-card:hover .card-image img,
+.model-card:hover .card-image video { transform:scale(1.035); }
+
+.card-image-shade {
+    position:absolute;
+    inset:0;
+    z-index:2;
+    pointer-events:none;
+    background:
+        linear-gradient(to bottom,rgba(0,0,0,.20) 0%,rgba(0,0,0,0) 26%),
+        linear-gradient(to top,rgba(3,5,6,.96) 0%,rgba(3,5,6,.82) 25%,rgba(3,5,6,.43) 48%,rgba(3,5,6,0) 69%);
+}
+
+.card-overlay-content {
+    position:absolute;
+    left:0;
+    right:0;
+    bottom:0;
+    z-index:6;
+    padding:64px 16px 15px;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    pointer-events:none;
+}
+
+.card-title { min-width:0; width:100%; }
+
+.card-title h2 {
+    margin:0;
+    color:#fff;
+    font-size:17px;
+    font-weight:750;
+    line-height:1.25;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    text-shadow:0 2px 10px rgba(0,0,0,.95);
+}
+
+.author-badge {
+    display:inline-flex;
+    align-items:center;
+    max-width:100%;
+    margin-top:7px;
+    padding:3px 9px;
+    border-radius:14px;
+    background:rgba(3,15,17,.62);
+    border:1px solid rgba(0,234,255,.23);
+    color:#00eaff;
+    font-size:11px;
+    text-decoration:none;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    pointer-events:auto;
+    backdrop-filter:blur(6px);
+    transition:.18s ease;
+}
+
+.author-badge:hover {
+    background:rgba(0,234,255,.14);
+    border-color:#00eaff;
+    box-shadow:0 0 10px rgba(0,234,255,.26);
+}
+
+.card-footer-row {
+    display:flex;
+    align-items:flex-end;
+    justify-content:space-between;
+    gap:10px;
+    min-width:0;
+}
+
+.model-card .badges {
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:6px;
+    margin:0;
+    min-width:0;
+}
+
+.model-card .badge {
+    padding:4px 9px;
+    font-size:10px;
+    box-shadow:0 2px 8px rgba(0,0,0,.28);
+}
+
+.image-time {
+    position:static;
+    flex:0 0 auto;
+    padding:4px 8px;
+    border-radius:13px;
+    background:rgba(4,7,8,.56);
+    border:1px solid rgba(255,255,255,.08);
+    color:#9aa4a6;
+    font-size:10px;
+    white-space:nowrap;
+    backdrop-filter:blur(6px);
+}
+
+.image-time-label { color:rgba(220,225,226,.70); }
+.image-time-value { color:#00eaff; font-weight:650; text-shadow:0 0 7px rgba(0,234,255,.22); }
+
+.model-favorite-btn {
+    position:absolute;
+    top:11px;
+    left:11px;
+    z-index:12;
+    width:30px;
+    height:30px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:1px solid rgba(255,255,255,.10);
+    border-radius:50%;
+    background:rgba(0,0,0,.34);
+    color:rgba(255,255,255,.34);
+    font-size:21px;
+    line-height:1;
+    cursor:pointer;
+    opacity:.62;
+    backdrop-filter:blur(7px);
+    transition:.18s ease;
+}
+
+.model-card:hover .model-favorite-btn,
+.model-favorite-btn:focus-visible { opacity:.95; color:rgba(255,255,255,.82); background:rgba(0,0,0,.54); }
+.model-favorite-btn:hover { opacity:1; color:#fff; border-color:var(--source-color,#00eaff); transform:scale(1.06); }
+.model-favorite-btn.is-favorite { opacity:1; color:#ffd65a; background:rgba(0,0,0,.46); text-shadow:0 0 10px rgba(255,214,90,.48); }
+
+.video-indicator {
+    position:absolute;
+    top:48px;
+    left:13px;
+    z-index:11;
+    width:24px;
+    height:24px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:50%;
+    background:rgba(0,0,0,.58);
+    border:1px solid color-mix(in srgb,var(--source-color) 78%,transparent);
+    color:var(--source-color);
+    font-size:10px;
+    backdrop-filter:blur(6px);
+}
+
+.card-access-icon {
+    position:absolute;
+    top:11px;
+    right:11px;
+    z-index:12;
+    width:30px;
+    height:30px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:50%;
+    background:rgba(0,0,0,.66);
+    font-size:18px;
+    font-weight:800;
+    line-height:1;
+    pointer-events:auto;
+    backdrop-filter:blur(7px);
+    box-shadow:0 3px 12px rgba(0,0,0,.28);
+}
+
+.card-access-icon svg { width:15px; height:15px; fill:currentColor; }
+.card-access-icon.is-downloadable { color:#00eaff; border:1px solid rgba(0,234,255,.70); }
+.card-access-icon.is-unknown { color:#d8c68b; border:1px solid rgba(216,198,139,.72); font-size:16px; }
+.card-access-icon.is-gated { color:#ffb300; border:1px solid rgba(255,179,0,.78); }
+.card-access-icon.is-paid-access { color:#ff5c8a; border:1px solid rgba(255,92,138,.80); font-size:15px; font-weight:900; }
+
+.card-access-icon::after {
+    content:attr(data-tooltip);
+    position:absolute;
+    top:36px;
+    right:0;
+    width:max-content;
+    max-width:190px;
+    padding:5px 8px;
+    border-radius:7px;
+    background:rgba(3,5,6,.92);
+    border:1px solid rgba(255,255,255,.12);
+    color:#dce6e8;
+    font-size:10px;
+    font-weight:600;
+    letter-spacing:.1px;
+    line-height:1.25;
+    white-space:nowrap;
+    opacity:0;
+    transform:translateY(-3px);
+    pointer-events:none;
+    transition:.14s ease;
+    box-shadow:0 6px 20px rgba(0,0,0,.32);
+}
+
+.card-access-icon:hover::after,
+.card-access-icon:focus-visible::after { opacity:1; transform:none; }
+
+.model-card .meta-tags,
+.model-card .card-description,
+.model-card .card-content { display:none; }
+
+/* Sensitive-content preference still applies to the full-card preview. */
+.model-card.sensitive-blurred .card-image img,
+.model-card.sensitive-blurred .card-image video { filter:blur(18px); transform:scale(1.08); }
+.model-card.sensitive-blurred:hover .card-image img,
+.model-card.sensitive-blurred:hover .card-image video { transform:scale(1.11); }
+
+@media (max-width:720px) {
+    .model-card { min-height:280px; }
+    .card-overlay-content { padding:58px 13px 13px; }
+    .card-title h2 { font-size:16px; }
+    .card-footer-row { align-items:flex-start; flex-direction:column; gap:7px; }
+    .image-time { align-self:flex-end; }
+}
+
+@media (prefers-reduced-motion:reduce) {
+    .model-card,
+    .model-card[data-status="new"],
+    .card-image img, .card-image video { animation:none !important; transition:none !important; }
+}
+
+
+/* Download/version state is intentionally separate from NEW/access state. */
+.card-download-state {
+    position:absolute;
+    top:14px;
+    left:48px;
+    z-index:12;
+    width:24px;
+    height:24px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border-radius:50%;
+    background:rgba(0,0,0,.58);
+    backdrop-filter:blur(7px);
+    font-size:14px;
+    font-weight:900;
+    line-height:1;
+    pointer-events:auto;
+    box-shadow:0 3px 10px rgba(0,0,0,.24);
+}
+.card-download-state.is-current { color:#76f7c3; border:1px solid rgba(118,247,195,.75); }
+.card-download-state.is-update { color:#ffd166; border:1px solid rgba(255,209,102,.82); }
+.card-download-state::after {
+    content:attr(data-tooltip); position:absolute; top:30px; left:0; width:max-content; max-width:190px;
+    padding:5px 8px; border-radius:7px; background:rgba(3,5,6,.92); border:1px solid rgba(255,255,255,.12);
+    color:#dce6e8; font-size:10px; font-weight:600; white-space:nowrap; opacity:0; transform:translateY(-3px);
+    pointer-events:none; transition:.14s ease; box-shadow:0 6px 20px rgba(0,0,0,.32);
+}
+.card-download-state:hover::after { opacity:1; transform:none; }
+.model-card[data-update="true"]:not([data-status="new"]) { animation:modelRadarUpdatePulse 3.2s ease-out infinite; animation-delay:var(--new-pulse-delay,0ms); }
+@keyframes modelRadarUpdatePulse {
+    0%,60%,100% { box-shadow:0 0 0 0 rgba(255,209,102,0),0 0 9px color-mix(in srgb,var(--source-color) 12%,transparent); }
+    76% { box-shadow:0 0 0 1px rgba(255,209,102,.35),0 0 14px 4px rgba(255,209,102,.18),0 0 20px color-mix(in srgb,var(--source-color) 25%,transparent); }
+    90% { box-shadow:0 0 0 7px rgba(255,209,102,0),0 0 16px 7px rgba(255,209,102,0); }
+}
+
+/* Source-aware creator attribution for SHA-merged cards. */
+.author-badges {
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:5px;
+    min-width:0;
+    max-width:100%;
+    margin-top:7px;
+}
+
+.author-badges .author-badge {
+    margin-top:0;
+}
+
+.author-badge.source-author-badge {
+    --author-source-color:#00eaff;
+    color:var(--author-source-color);
+    border-color:color-mix(in srgb, var(--author-source-color) 42%, transparent);
+    background:color-mix(in srgb, var(--author-source-color) 10%, rgba(3,15,17,.72));
+}
+
+.author-badge.source-author-badge:hover {
+    color:var(--author-source-color);
+    border-color:var(--author-source-color);
+    background:color-mix(in srgb, var(--author-source-color) 18%, rgba(3,15,17,.72));
+    box-shadow:0 0 10px color-mix(in srgb, var(--author-source-color) 30%, transparent);
+}
+
+.card-access-icon.is-early-access { color:#ffd166; border:1px solid rgba(255,209,102,.78); font-size:15px; }
+
+
+/* Feed Windowing v1 -------------------------------------------------- */
+.feed-load-sentinel{height:2px;width:100%;grid-column:1/-1;pointer-events:none;}
+.feed-load-sentinel.loading{min-height:28px;}
+.feed-load-sentinel.loading::after{content:"Loading more models…";display:block;text-align:center;color:#78939a;font-size:12px;padding:8px 0;}
+.feed-load-sentinel.error{min-height:28px;}
+.feed-load-sentinel.error::after{content:"Unable to load more models. Scroll again to retry.";display:block;text-align:center;color:#ff8aa1;font-size:12px;padding:8px 0;}
+.feed-load-sentinel.complete{display:none;}
+
+.card-preview-video-poster {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}

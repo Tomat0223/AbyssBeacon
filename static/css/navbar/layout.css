@@ -1,0 +1,612 @@
+.navbar {
+    position:sticky;
+    top:0;
+    height:65px;
+    display:grid;
+    grid-template-columns:auto 1fr auto;
+    align-items:center;
+    gap:18px;
+    padding:0 20px;
+    box-sizing:border-box;
+    overflow:visible;
+    z-index:1500;
+    isolation:isolate;
+}
+
+.navbar-bg {
+    position:absolute;
+    inset:0;
+    background-image:url("/static/images/navbar.png");
+    background-size:cover;
+    background-position:center 16%;
+    opacity:.75;
+    z-index:-1;
+}
+
+.nav-brand { display:flex; align-items:center; min-width:max-content; }
+.nav-logo { height:45px; width:auto; object-fit:contain; }
+.brand-name {
+    font-size:22px;
+    font-weight:600;
+    letter-spacing:2px;
+    color:#00eaff;
+    text-shadow:0 0 10px rgba(0,234,255,.5);
+}
+
+/* Keep the live summary + Scan + last-scan information together as one unit
+   immediately to the left of the gear. This avoids bright details near the
+   center of the navbar artwork and scales naturally on wide monitors. */
+.nav-center-cluster {
+    justify-self:end;
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:22px;
+    min-width:0;
+    margin-right:4px;
+}
+
+.nav-summary {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    color:#888;
+    font-size:12px;
+    white-space:nowrap;
+}
+.nav-summary strong { color:#00eaff; font-weight:600; }
+.summary-dot { color:#444; }
+
+.nav-scan-center { display:flex; align-items:center; justify-content:center; }
+
+.nav-last-scan {
+    color:#888;
+    font-size:12px;
+    white-space:nowrap;
+}
+#lastScan {
+    color:#00eaff;
+    font-weight:600;
+    text-shadow:0 0 8px rgba(0,234,255,.25);
+}
+
+.nav-actions {
+    display:flex;
+    align-items:center;
+    justify-self:end;
+}
+
+@media (max-width:1050px){
+    .navbar { gap:12px; }
+    .nav-center-cluster { gap:12px; }
+}
+
+@media (max-width:900px){
+    .nav-summary { display:none; }
+}
+
+@media (max-width:650px){
+    .nav-last-scan { display:none; }
+}
+
+/* Last-scan text and the low-emphasis Scan details action share one compact column. */
+.nav-last-scan {
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    justify-content:center;
+    gap:2px;
+    line-height:1.15;
+}
+
+.last-scan-line {
+    white-space:nowrap;
+}
+
+.scan-details-button {
+    appearance:none;
+    border:0;
+    background:transparent;
+    padding:0;
+    margin:0;
+    color:#5f7b80;
+    font:inherit;
+    font-size:10px;
+    letter-spacing:.25px;
+    cursor:pointer;
+    opacity:.8;
+    transition:color .15s ease, opacity .15s ease, text-shadow .15s ease;
+}
+
+.scan-details-button:hover {
+    color:#00eaff;
+    opacity:1;
+    text-shadow:0 0 7px rgba(0,234,255,.28);
+}
+
+/* Scan details is secondary, but should remain readable over the navbar texture. */
+.scan-details-button { color:#c4cdd0; opacity:.9; }
+
+/* =========================
+   SEARCH + ACTIVE FILTERS
+========================= */
+/* Four real navbar zones:
+   brand | flexible search lane | scan/status cluster | gear.
+   The search is centered inside the space BETWEEN the brand and scan cluster,
+   rather than simply starting immediately after the logo. */
+.navbar {
+    grid-template-columns:auto minmax(0,1fr) auto auto;
+}
+
+.nav-search-area {
+    position:relative;
+    z-index:3;
+    justify-self:center;
+    align-self:center;
+    min-width:300px;
+    max-width:560px;
+    width:min(560px, 42vw);
+    height:31px;
+    display:flex;
+    align-items:center;
+    visibility:visible;
+    opacity:1;
+}
+
+.nav-search-box {
+    height:31px;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:0 8px 0 10px;
+    border:1px solid rgba(0,234,255,.28);
+    border-radius:9px;
+    background:rgba(5,10,13,.82);
+    box-shadow:inset 0 0 16px rgba(0,0,0,.45);
+    transition:border-color .15s ease, box-shadow .15s ease;
+}
+.nav-search-box:focus-within {
+    border-color:rgba(0,234,255,.75);
+    box-shadow:0 0 10px rgba(0,234,255,.12), inset 0 0 16px rgba(0,0,0,.45);
+}
+.nav-search-icon { color:#66868b; font-size:16px; line-height:1; }
+#modelSearch {
+    min-width:0;
+    flex:1;
+    border:0;
+    outline:0;
+    background:transparent;
+    color:#e8f5f6;
+    font-size:12px;
+    font-family:inherit;
+}
+#modelSearch::placeholder {
+    color:rgba(255,255,255,.45);
+    opacity:1;
+}
+#modelSearch::-webkit-search-cancel-button { display:none; }
+.search-clear-all {
+    border:0;
+    background:transparent;
+    color:#00eaff;
+    padding:0 2px;
+    font-size:18px;
+    line-height:1;
+    cursor:pointer;
+    opacity:.85;
+}
+.search-clear-all:hover { opacity:1; text-shadow:0 0 8px rgba(0,234,255,.55); }
+
+.active-filter-pills {
+    position:absolute;
+    top:calc(100% + 4px);
+    left:0;
+    width:100%;
+    min-height:16px;
+    display:flex;
+    align-items:center;
+    gap:4px;
+    overflow:hidden;
+    white-space:nowrap;
+    pointer-events:auto;
+}
+.filter-pill {
+    height:16px;
+    display:inline-flex;
+    align-items:center;
+    gap:4px;
+    max-width:150px;
+    padding:0 5px 0 7px;
+    border:1px solid rgba(0,234,255,.24);
+    border-radius:999px;
+    background:rgba(0,25,30,.72);
+    color:#a9c9cc;
+    font-size:9px;
+    line-height:14px;
+}
+.filter-pill-label { overflow:hidden; text-overflow:ellipsis; }
+.filter-pill button {
+    border:0;
+    background:transparent;
+    color:#00eaff;
+    padding:0;
+    font:inherit;
+    font-size:11px;
+    cursor:pointer;
+    line-height:1;
+}
+
+@media (max-width:1200px){
+    .nav-search-area { width:min(430px,38vw); max-width:430px; min-width:260px; }
+}
+@media (max-width:850px){ .nav-search-area { display:none; } }
+
+
+/* Keep the search layer above the decorative navbar background. */
+.nav-search-box { position:relative; z-index:4; width:100%; }
+@media (min-width:851px) { .nav-search-area { display:flex !important; } }
+
+
+/* Search help: discoverable syntax without cluttering the navbar. */
+.search-help-tooltip {
+    position:absolute;
+    top:calc(100% + 8px);
+    left:0;
+    width:390px;
+    padding:9px 11px;
+    border:1px solid rgba(0,234,255,.24);
+    border-radius:8px;
+    background:rgba(5,10,13,.96);
+    color:#b9c9cc;
+    font-size:10px;
+    line-height:1.55;
+    box-shadow:0 10px 28px rgba(0,0,0,.45);
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+    transform:translateY(-3px);
+    transition:opacity .14s ease, transform .14s ease, visibility .14s ease;
+    z-index:2200;
+}
+.search-help-tooltip strong { color:#00eaff; font-weight:600; }
+.nav-search-box:hover ~ .search-help-tooltip {
+    opacity:1;
+    visibility:visible;
+    transform:translateY(0);
+}
+
+/* Search command autocomplete: suggestion-only; Tab/Right Arrow accepts. */
+.search-autocomplete-ghost {
+    position:absolute;
+    left:33px;
+    right:32px;
+    top:50%;
+    transform:translateY(-50%);
+    display:none;
+    align-items:center;
+    white-space:pre;
+    overflow:hidden;
+    pointer-events:none;
+    font-size:12px;
+    font-family:inherit;
+    z-index:1;
+}
+.search-autocomplete-ghost.visible { display:flex; }
+.search-autocomplete-ghost .autocomplete-prefix { visibility:hidden; }
+.search-autocomplete-ghost .autocomplete-suffix { color:rgba(115,180,190,.58); }
+#modelSearch { position:relative; z-index:2; }
+
+/* Multi-option smart search autocomplete. Nothing is inserted until the user
+   explicitly accepts a suggestion with Tab/Right Arrow, arrow+Enter, or click. */
+.search-autocomplete-menu {
+    position:absolute;
+    top:calc(100% + 7px);
+    left:0;
+    width:100%;
+    display:none;
+    padding:5px;
+    border:1px solid rgba(0,234,255,.28);
+    border-radius:9px;
+    background:rgba(5,10,13,.98);
+    box-shadow:0 12px 30px rgba(0,0,0,.52);
+    z-index:2300;
+    box-sizing:border-box;
+}
+.search-autocomplete-menu.visible { display:block; }
+.search-autocomplete-option {
+    width:100%;
+    min-height:29px;
+    display:grid;
+    grid-template-columns:minmax(150px,auto) 1fr;
+    align-items:center;
+    gap:14px;
+    padding:5px 8px;
+    border:0;
+    border-radius:6px;
+    background:transparent;
+    color:#c5d1d3;
+    font:inherit;
+    font-size:10px;
+    text-align:left;
+    cursor:pointer;
+}
+.search-autocomplete-option:hover,
+.search-autocomplete-option.selected {
+    background:rgba(0,234,255,.10);
+    box-shadow:inset 0 0 0 1px rgba(0,234,255,.12);
+}
+.autocomplete-command { color:#00eaff; font-weight:600; white-space:nowrap; }
+.autocomplete-description { color:#7f9296; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.search-autocomplete-option.selected .autocomplete-description { color:#b8c8cb; }
+
+/* Suggestions take priority over the hover cheat sheet and active pills. */
+.nav-search-area.autocomplete-open .search-help-tooltip { opacity:0 !important; visibility:hidden !important; }
+.nav-search-area.autocomplete-open .active-filter-pills { visibility:hidden; }
+
+/* Navbar information hierarchy: cyan values/actions, white labels. */
+.nav-summary,
+.nav-last-scan{
+    font-size:12px;
+}
+#modelCount,
+#newCount,
+.last-scan-line{
+    color:#eef7fa;
+}
+.nav-summary strong,
+#lastScan{
+    color:#00eaff;
+    font-size:12px;
+    font-weight:600;
+}
+.scan-details-button{
+    color:#00eaff;
+    font-size:10px;
+    opacity:.92;
+}
+.scan-details-button:hover{opacity:1}
+
+
+/* Creator pages already have a creator-scoped scanner. The shared navbar keeps
+   Download Manager/search/settings, while the global scan/status controls are
+   replaced by one persistent return action. */
+.nav-creator-return {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.nav-creator-return-button {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-height:34px;
+    padding:0 18px;
+    border:1px solid rgba(0,234,255,.38);
+    border-radius:20px;
+    background:rgba(5,9,11,.84);
+    color:#d4e7e9;
+    font-size:12px;
+    font-weight:600;
+    text-decoration:none;
+    white-space:nowrap;
+    transition:border-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+
+.nav-creator-return-button:hover {
+    color:#00eaff;
+    border-color:#00eaff;
+    box-shadow:0 0 10px rgba(0,234,255,.28);
+}
+
+
+.nav-creator-controls{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:10px;
+}
+.creator-scan-details-button{
+    min-width:92px;
+    white-space:nowrap;
+}
+.creator-scan-details-button.is-running{
+    color:#00eaff;
+    border-color:rgba(0,234,255,.70);
+    box-shadow:0 0 10px rgba(0,234,255,.16);
+}
+.creator-scan-details-button.is-running::before{
+    content:"";
+    display:inline-block;
+    width:7px;
+    height:7px;
+    margin-right:7px;
+    border-radius:50%;
+    background:#00eaff;
+    box-shadow:0 0 8px rgba(0,234,255,.80);
+    vertical-align:1px;
+}
+
+
+/* Navbar totals double as fast status-filter shortcuts. */
+.nav-count-shortcut {
+    appearance:none;
+    border:0;
+    padding:0;
+    margin:0;
+    background:transparent;
+    color:inherit;
+    font:inherit;
+    line-height:inherit;
+    cursor:pointer;
+    white-space:nowrap;
+}
+.nav-count-shortcut:hover,
+.nav-count-shortcut:focus-visible {
+    color:#00eaff;
+    text-shadow:0 0 8px rgba(0,234,255,.24);
+    outline:none;
+}
+.nav-count-shortcut.is-active {
+    color:#00eaff;
+}
+
+
+/* v7.51 navbar information hierarchy */
+.nav-library-summary,
+.nav-activity-summary {
+    display:flex;
+    flex-direction:column;
+    align-items:flex-start;
+    justify-content:center;
+    gap:3px;
+    line-height:1.15;
+    white-space:nowrap;
+}
+
+.nav-summary-total,
+.nav-summary-statuses,
+.navbar-download-links {
+    display:flex;
+    align-items:center;
+    gap:7px;
+}
+
+.nav-summary-total {
+    font-size:13px;
+}
+
+.nav-summary-statuses {
+    font-size:12px;
+}
+
+.nav-activity-summary {
+    color:#888;
+    font-size:12px;
+}
+
+.last-scan-details-button {
+    appearance:none;
+    border:0;
+    margin:0;
+    padding:0;
+    background:transparent;
+    color:#ddd;
+    font:inherit;
+    cursor:pointer;
+    white-space:nowrap;
+    text-align:left;
+}
+
+.last-scan-details-button:hover,
+.last-scan-details-button:focus-visible {
+    color:#00eaff;
+    outline:none;
+}
+
+.last-scan-details-button #lastScan {
+    color:#00eaff;
+    font-weight:600;
+    text-shadow:0 0 8px rgba(0,234,255,.25);
+}
+
+.active-downloads-separator[hidden] {
+    display:none !important;
+}
+
+
+/* v7.52 navbar action colors.
+   Models / New / Updated / Last Scan are navigation controls, so they share
+   one neutral-at-rest / cyan-on-interaction language. */
+.navbar .nav-count-shortcut,
+.navbar .nav-count-shortcut strong,
+.navbar .last-scan-details-button,
+.navbar .last-scan-details-button #lastScan {
+    color:#f2f5f6 !important;
+    text-shadow:none !important;
+}
+
+.navbar .nav-count-shortcut:hover,
+.navbar .nav-count-shortcut:hover strong,
+.navbar .nav-count-shortcut:focus-visible,
+.navbar .nav-count-shortcut:focus-visible strong,
+.navbar .last-scan-details-button:hover,
+.navbar .last-scan-details-button:hover #lastScan,
+.navbar .last-scan-details-button:focus-visible,
+.navbar .last-scan-details-button:focus-visible #lastScan {
+    color:#00eaff !important;
+    text-shadow:0 0 8px rgba(0,234,255,.28) !important;
+}
+
+.navbar .nav-count-shortcut.is-active,
+.navbar .nav-count-shortcut.is-active strong {
+    color:#00eaff !important;
+}
+
+
+/* v7.53: information values stand out; only action words are interactive. */
+.navbar .nav-summary-total,
+.navbar .nav-count-pair,
+.navbar .last-scan-row {
+    display:inline-flex;
+    align-items:baseline;
+    gap:4px;
+    white-space:nowrap;
+}
+
+.navbar .nav-count-value,
+.navbar .last-scan-value {
+    color:#00eaff !important;
+    font:inherit;
+    font-weight:600;
+    text-shadow:0 0 8px rgba(0,234,255,.18);
+    cursor:default;
+    pointer-events:none;
+}
+
+.navbar .nav-count-shortcut,
+.navbar .last-scan-details-button {
+    color:#f2f5f6 !important;
+    text-shadow:none !important;
+    cursor:pointer;
+}
+
+.navbar .nav-count-shortcut:hover,
+.navbar .nav-count-shortcut:focus-visible,
+.navbar .last-scan-details-button:hover,
+.navbar .last-scan-details-button:focus-visible {
+    color:#00eaff !important;
+    text-shadow:0 0 8px rgba(0,234,255,.28) !important;
+    outline:none;
+}
+
+/* The active status word stays cyan; its numeric value was already cyan. */
+.navbar .nav-count-shortcut.is-active {
+    color:#00eaff !important;
+}
+
+/* Override the older rules that colored strong values with the button. */
+.navbar .nav-count-shortcut:hover strong,
+.navbar .nav-count-shortcut:focus-visible strong,
+.navbar .nav-count-shortcut.is-active strong {
+    color:inherit !important;
+}
+
+.navbar .last-scan-details-button #lastScan {
+    color:inherit !important;
+    text-shadow:inherit !important;
+}
+
+
+/* v7.54: no persistent cyan "active" word state. Values carry the cyan data
+   emphasis; labels become cyan only while the user interacts with them. */
+.navbar .nav-count-shortcut.is-active {
+    color:#f2f5f6 !important;
+    text-shadow:none !important;
+}
+
+.navbar .nav-count-shortcut.is-active:hover,
+.navbar .nav-count-shortcut.is-active:focus-visible {
+    color:#00eaff !important;
+    text-shadow:0 0 8px rgba(0,234,255,.28) !important;
+}

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Models to Scan</title>
+<style>
+:root{color-scheme:dark;font-family:Arial,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:#080b10;color:#f4f7fb}
+.page{width:min(980px,calc(100% - 32px));margin:22px auto 42px}
+.subtitle{color:#9aa8ba;font-size:15px;line-height:1.55;margin:0 0 18px}
+.notice{color:#7f91a6;font-size:13px;line-height:1.5;margin:-7px 0 20px}
+.models{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.model-row,.family{background:#10151d;border:1px solid #263241;border-radius:14px}
+.model-row{padding:15px 17px}
+.choice{display:flex;align-items:center;gap:12px;cursor:pointer;min-width:0}
+.choice input{width:21px;height:21px;accent-color:#00dff2;flex:0 0 auto}
+.choice span{font-size:17px;font-weight:700;color:#e9f7fa}
+.family-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 17px}
+.family-head .choice{flex:1}
+.family-toggle{border:1px solid rgba(0,234,255,.35);background:#07151b;color:#91eaf3;border-radius:18px;padding:7px 12px;cursor:pointer}
+.family-toggle:hover{border-color:#00eaff}
+.family-items{display:none;padding:0 17px 15px 48px;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.family.open .family-items{display:grid}
+.variant{padding:10px 12px;border:1px solid #263241;border-radius:10px;background:#0a1016}
+.variant .choice span{font-size:15px;font-weight:600;color:#dcebf0}
+.actions{display:flex;align-items:center;gap:12px;margin-top:20px}
+button.save{border:1px solid #00d9ff;border-radius:8px;padding:10px 18px;background:#07151b;color:#dffaff;cursor:pointer;text-decoration:none;font-size:14px}
+
+.status{color:#80e6a8;font-size:13px}
+
+.scan-footer {
+    margin-top: 22px;
+    padding-top: 16px;
+    border-top: 1px solid #202936;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.scan-nav-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.scan-nav {
+    border: 1px solid #00d9ff;
+    border-radius: 8px;
+    padding: 9px 14px;
+    background: #07151b;
+    color: #dffaff;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 14px;
+}
+.scan-nav:hover { box-shadow: 0 0 12px rgba(0,217,255,.18); }
+.scan-nav.current {
+    border-color: #334357;
+    background: #0c1118;
+    color: #75869a;
+    cursor: default;
+    box-shadow: none;
+}
+.scan-window-link { margin-left: auto; }
+@media (max-width: 620px) {
+    .scan-footer { align-items: stretch; }
+    .scan-window-link { margin-left: 0; }
+}
+@media(max-width:720px){.models{grid-template-columns:1fr}.family-items{grid-template-columns:1fr;padding-left:17px}}
+
+.bulk-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:-4px 0 12px}
+.bulk-action{border:0;background:transparent;color:#00d9ff;font:inherit;font-size:13px;cursor:pointer;padding:4px 2px}
+.bulk-action:hover{text-decoration:underline}
+.bulk-sep{color:#526274;font-size:12px}
+</style>
+
+</head>
+<body>
+<div class="page">
+<p class="subtitle">Choose which tested model families AbyssBeacon includes during normal scans. Source-specific search rules are configured automatically.</p>
+<p class="notice">Need something outside this list? Use <strong>Search Sources</strong> for arbitrary model names and keywords without changing the normal scan registry.</p>
+
+<div class="bulk-actions" aria-label="Bulk model selection">
+  <button id="selectAllModels" class="bulk-action" type="button">Select all</button>
+  <span class="bulk-sep">/</span>
+  <button id="clearAllModels" class="bulk-action" type="button">Clear all</button>
+</div>
+
+<div class="models">
+{% for group in architecture_groups %}
+  {% if group.grouped and group.name == 'WAN' %}
+  {% set item = group['items'][0] %}
+  <div class="model-row">
+    <label class="choice">
+      <input class="arch-check" type="checkbox" value="{{ item.name }}" {% if item.name in enabled_architectures %}checked{% endif %}>
+      <span>WAN 2.2</span>
+    </label>
+  </div>
+  {% elif group.grouped %}
+  <section class="family" data-family="{{ group.name }}">
+    <div class="family-head">
+      <label class="choice">
+        <input class="family-check" type="checkbox">
+        <span>{{ group.name }}</span>
+      </label>
+      <button class="family-toggle" type="button" aria-expanded="false">Variants ▾</button>
+    </div>
+    <div class="family-items">
+      {% for item in group['items'] %}
+      <div class="variant">
+        <label class="choice">
+          <input class="arch-check" type="checkbox" value="{{ item.name }}" {% if item.name in enabled_architectures %}checked{% endif %}>
+          <span>{{ item.label }}</span>
+        </label>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  {% set item = group['items'][0] %}
+  <div class="model-row">
+    <label class="choice">
+      <input class="arch-check" type="checkbox" value="{{ item.name }}" {% if item.name in enabled_architectures %}checked{% endif %}>
+      <span>{{ item.label }}</span>
+    </label>
+  </div>
+  {% endif %}
+{% endfor %}
+</div>
+
+<div class="actions">
+  <button id="save" class="save" type="button">Save Changes</button>
+  <span id="status" class="status"></span>
+</div>
+    <div class="scan-footer">
+        <div class="scan-nav-group">
+            <a class="scan-nav" href="/settings" data-scan-nav data-settings-title="Scanner Search Settings">Scan Settings</a>
+            <a class="scan-nav" href="/settings/sources" data-scan-nav data-settings-title="Sources to Scan">Sources to Scan</a>
+            <a class="scan-nav current" aria-current="page">Models to Scan</a>
+        </div>
+        <a class="scan-nav scan-window-link" href="#" data-show-scan-window>Show Scan Window</a>
+    </div>
+
+</div>
+
+<script>
+function syncFamily(family){
+  const parent=family.querySelector('.family-check');
+  const children=[...family.querySelectorAll('.arch-check')];
+  const checked=children.filter(x=>x.checked).length;
+  parent.checked=children.length>0 && checked===children.length;
+  parent.indeterminate=checked>0 && checked<children.length;
+}
+
+function setAllModels(checked){
+  document.querySelectorAll('.arch-check').forEach(box=>box.checked=checked);
+  document.querySelectorAll('.family').forEach(syncFamily);
+}
+document.getElementById('selectAllModels')?.addEventListener('click',()=>setAllModels(true));
+document.getElementById('clearAllModels')?.addEventListener('click',()=>setAllModels(false));
+
+document.querySelectorAll('.family').forEach(family=>{
+  syncFamily(family);
+  const parent=family.querySelector('.family-check');
+  const children=[...family.querySelectorAll('.arch-check')];
+  parent?.addEventListener('change',()=>{
+    children.forEach(x=>x.checked=parent.checked);
+    syncFamily(family);
+  });
+  children.forEach(child=>child.addEventListener('change',()=>syncFamily(family)));
+  family.querySelector('.family-toggle')?.addEventListener('click',event=>{
+    const open=family.classList.toggle('open');
+    event.currentTarget.setAttribute('aria-expanded',open?'true':'false');
+    event.currentTarget.textContent=open?'Variants ▴':'Variants ▾';
+  });
+});
+document.getElementById('save').addEventListener('click',async()=>{
+  const enabled=[...document.querySelectorAll('.arch-check:checked')].map(x=>x.value);
+  const status=document.getElementById('status');
+  status.textContent='Saving…';
+  try{
+    const response=await fetch('/settings/architectures',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled})
+    });
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.success) throw new Error(data.error||'Save failed.');
+    status.textContent=`Saved · ${enabled.length} scan target${enabled.length===1?'':'s'} enabled.`;
+    if(window.parent!==window){window.parent.postMessage({type:'modelradar:scan-definitions-saved',url:window.location.pathname,title:'Models to Scan'},window.location.origin);}
+  }catch(error){
+    status.textContent=error.message||'Save failed.';
+  }
+});
+
+document.querySelectorAll('[data-scan-nav]').forEach(link => {
+    link.addEventListener('click', event => {
+        if(window.parent === window) return;
+        event.preventDefault();
+        window.parent.postMessage({
+            type: 'modelradar:open-scan-settings-page',
+            url: link.getAttribute('href'),
+            title: link.dataset.settingsTitle || 'Settings'
+        }, window.location.origin);
+    });
+});
+document.querySelector('[data-show-scan-window]')?.addEventListener('click', event => {
+    event.preventDefault();
+    if(window.parent !== window){
+        window.parent.postMessage({type:'modelradar:show-scan-window'}, window.location.origin);
+        return;
+    }
+    window.location.href='/';
+});
+
+</script>
+</body>
+</html>

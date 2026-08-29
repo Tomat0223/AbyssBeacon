@@ -1,0 +1,610 @@
+{
+  "FLUX.2 Klein 4B": {
+    "family": "FLUX",
+    "label": "FLUX.2 Klein 4B",
+    "keywords": [
+      "flux.2 klein 4b distilled",
+      "flux.2 klein 4b",
+      "flux2 klein 4b"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "flux.2 klein 4b",
+          "flux2 klein 4b"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "flux.2 klein 4b",
+          "flux2 klein 4b"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 4B"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 4B"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "FLUX_2_KLEIN_4B_BASE"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 4B"
+        ]
+      }
+    }
+  },
+  "FLUX.2 Klein 9B": {
+    "family": "FLUX",
+    "label": "FLUX.2 Klein 9B",
+    "keywords": [
+      "flux.2 klein 9b distilled",
+      "flux.2 klein 9b",
+      "flux2 klein 9b"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "flux.2 klein 9b",
+          "flux2 klein 9b"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "flux.2 klein 9b",
+          "flux2 klein 9b"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 9B"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 9B"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "FLUX_2_KLEIN_9B_BASE",
+          "FLUX_2_KLEIN_9B_DISTILLED"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.2 Klein 9B"
+        ]
+      }
+    }
+  },
+  "WAN 2.2": {
+    "family": "WAN",
+    "label": "WAN 2.2",
+    "keywords": [
+      "wan2.2",
+      "wan 2.2",
+      "wan video 2.2"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "wan 2.2",
+          "wan2.2"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "wan 2.2",
+          "wan2.2"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Wan Video 2.2 I2V-A14B",
+          "Wan Video 2.2 T2V-A14B",
+          "Wan Video 2.2 TI2V-5B"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Wan Video 2.2 I2V-A14B",
+          "Wan Video 2.2 T2V-A14B",
+          "Wan Video 2.2 TI2V-5B"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "WAN_2_2_5B",
+          "WAN_2_2_A14B_LOW_NOISE",
+          "WAN_2_2_A14B_HIGH_NOISE"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Wan 2.2",
+          "Wan Video 2.2 I2V-A14B",
+          "Wan Video 2.2 T2V-A14B",
+          "Wan Video 2.2 TI2V-5B"
+        ]
+      }
+    }
+  },
+  "Z-Image Turbo": {
+    "family": "Z-Image",
+    "label": "Z-Image Turbo",
+    "keywords": [
+      "z-image turbo",
+      "zimage turbo",
+      "zimageturbo"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "z-image turbo",
+          "zimage turbo"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "z-image turbo",
+          "zimage turbo"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "ZImageTurbo"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "ZImageTurbo"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "Z-Image-Turbo"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Z Image Turbo"
+        ]
+      }
+    }
+  },
+  "Z-Image Base": {
+    "family": "Z-Image",
+    "label": "Z-Image Base",
+    "keywords": [
+      "zimagebase",
+      "z-image base",
+      "z image base",
+      "z-image"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "z-image",
+          "z image"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "z-image",
+          "z image"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "ZImageBase",
+          "Z-Image"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "ZImageBase",
+          "Z-Image"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "Z-Image"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Z Image Base"
+        ]
+      }
+    }
+  },
+  "LTX-2.5": {
+    "family": "",
+    "label": "LTX-2.5",
+    "keywords": [
+      "ltx-2.5",
+      "ltx 2.5",
+      "ltxv 2.5",
+      "ltx-2_5"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "ltx 2.5",
+          "ltx-2.5",
+          "ltxv 2.5"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "ltx 2.5",
+          "ltx-2.5",
+          "ltxv 2.5"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "LTXV 2.5"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "LTXV 2.5"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "LTX-2_5"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "LTXV 2.5"
+        ]
+      }
+    }
+  },
+  "Anima": {
+    "family": "",
+    "label": "Anima",
+    "keywords": [
+      "anima"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "anima"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "anima"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Anima"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Anima"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "Anima"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Anima"
+        ]
+      }
+    }
+  },
+  "Illustrious": {
+    "family": "",
+    "label": "Illustrious",
+    "keywords": [
+      "illustrious"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "illustrious"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "illustrious"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Illustrious"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Illustrious"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "Illustrious"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Illustrious",
+          "Illustrious 3.5",
+          "Illustrious 3.6"
+        ]
+      }
+    }
+  },
+  "Pony": {
+    "family": "",
+    "label": "Pony",
+    "keywords": [
+      "pony v7",
+      "ponyv7",
+      "pony"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "pony diffusion",
+          "pony"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "pony diffusion",
+          "pony"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Pony",
+          "Pony V7"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Pony",
+          "Pony V7"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "Pony",
+          "PonyV7"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Pony"
+        ]
+      }
+    }
+  },
+  "SDXL": {
+    "family": "",
+    "label": "SDXL",
+    "keywords": [
+      "sdxl 1.0",
+      "sdxl1.0",
+      "sdxl 1",
+      "sdxl1",
+      "sdxl"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "sdxl 1.0",
+          "sdxl1.0",
+          "sdxl 1",
+          "sdxl1"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "sdxl 1.0",
+          "sdxl1.0",
+          "sdxl 1",
+          "sdxl1"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "SDXL 1.0"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "SDXL 1.0"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "SDXL 1.0"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "SDXL 1.0"
+        ]
+      }
+    }
+  },
+  "Krea 2": {
+    "family": "",
+    "label": "Krea 2",
+    "keywords": [
+      "krea 2",
+      "krea2",
+      "krea_2",
+      "krea-2"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "krea 2",
+          "krea2"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "krea 2",
+          "krea2"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Krea 2"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Krea 2"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "KREA_2"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Krea 2"
+        ]
+      }
+    }
+  },
+  "MiniMax-H3": {
+    "family": "",
+    "label": "MiniMax-H3",
+    "keywords": [
+      "minimax h3",
+      "minimax-h3",
+      "minimax_h3"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "minimax h3",
+          "minimax-h3"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "minimax h3",
+          "minimax-h3"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "MiniMax H3"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "MiniMax H3"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "MINIMAX_H3_COMFY"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "Minimax H3 Open"
+        ]
+      }
+    }
+  }
+}

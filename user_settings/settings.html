@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AbyssBeacon Settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: Arial, sans-serif;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #080b10;
+            color: #f4f7fb;
+        }
+        .page {
+            width: min(880px, calc(100% - 40px));
+            margin: 28px auto 96px;
+        }
+        h1 { margin-bottom: 8px; }
+        h2 { margin-top: 0; }
+        .subtitle { color: #93a0b4; margin-top: 0; }
+        .card {
+            margin-top: 16px;
+            padding: 18px 20px;
+            border: 1px solid #263241;
+            border-radius: 14px;
+            background: #10151d;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 16px 0 0;
+        }
+        .tab {
+            border: 1px solid #334357;
+            border-radius: 9px;
+            padding: 10px 16px;
+            background: #090d13;
+            color: #cdd8e5;
+            cursor: pointer;
+        }
+        .tab.active {
+            border-color: #00d9ff;
+            color: #dffaff;
+            background: #07151b;
+        }
+        .source-panel { display: none; }
+        .source-panel.active { display: block; }
+        .setting {
+            display: grid;
+            grid-template-columns: 1fr 190px;
+            gap: 24px;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #202936;
+        }
+        .setting:last-of-type { border-bottom: 0; }
+        .setting strong { display: block; margin-bottom: 6px; }
+        .help { color: #8795a8; font-size: 14px; line-height: 1.45; }
+        .notice {
+            margin: 4px 0 12px;
+            padding: 9px 12px;
+            border: 1px solid #334357;
+            border-radius: 9px;
+            background: #0a1119;
+            color: #a9bbcd;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+        input[type="number"], select {
+            box-sizing: border-box;
+            width: 100%;
+            padding: 11px 12px;
+            border: 1px solid #334357;
+            border-radius: 8px;
+            background: #090d13;
+            color: white;
+            text-align: center;
+            font-size: 15px;
+        }
+        select { text-align-last: center; }
+        .actions {
+            margin-top: 22px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        button, .back {
+            border: 1px solid #00d9ff;
+            border-radius: 8px;
+            padding: 10px 18px;
+            background: #07151b;
+            color: #dffaff;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        #saveStatus { color: #80e6a8; font-size: 14px; }
+        .links { margin-top: 22px; display: flex; gap: 12px; flex-wrap: wrap; }
+
+        .scan-footer {
+            margin-top: 22px;
+            padding-top: 16px;
+            border-top: 1px solid #202936;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .scan-nav-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .scan-nav {
+            border: 1px solid #00d9ff;
+            border-radius: 8px;
+            padding: 9px 14px;
+            background: #07151b;
+            color: #dffaff;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .scan-nav:hover { box-shadow: 0 0 12px rgba(0,217,255,.18); }
+        .scan-nav.current {
+            border-color: #334357;
+            background: #0c1118;
+            color: #75869a;
+            cursor: default;
+            box-shadow: none;
+        }
+        .scan-window-link { margin-left: auto; }
+        @media (max-width: 620px) {
+            .scan-footer { align-items: stretch; }
+            .scan-window-link { margin-left: 0; }
+        }
+        .retention-link {
+            color: #00d9ff;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            cursor: pointer;
+        }
+        .retention-link:hover { color: #8ef0ff; }
+        .range-preview {
+            margin-top: 7px;
+            color: #00d9ff;
+            font-size: 13px;
+        }
+        @media (max-width: 620px) {
+            .setting { grid-template-columns: 1fr; gap: 10px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>AbyssBeacon Settings</h1>
+    <p class="subtitle">Normal scan ordering is source-specific. Result limits are centralized below.</p>
+    <div class="notice"><strong>Normal scans always need a stopping boundary.</strong> Use a finite result limit, or choose Unlimited while Automatic Retention is enabled so the <a class="retention-link" href="#" data-retention-link>retention window</a> becomes the boundary.</div>
+
+    {% set global_limit = scan_limits.get('global_max_results', 150) %}
+    {% set overrides = scan_limits.get('source_overrides', {}) %}
+    <div class="card">
+        <h2>Scan Limits</h2>
+        <div class="setting">
+            <div>
+                <strong>Global Maximum Search Results</strong>
+                <div class="help">Hard ceiling for each normal source / architecture search. Choose Unlimited to exhaust the Automatic <a class="retention-link" href="#" data-retention-link>Retention window</a> instead of stopping after a model-count limit.</div>
+            </div>
+            <div>
+                <select id="globalLimitMode">
+                    <option value="finite" {% if global_limit is not none %}selected{% endif %}>Limit by results</option>
+                    <option value="unlimited" {% if global_limit is none %}selected{% endif %}>Unlimited · use retention window</option>
+                </select>
+                <input id="globalMaxResults" type="number" min="1" max="5000" step="1" value="{{ global_limit if global_limit is not none else 150 }}" style="margin-top:8px;">
+            </div>
+        </div>
+
+        <details id="perSourceLimits">
+            <summary style="cursor:pointer;color:#dffaff;padding:14px 0;">Per-Source Limits</summary>
+            <div class="notice">Optional source overrides may only <strong>lower</strong> the global ceiling. Leave blank for Use Global. When Global is Unlimited, a source may still use a finite safety cap.</div>
+            <div class="setting"><div><strong>CivitAI</strong><div class="help">Blank = Use Global</div></div><input id="limitCivitai" type="number" min="1" max="5000" placeholder="Use Global" value="{{ overrides.get('civitai') or '' }}"></div>
+            <div class="setting"><div><strong>CivitAI Red</strong><div class="help">Blank = Use Global</div></div><input id="limitCivitaired" type="number" min="1" max="5000" placeholder="Use Global" value="{{ overrides.get('civitaired') or '' }}"></div>
+            <div class="setting"><div><strong>Hugging Face</strong><div class="help">Blank = Use Global</div></div><input id="limitHuggingface" type="number" min="1" max="5000" placeholder="Use Global" value="{{ overrides.get('huggingface') or '' }}"></div>
+            <div class="setting"><div><strong>ModelScope</strong><div class="help">Blank = Use Global · source pagination caps at 3000</div></div><input id="limitModelscope" type="number" min="1" max="3000" placeholder="Use Global" value="{{ overrides.get('modelscope') or '' }}"></div>
+            <div class="setting"><div><strong>SeaArt</strong><div class="help">Blank = Use Global</div></div><input id="limitSeaart" type="number" min="1" max="5000" placeholder="Use Global" value="{{ overrides.get('seaart') or '' }}"></div>
+            <div class="setting"><div><strong>TensorHub Art</strong><div class="help">Blank = Use Global</div></div><input id="limitTensorhub" type="number" min="1" max="5000" placeholder="Use Global" value="{{ overrides.get('tensorhub') or '' }}"></div>
+        </details>
+        <div id="scanLimitRule" class="notice" style="margin-top:8px;margin-bottom:0;">
+            {% if global_limit is none %}
+                Unlimited is active. Automatic Retention must remain enabled; its configured day window is the normal-scan boundary.
+            {% else %}
+                Normal scans stop at the effective result limit or the Automatic Retention day boundary, whichever comes first.
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab" data-panel="civitai" type="button">CivitAI</button>
+        <button class="tab" data-panel="civitaired" type="button">CivitAI Red</button>
+        <button class="tab active" data-panel="huggingface" type="button">Hugging Face</button>
+        <button class="tab" data-panel="modelscope" type="button">ModelScope</button>
+        <button class="tab" data-panel="seaart" type="button">SeaArt</button>
+        <button class="tab" data-panel="tensorhub" type="button">TensorHub Art</button>
+    </div>
+
+    {% set hf = search_settings.get('huggingface', {}) %}
+    <div class="card source-panel active" id="panel-huggingface">
+        <h2>Search Settings — Hugging Face</h2>
+
+        <div class="setting">
+            <div>
+                <strong>Search Order</strong>
+                <div class="help">How Hugging Face orders model results before AbyssBeacon filters them.</div>
+            </div>
+            <select id="hfSort">
+                <option value="newest_updated" {% if hf.get('sort') == 'newest_updated' %}selected{% endif %}>Newest Updated</option>
+                <option value="newest_created" {% if hf.get('sort') == 'newest_created' %}selected{% endif %}>Newest Created</option>
+                <option value="downloads" {% if hf.get('sort') == 'downloads' %}selected{% endif %}>Most Downloads</option>
+                <option value="likes" {% if hf.get('sort') == 'likes' %}selected{% endif %}>Most Likes</option>
+                <option value="trending" {% if hf.get('sort') == 'trending' %}selected{% endif %}>Trending</option>
+            </select>
+        </div>
+    </div>
+
+    {% set ms = search_settings.get('modelscope', {}) %}
+    <div class="card source-panel" id="panel-modelscope">
+        <h2>Search Settings — ModelScope</h2>
+
+        <div class="notice" title="AbyssBeacon handles ModelScope pagination automatically.">
+            ModelScope returns at most <strong>50 models per request</strong>. Set the total number of results you want AbyssBeacon to inspect and it will automatically request page 2, page 3, and so on until it reaches that limit or ModelScope runs out of results.
+        </div>
+
+        <div class="setting">
+            <div>
+                <strong>Search Order</strong>
+                <div class="help">ModelScope supports Default, Downloads, Likes, and Last Modified. Newest Updated maps to Last Modified.</div>
+            </div>
+            <select id="msSort">
+                <option value="newest_updated" {% if ms.get('sort') == 'newest_updated' %}selected{% endif %}>Newest Updated</option>
+                <option value="downloads" {% if ms.get('sort') == 'downloads' %}selected{% endif %}>Most Downloads</option>
+                <option value="likes" {% if ms.get('sort') == 'likes' %}selected{% endif %}>Most Likes</option>
+                <option value="default" {% if ms.get('sort') == 'default' %}selected{% endif %}>Default</option>
+            </select>
+        </div>
+    </div>
+
+    {% set civ = search_settings.get('civitai', {}) %}
+    <div class="card source-panel" id="panel-civitai">
+        <h2>Search Settings — CivitAI</h2>
+
+        <div class="notice">CivitAI pagination is handled automatically. AbyssBeacon requests the source's maximum safe batch size and follows additional pages until the requested result limit is reached or the API reports there are no more results.</div>
+
+        <div class="setting">
+            <div>
+                <strong>Search Order</strong>
+                <div class="help">CivitAI model-list sorting.</div>
+            </div>
+            <select id="civSort">
+                <option value="newest" {% if civ.get('sort') == 'newest' %}selected{% endif %}>Newest</option>
+                <option value="downloads" {% if civ.get('sort') == 'downloads' %}selected{% endif %}>Most Downloaded</option>
+                <option value="highest_rated" {% if civ.get('sort') == 'highest_rated' %}selected{% endif %}>Highest Rated</option>
+            </select>
+        </div>
+    </div>
+
+    {% set red = search_settings.get('civitaired', {}) %}
+    <div class="card source-panel" id="panel-civitaired">
+        <h2>Search Settings — CivitAI Red</h2>
+        <div class="notice">CivitAI Red requires a signed-in session. Credentials are configured separately under Source Accounts. Cursor pagination is automatic.</div>
+        <div class="setting"><div><strong>Search Order</strong><div class="help">Uses CivitAI Red's native model ordering.</div></div><select id="redSort"><option value="newest" {% if red.get('sort') == 'newest' %}selected{% endif %}>Newest</option><option value="downloads" {% if red.get('sort') == 'downloads' %}selected{% endif %}>Most Downloaded</option><option value="highest_rated" {% if red.get('sort') == 'highest_rated' %}selected{% endif %}>Highest Rated</option></select></div>
+    </div>
+
+    {% set th = search_settings.get('tensorhub', {}) %}
+    <div class="card source-panel" id="panel-tensorhub">
+        <h2>Search Settings — TensorHub Art</h2>
+        <div class="notice">TensorHub Art normal architecture scans use its structured website search with exact base-model filtering and automatic pagination. Expanded Creator Search remains a separate optional pass.</div>
+        <div class="setting">
+            <div>
+                <strong>Expanded Creator Search</strong>
+                <div class="help">Check up to the 20 newest models from each discovered creator for projects that do not appear in TensorHub's normal discovery feeds. This can uncover additional models, but may add substantial time to the scan. Deeper creator scans are intentionally kept separate from normal source scans.</div>
+            </div>
+            <label style="display:flex;align-items:center;justify-content:center;gap:10px;color:#dffaff;cursor:pointer;">
+                <input id="thCreatorExpansionEnabled" type="checkbox" style="width:20px;height:20px;accent-color:#00d9ff;" {% if th.get('creator_expansion_enabled', False) %}checked{% endif %}>
+                <span>Enabled</span>
+            </label>
+        </div>
+        <div class="setting"><div><strong>Creator Recheck Cooldown</strong><div class="help">When Expanded Creator Search is enabled, a creator is checked again only after this many hours have passed since AbyssBeacon last inspected that creator for the current base model. This never starts a scan automatically; it only reduces repeated creator requests during scans you start yourself. Set 0 to recheck eligible creators on every scan.</div></div><input id="thCreatorRecheckHours" type="number" min="0" max="720" step="1" value="{{ th.get('creator_recheck_hours', 6) }}"></div>
+        <div class="setting"><div><strong>Full Creator Scan Limit</strong><div class="help">Maximum projects to inspect when you explicitly run Creator Scan on a TensorHub creator. Useful for creators with hundreds of models.</div></div><input id="thCreatorScanMax" type="number" min="1" max="5000" step="20" value="{{ th.get('creator_scan_max_results', 1000) }}"></div>
+        <div class="setting"><div><strong>Search Order</strong><div class="help">Newest scans project publication order. Newest Updated uses TensorHub's latest-update ordering.</div></div><select id="thSort"><option value="newest" {% if th.get('sort') == 'newest' %}selected{% endif %}>Newest</option><option value="newest_updated" {% if th.get('sort') == 'newest_updated' %}selected{% endif %}>Newest Updated</option></select></div>
+    </div>
+
+    {% set sa = search_settings.get('seaart', {}) %}
+    <div class="card source-panel" id="panel-seaart">
+        <h2>Search Settings — SeaArt</h2>
+        <div class="notice">SeaArt uses its model-only search endpoint. AbyssBeacon searches enabled model families newest-first, follows result pages automatically, then loads full detail metadata for models before storing them.</div>
+        <div class="setting"><div><strong>Search Order</strong><div class="help">SeaArt integration currently uses its verified New ordering.</div></div><select id="saSort"><option value="newest" selected>Newest</option></select></div>
+    </div>
+
+    <div class="actions">
+        <button id="saveSearchSettings" type="button">Save Search Settings</button>
+        <span id="saveStatus"></span>
+    </div>
+
+
+    <div class="scan-footer">
+        <div class="scan-nav-group">
+            <a class="scan-nav current" aria-current="page">Scan Settings</a>
+            <a class="scan-nav" href="/settings/sources" data-scan-nav data-settings-title="Sources to Scan">Sources to Scan</a>
+            <a class="scan-nav" href="/settings/architectures" data-scan-nav data-settings-title="Models to Scan">Models to Scan</a>
+        </div>
+        <a class="scan-nav scan-window-link" href="#" data-show-scan-window>Show Scan Window</a>
+    </div>
+</div>
+
+<script>
+
+document.querySelectorAll("[data-retention-link]").forEach(link => {
+    link.addEventListener("click", event => {
+        event.preventDefault();
+        if (window.self !== window.top) {
+            window.parent.postMessage({type: "modelradar:open-retention-settings"}, window.location.origin);
+            return;
+        }
+        window.location.href = "/#automatic-retention";
+    });
+});
+
+
+document.querySelectorAll('[data-scan-nav]').forEach(link => {
+    link.addEventListener('click', event => {
+        if(window.parent === window) return;
+        event.preventDefault();
+        window.parent.postMessage({
+            type: 'modelradar:open-scan-settings-page',
+            url: link.getAttribute('href'),
+            title: link.dataset.settingsTitle || 'Settings'
+        }, window.location.origin);
+    });
+});
+document.querySelector('[data-show-scan-window]')?.addEventListener('click', event => {
+    event.preventDefault();
+    if(window.parent !== window){
+        window.parent.postMessage({type:'modelradar:show-scan-window'}, window.location.origin);
+        return;
+    }
+    window.location.href='/';
+});
+
+const tabs = document.querySelectorAll(".tab");
+const panels = document.querySelectorAll(".source-panel");
+
+tabs.forEach(tab => {
+    tab.addEventListener("click", () => {
+        tabs.forEach(item => item.classList.remove("active"));
+        panels.forEach(panel => panel.classList.remove("active"));
+        tab.classList.add("active");
+        document.getElementById(`panel-${tab.dataset.panel}`).classList.add("active");
+    });
+});
+
+function wholeNumber(id, fallback = 1) {
+    const input = document.getElementById(id);
+    const parsed = Number.parseInt(input.value, 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampInput(id, minimum, maximum = null) {
+    const input = document.getElementById(id);
+    let value = wholeNumber(id, minimum);
+    value = Math.max(minimum, value);
+    if (maximum !== null) value = Math.min(maximum, value);
+    input.value = value;
+    return value;
+}
+
+const creatorExpansionToggle = document.getElementById("thCreatorExpansionEnabled");
+const creatorCooldownInput = document.getElementById("thCreatorRecheckHours");
+function syncCreatorExpansionControl() {
+    if (!creatorExpansionToggle || !creatorCooldownInput) return;
+    creatorCooldownInput.disabled = !creatorExpansionToggle.checked;
+    creatorCooldownInput.style.opacity = creatorExpansionToggle.checked ? "1" : "0.45";
+}
+if (creatorExpansionToggle) {
+    creatorExpansionToggle.addEventListener("change", syncCreatorExpansionControl);
+    syncCreatorExpansionControl();
+}
+
+const globalLimitMode = document.getElementById("globalLimitMode");
+const globalMaxResults = document.getElementById("globalMaxResults");
+const scanLimitRule = document.getElementById("scanLimitRule");
+
+function optionalLimit(id, maximum) {
+    const input = document.getElementById(id);
+    const raw = String(input?.value || "").trim();
+    if (!raw) return null;
+    let value = Number.parseInt(raw, 10);
+    if (!Number.isFinite(value)) return null;
+    value = Math.max(1, Math.min(maximum, value));
+    input.value = String(value);
+    return value;
+}
+
+function syncGlobalLimitMode() {
+    const unlimited = globalLimitMode?.value === "unlimited";
+    if (globalMaxResults) {
+        globalMaxResults.disabled = unlimited;
+        globalMaxResults.style.opacity = unlimited ? "0.45" : "1";
+    }
+    if (scanLimitRule) {
+        scanLimitRule.innerHTML = unlimited
+            ? "<strong>Unlimited requires Automatic Retention.</strong> The configured retention-day window becomes the normal-scan boundary. If retention is disabled, AbyssBeacon requires a finite result limit instead."
+            : "Normal scans stop at the effective result limit or the Automatic Retention day boundary, whichever comes first. If retention is disabled, the finite result limit remains the required boundary.";
+    }
+}
+
+function buildScanLimitsPayload() {
+    const unlimited = globalLimitMode?.value === "unlimited";
+    const globalValue = unlimited ? null : clampInput("globalMaxResults", 1, 5000);
+    const ids = {
+        huggingface: ["limitHuggingface", 5000],
+        modelscope: ["limitModelscope", 3000],
+        civitai: ["limitCivitai", 5000],
+        civitaired: ["limitCivitaired", 5000],
+        tensorhub: ["limitTensorhub", 5000],
+        seaart: ["limitSeaart", 5000]
+    };
+    const sourceOverrides = {};
+    for (const [source, [id, maximum]] of Object.entries(ids)) {
+        let value = optionalLimit(id, maximum);
+        if (globalValue !== null && value !== null && value >= globalValue) {
+            value = null;
+            document.getElementById(id).value = "";
+        }
+        sourceOverrides[source] = value;
+    }
+    return {global_max_results: globalValue, source_overrides: sourceOverrides};
+}
+
+globalLimitMode?.addEventListener("change", syncGlobalLimitMode);
+syncGlobalLimitMode();
+
+const saveButton = document.getElementById("saveSearchSettings");
+const saveStatus = document.getElementById("saveStatus");
+
+saveButton.addEventListener("click", async () => {
+    saveStatus.textContent = "Saving...";
+
+    const payload = {
+        search_settings: {
+            huggingface: {sort: document.getElementById("hfSort").value},
+            modelscope: {sort: document.getElementById("msSort").value},
+            civitai: {sort: document.getElementById("civSort").value},
+            civitaired: {sort: document.getElementById("redSort").value},
+            tensorhub: {
+                sort: document.getElementById("thSort").value,
+                creator_expansion_enabled: document.getElementById("thCreatorExpansionEnabled").checked,
+                creator_probe_results: 20,
+                creator_recheck_hours: clampInput("thCreatorRecheckHours", 0, 720),
+                creator_scan_max_results: clampInput("thCreatorScanMax", 1, 5000)
+            },
+            seaart: {sort: document.getElementById("saSort").value}
+        },
+        scan_limits: buildScanLimitsPayload()
+    };
+
+    const response = await fetch("/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+        saveStatus.textContent = result.error || "Could not save settings.";
+        return;
+    }
+
+    saveStatus.textContent = "Saved.";
+});
+</script>
+</body>
+</html>

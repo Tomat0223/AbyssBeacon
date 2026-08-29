@@ -1,0 +1,239 @@
+<div id="optionsPanel" class="options-panel">
+    <style>
+        #automaticRetentionSettings.retention-link-highlight {
+            outline: 1px solid #00d9ff;
+            outline-offset: 4px;
+            border-radius: 8px;
+        }
+    </style>
+    <div class="options-title">⚙ Options</div>
+
+    <div class="options-shell">
+        <nav class="options-menu" aria-label="AbyssBeacon options">
+            <button class="options-item active" data-page="filters" type="button">Filters <span id="optionsFilterCount" class="options-count hidden">0</span></button>
+            <button class="options-item" data-page="sort" type="button">Sort</button>
+            <button class="options-item" data-page="scanner" type="button">Scanner</button>
+            <button class="options-item" data-page="library" type="button">Library</button>
+            <button id="closeOptionsReturn" class="options-item options-return-nav" type="button">← Return</button>
+        </nav>
+
+        <div class="options-content">
+            <div class="options-page" data-options-page="filters">
+                <div class="options-page-heading">Filters</div>
+                <div class="options-note">These controls change the models visible in the feed. Active filters also appear as removable pills under Search.</div>
+
+                <div class="option-group source-filter-group">
+                    <span class="option-label">Sources</span>
+                    <details id="sourceFilterDropdown" class="options-multi-select">
+                        <summary>
+                            <span id="sourceFilterSummary">Sources</span>
+                            <span class="options-multi-arrow">▾</span>
+                        </summary>
+                        <div class="options-multi-menu">
+                            <div class="options-multi-actions">
+                                <button id="selectAllSources" type="button">Select all</button>
+                                <button id="clearSources" type="button">Clear</button>
+                            </div>
+                            {% for name, source in sources.items() %}
+                            <label class="option-toggle source-pill">
+                                <input type="checkbox" name="sources" value="{{ name }}" data-source-label="{{ source.display }}" {% if name in selected_sources %}checked{% endif %}>
+                                <span>{{ source.display }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </details>
+                </div>
+
+                <div class="option-grid-two">
+                    <div class="option-group"><span class="option-label">Architecture</span><select id="familyFilter" class="options-select"><option value="">All Architectures</option>{% for architecture in architectures %}{% if architecture != "Other" %}<option value="{{ architecture }}">{{ architecture }}</option>{% endif %}{% endfor %}<option value="Other">Other</option></select></div>
+                    <div class="option-group"><span class="option-label">Model Type</span><select id="modelTypeFilter" class="options-select"><option value="">All Model Types</option>{% for type in model_types %}{% if type != "Other" %}<option value="{{ type }}">{{ type }}</option>{% endif %}{% endfor %}<option value="Other">Other</option></select></div>
+                    <div class="option-group"><span class="option-label">Status</span><select id="statusFilter" class="options-select"><option value="All">All</option><option value="New">New</option><option value="Seen">Seen</option><option value="Updated">Updated</option></select></div>
+                    <div class="option-group"><span class="option-label">Access</span><select id="accessFilter" class="options-select"><option value="all">All Models</option><option value="downloadable">Downloadable</option><option value="paid_access">Paid Access</option><option value="gated">Gated / No Download</option></select></div>
+                    <div class="option-group"><span class="option-label">Maturity</span><select id="sensitiveFilter" class="options-select"><option value="hide">Hide Mature</option><option value="blur">Blur Mature</option><option value="show">Show Mature</option><option value="only">Mature Only</option></select></div>
+                    <div class="option-group"><span class="option-label">Model Favorites</span><select id="favoriteFilter" class="options-select"><option value="all">All Models</option><option value="favorite">★ Favorites Only</option><option value="not_favorite">Not Favorited</option></select></div>
+                    <div class="option-group"><span class="option-label">Creator Favorites</span><select id="creatorFavoriteFilter" class="options-select"><option value="all">All Creators</option><option value="favorite">Favorite Creators</option><option value="not_favorite">Not Favorite Creators</option></select></div>
+                    <div class="option-group"><span class="option-label">Download Status</span><select id="downloadStatusFilter" class="options-select"><option value="all">All Models</option><option value="downloaded">Downloaded</option><option value="updates">Updates Available</option><option value="not_downloaded">Not Downloaded</option></select></div>
+                </div>
+
+                <label class="option-toggle"><input id="showMediaOnly" type="checkbox"><span>Models with media only</span></label>
+                <div class="options-action-row"><button id="markVisibleSeen" class="options-secondary" type="button">Mark Visible as Seen</button><button id="markAllSeen" class="options-secondary" type="button">Mark All as Seen</button></div>
+                <button id="resetFilters" class="options-reset" type="button">Reset Filters</button>
+            </div>
+
+            <div class="options-page" data-options-page="sort">
+                <div class="options-page-heading">Sort</div>
+                <div class="options-note">Latest Activity uses whichever source date is newer: created or updated. Recently Added uses when AbyssBeacon first discovered the model.</div>
+                <div class="sort-options">
+                    <label class="sort-option"><input type="radio" name="sortOption" value="activity" {% if selected_sort in ["activity", "newest"] %}checked{% endif %}><span>Latest Activity</span></label>
+                    <label class="sort-option"><input type="radio" name="sortOption" value="created" {% if selected_sort == "created" %}checked{% endif %}><span>Newest Created</span></label>
+                    <label class="sort-option"><input type="radio" name="sortOption" value="updated" {% if selected_sort == "updated" %}checked{% endif %}><span>Newest Updated</span></label>
+                    <label class="sort-option"><input type="radio" name="sortOption" value="added" {% if selected_sort == "added" %}checked{% endif %}><span>Recently Added</span></label>
+                    <label class="sort-option"><input type="radio" name="sortOption" value="downloads" {% if selected_sort == "downloads" %}checked{% endif %}><span>Most Downloads</span></label>
+                    <label class="sort-option"><input type="radio" name="sortOption" value="likes" {% if selected_sort == "likes" %}checked{% endif %}><span>Most Likes</span></label>
+                </div>
+                <button id="applySort" class="apply-sort" type="button">Apply Sort</button>
+            </div>
+
+            <div class="options-page" data-options-page="scanner">
+                <div class="options-page-heading">Scanner</div>
+                <div class="options-note">SCAN now opens its own Sources and Models to Scan picker, independent from feed filters.</div>
+                
+                <button class="options-link-button open-settings-overlay" data-settings-url="/settings" data-settings-title="Scanner Search Settings" type="button">Per-Source Search Settings</button>
+                <button class="options-link-button open-settings-overlay" data-settings-url="/settings/accounts" data-settings-title="Source Accounts" type="button">Source Accounts</button>
+                <div class="options-divider"></div>
+                <div class="option-label options-edit-label">Scan Definitions</div>
+                <button class="options-link-button open-settings-overlay" data-settings-url="/settings/sources" data-settings-title="Sources to Scan" type="button">Sources to Scan</button>
+                <button class="options-link-button open-settings-overlay" data-settings-url="/settings/architectures" data-settings-title="Models to Scan" type="button">Models to Scan</button>
+                <div class="options-divider"></div>
+                <details class="library-appearance-settings scanner-advanced-settings">
+                    <summary>
+                        <span><strong>Media &amp; Diagnostics</strong><small>Media limits and scanner troubleshooting</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body scanner-advanced-body">
+                        <div class="library-cleanup-row">
+                            <label for="mediaPerModelLimit">Maximum media per model</label>
+                            <div class="library-cleanup-input"><input id="mediaPerModelLimit" type="number" min="0" step="1" value="{{ preferences.get('media_per_model_limit', 100) }}"><span>items</span></div>
+                        </div>
+                        <div class="options-note">Maximum images/videos AbyssBeacon keeps for each discovered model. Use <strong>0</strong> for unlimited. Applies to future scans.</div>
+                        <label class="option-toggle-row"><input id="verboseScanLogging" type="checkbox" {% if preferences.get('verbose_scan_logging', False) %}checked{% endif %}><span><strong>Verbose scan logging</strong><small>Show per-search and page-by-page scanner details in the terminal. Off keeps normal scans concise.</small></span></label>
+                    </div>
+                </details>
+            </div>
+
+            <div class="options-page" data-options-page="library">
+                <div class="options-page-heading">Library</div>
+                <div class="library-stats">
+                    <div><strong>{{ library_model_count }}</strong><span>Models</span></div>
+                    <div><strong>{{ favorite_model_count }}</strong><span>★ Favorites</span></div>
+                    <div><strong>{{ favorite_creator_count }}</strong><span>♥ Creators</span></div>
+                </div>
+                <div class="library-quick-actions">
+                    <button id="browseFavoriteCreators" class="options-secondary" type="button">♥ Favorite Creators</button>
+                    <button class="options-secondary open-settings-overlay" data-settings-url="/settings/blocked-creators" data-settings-title="Blocked Creators" type="button">⊘ Blocked Creators</button>
+                </div>
+                <div class="options-divider"></div>
+                <details class="library-appearance-settings">
+                    <summary>
+                        <span><strong>Appearance</strong><small>Card colors and visual preferences</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <div class="option-group card-color-settings">
+                    <span class="option-label">Model Card Colors</span>
+                    <div class="options-note">Customize each source glow and accent. Changes apply live and persist across restarts.</div>
+                    <div class="card-color-grid">
+                        {% for name, source in sources.items() %}
+                        {% set selected_color = preferences.get('source_card_colors', {}).get(name, source.color) %}
+                        <label class="card-color-row" data-source="{{ name }}" data-default-color="{{ source.color }}">
+                            <span>{{ source.display }}</span>
+                            <input class="source-card-color" type="color" value="{{ selected_color }}" data-source="{{ name }}" aria-label="{{ source.display }} card color">
+                            <button class="card-color-reset" type="button">Reset</button>
+                        </label>
+                        {% endfor %}
+                    </div>
+                    <button id="resetAllCardColors" class="options-secondary" type="button">Reset All Card Colors</button>
+
+
+                        </div>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
+
+                <details class="library-appearance-settings library-download-settings">
+                    <summary>
+                        <span><strong>Local Installer</strong><small>Send models directly into your ComfyUI library</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <div class="options-note">The card still has one Download action. AbyssBeacon follows the behavior selected here.</div>
+                        <div class="library-cleanup-row"><label for="downloadBehavior">Download behavior</label><select id="downloadBehavior" class="options-select"><option value="browser" {% if preferences.get('download_behavior','browser') == 'browser' %}selected{% endif %}>Browser download</option><option value="local" {% if preferences.get('download_behavior','browser') == 'local' %}selected{% endif %}>Install to local library</option></select></div>
+                        <div class="options-note"><strong>Why use the Local Installer?</strong> Downloads handled by AbyssBeacon get live Active Downloads progress, transfer speed, cancel/retry controls, automatic library placement, and optional preview/info sidecars. Browser downloads are handed off to your browser, so AbyssBeacon cannot display byte-level progress for them.</div>
+                        <div class="library-cleanup-row"><label for="queuedDownloadBehavior">When queued model becomes available</label><select id="queuedDownloadBehavior" class="options-select"><option value="ask" {% if preferences.get('queued_download_behavior','ask') == 'ask' %}selected{% endif %}>Ask before installing</option><option value="auto" {% if preferences.get('queued_download_behavior','ask') == 'auto' %}selected{% endif %}>Install automatically</option></select></div>
+                        <div class="options-note">Queued CivitAI/CivitAI Red releases are checked after every completed scan. AbyssBeacon verifies actual download availability, so popularity-based Early Access releases can trigger before their scheduled date.</div>
+                        <label class="options-field-label" for="localModelsRoot">ComfyUI folder</label>
+                        <input id="localModelsRoot" class="options-path-input" type="text" value="{{ preferences.get('local_comfy_root', preferences.get('local_models_root','')) }}" placeholder="Example: C:\ComfyUI  or  …\…\ComfyUI" spellcheck="false">
+                        <div class="library-cleanup-row"><label for="installLayout">Folder layout</label><select id="installLayout" class="options-select"><option value="simple" {% if preferences.get('install_layout','simple') == 'simple' %}selected{% endif %}>Simple — AbyssBeacon / model</option><option value="organized" {% if preferences.get('install_layout','simple') == 'organized' %}selected{% endif %}>Organized — AbyssBeacon / source / model</option><option value="library" {% if preferences.get('install_layout','simple') == 'library' %}selected{% endif %}>Library — AbyssBeacon / architecture / source / model</option></select></div>
+                        <div class="library-cleanup-row"><label for="friendlyFilenames">Friendly filenames</label><select id="friendlyFilenames" class="options-select"><option value="off" {% if preferences.get('friendly_filenames','off') == 'off' %}selected{% endif %}>Keep original filenames</option><option value="obvious" {% if preferences.get('friendly_filenames','off') == 'obvious' %}selected{% endif %}>Rename obvious garbage only</option><option value="descriptive" {% if preferences.get('friendly_filenames','off') == 'descriptive' %}selected{% endif %}>Prefer descriptive filenames</option></select></div>
+                        <div class="library-cleanup-row"><label for="existingFileBehavior">If older version of file exists</label><select id="existingFileBehavior" class="options-select"><option value="keep_both" {% if preferences.get('existing_file_behavior','keep_both') == 'keep_both' %}selected{% endif %}>Keep both</option><option value="skip" {% if preferences.get('existing_file_behavior','keep_both') == 'skip' %}selected{% endif %}>Skip</option><option value="replace" {% if preferences.get('existing_file_behavior','keep_both') == 'replace' %}selected{% endif %}>Replace</option></select></div>
+                        <label class="option-toggle-row"><input id="saveModelInfo" type="checkbox" {% if preferences.get('save_model_info', True) %}checked{% endif %}><span><strong>Default: save model info</strong><small>Enabled by default in each model's Downloads panel. Creates one shared AbyssBeacon Info.txt per model folder.</small></span></label>
+                        <label class="option-toggle-row"><input id="saveModelPreview" type="checkbox" {% if preferences.get('save_model_preview', True) %}checked{% endif %}><span><strong>Default: save preview image</strong><small>Enabled by default in each model's Downloads panel. Creates one shared preview per model folder.</small></span></label>
+                        <div class="options-note">Choose the main <strong>ComfyUI</strong> folder only. AbyssBeacon automatically routes model files into <code>models\…</code> and workflows into <code>user\default\workflows</code>.</div><button id="testLocalModelsRoot" class="options-secondary" type="button">Test ComfyUI Folder</button>
+                        <div id="localInstallerStatus" class="options-note"></div>
+                        <div class="options-note"><strong>Library example:</strong> ComfyUI / models / loras / AbyssBeacon / Krea 2 / CivitAI / Model Name /<br><strong>Workflow example:</strong> ComfyUI / user / default / workflows / AbyssBeacon / Krea 2 / Source / Workflow Name /</div>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
+
+                <details class="library-appearance-settings library-download-settings">
+                    <summary>
+                        <span><strong>Download Tracking</strong><small>History, card status, and cleanup protection</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <div class="options-note">Track downloads initiated through AbyssBeacon so cards can show ✓ current or ↻ update available. History stays local to AbyssBeacon.</div>
+                        <label class="option-toggle-row"><input id="trackDownloads" type="checkbox" {% if preferences.get('track_downloads', True) %}checked{% endif %}><span><strong>Track downloaded models</strong><small>Turn this off to stop recording new download history.</small></span></label>
+                        <label class="option-toggle-row"><input id="showDownloadStatusCards" type="checkbox" {% if preferences.get('show_download_status_cards', True) %}checked{% endif %}><span><strong>Show download status on cards</strong><small>Hide ✓ / ↻ indicators without deleting history.</small></span></label>
+                        <div class="options-note"><strong>Downloaded models are always protected from automatic retention.</strong> Removing a tracked/downloaded model requires an explicit manual delete action.</div>
+                        <div class="library-cleanup-row"><label for="downloadHistoryCleanupMode">Clear download history</label><select id="downloadHistoryCleanupMode" class="options-select"><option value="recent_hour">Downloaded in past hour</option><option value="recent_1">Downloaded in past 24 hours</option><option value="recent_7">Downloaded in past 7 days</option><option value="older_than">Everything older than…</option><option value="all">Everything</option></select></div>
+                        <div id="downloadHistoryDaysRow" class="library-cleanup-row hidden"><label for="downloadHistoryDays">Older than</label><div class="library-cleanup-input"><input id="downloadHistoryDays" type="number" min="1" max="36500" value="30"><span>days</span></div></div>
+                        <button id="clearDownloadHistory" class="options-secondary" type="button">Review History Cleanup</button>
+                        <div id="downloadHistoryStatus" class="options-note"></div>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
+
+                <details id="automaticRetentionSettings" class="library-appearance-settings library-action-settings">
+                    <summary>
+                        <span><strong>Automatic Retention</strong><small>Shared scan and cleanup time window</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <label class="option-toggle-row"><input id="autoCleanupEnabled" type="checkbox" {% if preferences.get('auto_cleanup_enabled', False) %}checked{% endif %}><span><strong>Automatically clean old models</strong><small>Runs only after a completed normal scan. Favorites, favorite creators, and downloaded models are always protected.</small></span></label>
+                        <div id="autoCleanupSettings" {% if not preferences.get('auto_cleanup_enabled', False) %}hidden{% endif %}>
+                            <div class="library-cleanup-row"><label for="autoCleanupDays">Keep models for</label><div class="library-cleanup-input"><input id="autoCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('auto_cleanup_days', 7) }}"><span>days</span></div></div>
+                            <div class="options-note"><strong>Normal source scans use this same number of days.</strong> AbyssBeacon will not intentionally discover older models just to delete them during retention cleanup.</div>
+                            <div class="library-cleanup-row"><label for="creatorCleanupDays">Keep Creator / Discovery Scan models for</label><div class="library-cleanup-input"><input id="creatorCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('creator_cleanup_days', 30) }}"><span>days</span></div></div>
+                            <div class="options-note">Creator and Discovery Scan models use the date they were first imported by AbyssBeacon and can have a longer retention window than normal discovery.</div>
+                        </div>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
+
+                <details class="library-appearance-settings library-action-settings">
+                    <summary>
+                        <span><strong>Delete by Source / Architecture</strong><small>Remove selected library entries</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <div class="options-note">Remove unwanted AbyssBeacon library entries without touching downloaded model files. Preview is required before deletion.</div>
+                        <button id="openBulkLibraryCleanup" class="options-secondary library-cleanup-review" type="button">Choose Models to Delete</button>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
+
+                <details class="library-appearance-settings library-action-settings">
+                    <summary>
+                        <span><strong>Preview Cache</strong><small>Remove orphaned local thumbnails</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <label class="option-toggle-row">
+                            <input id="downloadMissingCardPreviews" type="checkbox" {% if preferences.get('download_missing_card_previews', False) %}checked{% endif %}>
+                            <span>
+                                <strong>Download missing card previews</strong>
+                                <small>If a cached card thumbnail is missing, AbyssBeacon rebuilds it from stored source/gallery image URLs. Full gallery media is not downloaded.</small>
+                            </span>
+                        </label>
+                        <div class="options-note">Useful after restoring an older <code>models.db</code> or manually clearing <code>static/cache/previews</code>.</div>
+                        <button id="repairPreviewCache" class="options-secondary" type="button">Download Missing Previews Now</button>
+                        <div class="options-divider"></div>
+                        <div class="options-note">Remove local card thumbnails that belong to models no longer in your library.</div>
+                        <button id="cleanPreviewCache" class="options-secondary" type="button">Clean Preview Cache</button>
+                        <div id="previewCacheStatus" class="options-note"></div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>
+</div>

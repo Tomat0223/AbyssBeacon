@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sources to Scan</title>
+<style>
+:root{color-scheme:dark;font-family:Arial,sans-serif}*{box-sizing:border-box}body{margin:0;background:#080b10;color:#f4f7fb}.page{width:min(980px,calc(100% - 32px));margin:22px auto 42px}.subtitle{color:#9aa8ba;font-size:15px;line-height:1.55;margin:0 0 18px}.notice{color:#7f91a6;font-size:13px;line-height:1.5;margin:-7px 0 20px}.sources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.source-row{background:#10151d;border:1px solid #263241;border-radius:14px;padding:15px 17px}.choice{display:flex;align-items:center;gap:12px;cursor:pointer}.choice input{width:21px;height:21px;accent-color:#00dff2}.choice span{font-size:17px;font-weight:700;color:#e9f7fa}.actions{display:flex;align-items:center;gap:12px;margin-top:20px}button.save{border:1px solid #00d9ff;border-radius:8px;padding:10px 18px;background:#07151b;color:#dffaff;cursor:pointer;text-decoration:none;font-size:14px}.status{color:#80e6a8;font-size:13px}
+.scan-footer {
+    margin-top: 22px;
+    padding-top: 16px;
+    border-top: 1px solid #202936;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.scan-nav-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.scan-nav {
+    border: 1px solid #00d9ff;
+    border-radius: 8px;
+    padding: 9px 14px;
+    background: #07151b;
+    color: #dffaff;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 14px;
+}
+.scan-nav:hover { box-shadow: 0 0 12px rgba(0,217,255,.18); }
+.scan-nav.current {
+    border-color: #334357;
+    background: #0c1118;
+    color: #75869a;
+    cursor: default;
+    box-shadow: none;
+}
+.scan-window-link { margin-left: auto; }
+@media (max-width: 620px) {
+    .scan-footer { align-items: stretch; }
+    .scan-window-link { margin-left: 0; }
+}
+@media(max-width:720px){.sources{grid-template-columns:1fr}}
+
+.bulk-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:-4px 0 12px}
+.bulk-action{border:0;background:transparent;color:#00d9ff;font:inherit;font-size:13px;cursor:pointer;padding:4px 2px}
+.bulk-action:hover{text-decoration:underline}
+.bulk-sep{color:#526274;font-size:12px}
+</style>
+
+</head>
+<body><div class="page">
+<p class="subtitle">Choose which model sources are globally available to normal scans and AbyssBeacon source filters.</p>
+<p class="notice">Disabled sources stay configured and can be re-enabled here at any time. They will not appear in the normal Scan window while disabled.</p>
+<div class="bulk-actions" aria-label="Bulk source selection">
+  <button id="selectAllSources" class="bulk-action" type="button">Select all</button>
+  <span class="bulk-sep">/</span>
+  <button id="clearAllSources" class="bulk-action" type="button">Clear all</button>
+</div>
+<div class="sources">
+{% for name, source in sources.items() %}
+<div class="source-row"><label class="choice"><input class="source-check" type="checkbox" value="{{ name }}" {% if name in enabled_sources %}checked{% endif %}><span>{{ source.display }}</span></label></div>
+{% endfor %}
+</div>
+<div class="actions"><button id="save" class="save" type="button">Save Changes</button><span id="status" class="status"></span></div>
+    <div class="scan-footer">
+        <div class="scan-nav-group">
+            <a class="scan-nav" href="/settings" data-scan-nav data-settings-title="Scanner Search Settings">Scan Settings</a>
+            <a class="scan-nav current" aria-current="page">Sources to Scan</a>
+            <a class="scan-nav" href="/settings/architectures" data-scan-nav data-settings-title="Models to Scan">Models to Scan</a>
+        </div>
+        <a class="scan-nav scan-window-link" href="#" data-show-scan-window>Show Scan Window</a>
+    </div>
+
+</div>
+<script>
+
+document.getElementById('selectAllSources')?.addEventListener('click',()=>{
+  document.querySelectorAll('.source-check').forEach(box=>box.checked=true);
+});
+document.getElementById('clearAllSources')?.addEventListener('click',()=>{
+  document.querySelectorAll('.source-check').forEach(box=>box.checked=false);
+});
+
+document.getElementById('save').addEventListener('click',async()=>{const enabled=[...document.querySelectorAll('.source-check:checked')].map(x=>x.value);const status=document.getElementById('status');status.textContent='Saving…';try{const response=await fetch('/settings/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Save failed.');status.textContent=`Saved · ${enabled.length} source${enabled.length===1?'':'s'} enabled.`;if(window.parent!==window){window.parent.postMessage({type:'modelradar:scan-definitions-saved',url:window.location.pathname,title:'Sources to Scan'},window.location.origin);}}catch(error){status.textContent=error.message||'Save failed.';}});
+
+document.querySelectorAll('[data-scan-nav]').forEach(link => {
+    link.addEventListener('click', event => {
+        if(window.parent === window) return;
+        event.preventDefault();
+        window.parent.postMessage({
+            type: 'modelradar:open-scan-settings-page',
+            url: link.getAttribute('href'),
+            title: link.dataset.settingsTitle || 'Settings'
+        }, window.location.origin);
+    });
+});
+document.querySelector('[data-show-scan-window]')?.addEventListener('click', event => {
+    event.preventDefault();
+    if(window.parent !== window){
+        window.parent.postMessage({type:'modelradar:show-scan-window'}, window.location.origin);
+        return;
+    }
+    window.location.href='/';
+});
+
+</script></body></html>

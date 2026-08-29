@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blocked Creators — AbyssBeacon</title>
+<style>
+*{box-sizing:border-box}
+:root{color-scheme:dark;font-family:Arial,sans-serif}
+body{margin:0;background:#02080b;color:#e8fbff}
+.page{max-width:900px;margin:0 auto;padding:28px}
+.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}
+h1{margin:0 0 7px;color:#fff;font-size:28px}.subtitle{margin:0;color:#7896a0;line-height:1.5}
+.note{margin:0 0 18px;padding:12px 14px;border:1px solid #17343d;border-radius:10px;background:#051015;color:#8facb5;line-height:1.5;font-size:14px}
+.list{display:grid;gap:12px}.row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;border:1px solid #17343d;border-radius:13px;background:#071218;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+.main{min-width:0;display:flex;flex-direction:column;gap:5px}.main strong{font-size:17px;color:#fff;overflow-wrap:anywhere}.main span{color:#7896a0;font-size:13px}
+.actions{display:flex;gap:8px;align-items:center;flex-shrink:0}button,a{border:1px solid #185263;background:#08212a;color:#dffaff;border-radius:9px;padding:9px 13px;cursor:pointer;text-decoration:none;font-size:14px}button:hover,a:hover{border-color:#00d9ff;color:#00eaff}.danger{border-color:#65303a;color:#ff9da8;background:#1a0d11}.danger:hover{border-color:#ff6676;color:#ffc1c7}
+.empty{padding:28px;border:1px dashed #24404a;border-radius:13px;text-align:center;color:#7896a0;background:#051015}
+.universal{margin:0 0 24px;padding:18px;border:1px solid #17404a;border-radius:13px;background:#061318}.universal h2{margin:0 0 7px;font-size:20px;color:#fff}.universal-copy{margin:0 0 14px;color:#7896a0;font-size:14px;line-height:1.45}.universal-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:13px 14px;border:1px solid #17343d;border-radius:11px;background:#071218}.universal-main{display:flex;flex-direction:column;gap:4px}.universal-main strong{color:#fff}.universal-main span{color:#7896a0;font-size:13px}.switch{display:flex;align-items:center;gap:9px;color:#bfeff5;white-space:nowrap}.switch input{width:20px;height:20px;accent-color:#00d9ff}
+.return{margin-top:22px}.status{margin-top:14px;color:#7ee9ae;font-size:13px;min-height:18px}
+@media(max-width:650px){.row{align-items:flex-start;flex-direction:column}.actions{width:100%}.actions>*{flex:1;text-align:center}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head"><div><h1>Blocked Creators</h1><p class="subtitle">Manage creators you chose to block from individual sources.</p></div></div>
+  <div class="note">Blocked creators are skipped during normal scans, Creator Scan, Discovery/Search Sources, and other supported discovery paths. Built-in AbyssBeacon safety exclusions are intentionally not shown here and cannot be changed from this page.</div>
+  {% if universal_blocks %}
+  <section class="universal">
+    <h2>Optional Universal Creator Exclusions</h2>
+    <p class="universal-copy">Optional blocks apply to every supported source and can be turned off at any time. Built-in safety exclusions remain separate and cannot be changed here.</p>
+    {% for item in universal_blocks %}
+    <div class="universal-row">
+      <div class="universal-main"><strong>{{ item.label }}</strong><span>{{ item.reason }}</span></div>
+      <label class="switch"><input class="universal-toggle" type="checkbox" data-creator="{{ item.creator }}" {% if item.enabled %}checked{% endif %}><span>Block universally</span></label>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  {% if creators %}
+  <div class="list" id="blockedCreatorList">
+    {% for item in creators %}
+    <div class="row" data-source="{{ item.source }}" data-creator="{{ item.creator }}">
+      <div class="main"><strong>{{ item.creator }}</strong><span>{{ item.source_display }} · {{ item.model_count }} stored model{{ '' if item.model_count == 1 else 's' }}</span></div>
+      <div class="actions"><a href="/creator/{{ item.creator|urlencode }}" target="_top">View Creator</a><button class="danger unblock-creator" type="button">Unblock</button></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty" id="blockedEmpty">No creators are currently blocked.</div>
+  {% endif %}
+  <div class="status" id="blockedStatus"></div>
+  <button id="blockedReturn" class="return" type="button">← Return</button>
+</div>
+<script>
+const status=document.getElementById('blockedStatus');
+function closePage(){if(window.self!==window.top){window.parent.postMessage({type:'modelradar:close-settings'},window.location.origin)}else{location.href='/';}}
+document.getElementById('blockedReturn').onclick=closePage;
+document.querySelectorAll('.universal-toggle').forEach(toggle=>toggle.addEventListener('change',async()=>{
+    const creator=toggle.dataset.creator; const enabled=toggle.checked;
+    toggle.disabled=true; status.textContent='Saving…';
+    try{
+        const response=await fetch('/api/blocked-creators/universal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({creator,enabled})});
+        const data=await response.json(); if(!response.ok||!data.success) throw new Error(data.error||'Unable to update universal creator exclusion.');
+        status.textContent=`${creator} ${enabled?'blocked across all sources':'removed from the universal block list'}.`;
+    }catch(error){toggle.checked=!enabled;status.textContent='';alert(error.message||'Unable to update universal creator exclusion.');}
+    finally{toggle.disabled=false;}
+}));
+document.querySelectorAll('.unblock-creator').forEach(button=>button.addEventListener('click',async()=>{
+    const row=button.closest('.row'); const creator=row.dataset.creator; const source=row.dataset.source;
+    if(!confirm(`Unblock ${creator} on ${source}?`)) return;
+    button.disabled=true; button.textContent='Unblocking…';
+    try{
+        const response=await fetch('/api/blocked-creators/unblock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,creator})});
+        const data=await response.json(); if(!response.ok||!data.success) throw new Error(data.error||'Unable to unblock creator.');
+        row.remove(); status.textContent=`Unblocked ${creator}.`;
+        if(!document.querySelector('.row')){const empty=document.createElement('div');empty.className='empty';empty.textContent='No creators are currently blocked.';document.getElementById('blockedCreatorList')?.replaceWith(empty);}
+    }catch(error){button.disabled=false;button.textContent='Unblock';status.textContent='';alert(error.message||'Unable to unblock creator.');}
+}));
+</script>
+</body>
+</html>

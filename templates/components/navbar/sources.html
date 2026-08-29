@@ -1,0 +1,36 @@
+<div class="source-dropdown">
+
+                <button id="sourceButton" class="source-button">
+                    Sources ▾
+                </button>
+
+
+                <div id="sourceMenu" class="source-menu">
+
+                    {% for name,source in sources.items() %}
+
+                    <label class="source-pill">
+
+                    <input
+                    type="checkbox"
+                    name="sources"
+                    value="{{ name }}"
+                    {% if name in selected_sources %}
+                    checked
+                    {% endif %}
+                    >
+
+                    {{ source.display }}
+
+                    </label>
+
+                    {% endfor %}
+                    
+
+                    <button class="clear-sources">
+                        Clear Selection
+                    </button>
+
+                </div>
+
+            </div>

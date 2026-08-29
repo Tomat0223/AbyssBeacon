@@ -1,0 +1,41 @@
+<div class="filter-dropdown architecture-filter" data-filter="family">
+
+                <input 
+                    type="hidden"
+                    id="familyFilter"
+                    value="">
+
+                <button class="filter-button">
+
+                    <span>Base Models</span>
+                    <span class="filter-arrow">▾</span>
+
+                </button>
+
+
+                <div class="filter-menu">
+
+                    <div class="filter-option"
+                        data-value=""
+                        data-label="Base Models">
+                        All Base Models
+                    </div>
+
+                    {% for architecture in architectures %}
+
+                    <div class="filter-option"
+                        data-value="{{ architecture }}">
+
+                        {{ architecture }}
+
+                    </div>
+
+                    {% endfor %}
+
+                    <div class="filter-option" data-value="Other">
+                        Other
+                    </div>
+
+                </div>
+
+            </div>

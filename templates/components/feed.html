@@ -1,0 +1,16 @@
+<section
+    class="feed-section"
+    id="modelFeed"
+    data-total-model-count="{{ feed_total_count | default(models|length) }}"
+    data-total-new-count="{{ feed_total_new | default(0) }}"
+    data-total-updated-count="{{ feed_total_updated | default(0) }}"
+    data-window-start="0"
+    data-next-offset="{{ feed_initial_count | default(models|length) }}"
+    data-has-more="{{ 'true' if feed_has_more else 'false' }}"
+>
+    <div id="feedTopSentinel" class="feed-load-sentinel complete" aria-hidden="true"></div>
+    <div class="feed-grid" id="modelFeedGrid">
+        {% include "components/feed_cards.html" %}
+    </div>
+    <div id="feedLoadSentinel" class="feed-load-sentinel" aria-hidden="true"></div>
+</section>

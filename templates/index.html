@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>AbyssBeacon</title>
+
+
+    <!-- Core CSS -->
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reset.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+
+    <!-- Component CSS -->
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/cards.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/badges.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/detail.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/download.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/gallery.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/fullscreen.css') }}">
+
+
+    <!-- Navbar CSS -->
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/layout.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/dropdowns.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/options.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/scan.css') }}">
+
+
+</head>
+
+
+<body class="loading">
+
+
+    {% include "components/navbar.html" %}
+
+
+
+    <main class="container">
+
+        {% include "components/feed.html" %}
+
+    </main>
+
+
+
+    <!-- Model Detail Overlay -->
+
+    <div id="modelOverlay" class="model-overlay">
+
+        <div class="model-panel">
+
+            <div id="modelDetails"></div>
+
+        </div>
+
+    </div>
+
+
+
+
+    <!-- Fullscreen Image Overlay -->
+
+
+    <div id="imageOverlay" class="image-overlay">
+
+
+        <button
+            id="closeImage"
+            class="close-image">
+
+            ×
+
+        </button>
+
+
+        <button id="fullscreenPrev" class="fullscreen-nav fullscreen-prev" type="button" aria-label="Previous image">‹</button>
+
+        <div class="fullscreen-wrapper">
+            <img id="fullscreenImage">
+        </div>
+
+        <button id="fullscreenNext" class="fullscreen-nav fullscreen-next" type="button" aria-label="Next image">›</button>
+
+
+    </div>
+
+
+
+
+    <!-- Settings / Library Overlay -->
+    <div id="settingsOverlay" class="settings-overlay" aria-hidden="true">
+        <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsOverlayTitle">
+            <div class="settings-modal-header">
+                <span id="settingsOverlayTitle">Settings</span>
+                <button id="closeSettingsOverlay" class="settings-modal-close" type="button" aria-label="Close settings">×</button>
+            </div>
+            <iframe id="settingsFrame" class="settings-frame" title="AbyssBeacon settings"></iframe>
+        </div>
+    </div>
+
+
+    <button id="feedBackToTop" class="back-to-top" type="button" aria-label="Back to top" title="Back to top">↑ Top</button>
+
+    <!-- Feed empty state -->
+    <div id="emptyFilterState" class="empty-filter-state hidden">
+        <div>No models match the current filters.</div>
+        <button id="emptyResetFilters" type="button">Reset filters</button>
+    </div>
+
+    <!-- Confirmation overlay -->
+    <div id="seenConfirmOverlay" class="qol-overlay" aria-hidden="true">
+        <div class="qol-modal qol-confirm" role="dialog" aria-modal="true">
+            <h3 id="seenConfirmTitle">Mark models as seen?</h3>
+            <p id="seenConfirmText"></p>
+            <label class="qol-check"><input id="seenConfirmDontAsk" type="checkbox"> <span>Do not show this confirmation again</span></label>
+            <div class="qol-actions"><button id="seenConfirmCancel" type="button">Cancel</button><button id="seenConfirmAccept" class="primary" type="button">Mark as Seen</button></div>
+        </div>
+    </div>
+
+    <!-- Scan history overlay -->
+    <div id="scanHistoryOverlay" class="qol-overlay" aria-hidden="true">
+        <div class="qol-modal scan-history-modal" role="dialog" aria-modal="true">
+            <div class="qol-modal-header"><span>Scan History</span><button id="closeScanHistory" type="button">×</button></div>
+            <div id="scanHistoryContent" class="scan-history-content">Loading…</div>
+        </div>
+    </div>
+
+
+    <!-- Favorite creators overlay -->
+    <div id="favoriteCreatorsOverlay" class="qol-overlay" aria-hidden="true">
+        <div class="qol-modal favorite-creators-modal" role="dialog" aria-modal="true" aria-labelledby="favoriteCreatorsTitle">
+            <div class="qol-modal-header"><span id="favoriteCreatorsTitle">♥ Favorite Creators</span><button id="closeFavoriteCreators" type="button">×</button></div>
+            <div class="favorite-creators-search-wrap"><input id="favoriteCreatorsSearch" type="search" placeholder="Search favorite creators…" autocomplete="off"></div>
+            <div id="favoriteCreatorsContent" class="favorite-creators-content">Loading…</div>
+        </div>
+    </div>
+
+    <!-- Source / architecture bulk cleanup -->
+    <div id="bulkLibraryCleanupOverlay" class="qol-overlay" aria-hidden="true">
+      <div class="qol-modal library-cleanup-modal bulk-library-modal" role="dialog" aria-modal="true">
+        <div class="qol-modal-header"><span>Delete Models by Source / Architecture</span><button id="closeBulkLibraryCleanup" type="button">×</button></div>
+        <div class="options-note">This deletes AbyssBeacon database/media-cache entries only. Downloaded model files are never touched.</div>
+        <div class="bulk-selection-heading"><div class="option-label">Sources</div><div class="bulk-selection-actions"><button id="bulkSelectAllSources" type="button">Select all</button><span>·</span><button id="bulkClearAllSources" type="button">Clear</button></div></div><div class="cleanup-architecture-grid">{% for name, source in sources.items() %}<label class="option-toggle cleanup-architecture-option"><input type="checkbox" name="bulkCleanupSource" value="{{ name }}"><span>{{ source.display }}</span></label>{% endfor %}</div>
+        <div class="option-label">Rule</div><select id="bulkCleanupMode" class="options-select"><option value="keep_selected">Delete everything except selected architectures</option><option value="delete_selected">Delete selected architectures</option></select>
+        <div class="bulk-selection-heading"><div class="option-label">Architectures</div><div class="bulk-selection-actions"><button id="bulkSelectAllArchitectures" type="button">Select all</button><span>·</span><button id="bulkClearAllArchitectures" type="button">Clear</button></div></div><div class="cleanup-architecture-grid">{% for architecture in architectures %}<label class="option-toggle cleanup-architecture-option"><input type="checkbox" name="bulkCleanupArchitecture" value="{{ architecture }}" checked><span>{{ architecture }}</span></label>{% endfor %}{% if 'Other' not in architectures %}<label class="option-toggle cleanup-architecture-option"><input type="checkbox" name="bulkCleanupArchitecture" value="Other"><span>Other</span></label>{% endif %}</div>
+        <div id="bulkCleanupSummary" class="library-cleanup-summary">Select at least one source, then preview.</div>
+        <label class="library-protected-override"><input id="bulkIncludeProtected" type="checkbox"><span><strong>Include protected models</strong><small>Favorites, favorite creators, and downloaded/tracked AbyssBeacon entries are kept unless you explicitly include them. Downloaded model files themselves are never deleted here.</small></span></label>
+        <div class="qol-actions"><button id="cancelBulkLibraryCleanup" type="button">Cancel</button><button id="previewBulkLibraryCleanup" type="button">Preview</button><button id="confirmBulkLibraryCleanup" class="primary danger" type="button" disabled>Delete Models</button></div>
+      </div>
+    </div>
+
+    <script id="favorite-creators-data" type="application/json">{{ favorite_creator_names | default([]) | tojson }}</script>
+
+    <!-- Scripts -->
+
+
+    <script src="{{ url_for('static', filename='js/scanner.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/search_sources.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/discovery.js') }}"></script>
+
+
+    <script id="user-preferences" type="application/json">
+        {{ preferences | default({}) | tojson }}
+    </script>
+
+
+    <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/navbar.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/gallery.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/fullscreen.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/feed_window.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+
+</body>
+
+</html>

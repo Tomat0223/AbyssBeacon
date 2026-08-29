@@ -1,0 +1,141 @@
+/* =========================
+   FULLSCREEN IMAGE
+========================= */
+
+.image-overlay{
+
+    display:none;
+
+    position:fixed;
+
+    inset:0;
+
+    background:rgba(0,0,0,.92);
+
+    z-index:5000;
+
+    justify-content:center;
+
+    align-items:center;
+
+    overflow:hidden;
+
+}
+
+
+.image-overlay.open{
+
+    display:flex;
+
+}
+
+
+.fullscreen-wrapper{
+
+    width:100%;
+
+    height:100%;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    overflow:hidden;
+
+}
+
+
+#fullscreenImage{
+
+    max-width:95vw;
+
+    max-height:95vh;
+
+    object-fit:contain;
+
+    cursor:grab;
+
+    user-select:none;
+
+    transform-origin:center center;
+
+    transition:transform .05s linear;
+
+}
+
+
+#fullscreenImage:active{
+
+    cursor:grabbing;
+
+}
+
+
+
+.close-image{
+
+    position:absolute;
+
+    top:20px;
+
+    right:20px;
+
+    width:45px;
+
+    height:45px;
+
+    border:none;
+
+    border-radius:50%;
+
+    background:#333;
+
+    color:white;
+
+    font-size:28px;
+
+    cursor:pointer;
+
+    z-index:10;
+
+}
+
+
+.close-image:hover{
+
+    background:#555;
+
+}
+/* Fullscreen gallery navigation */
+.fullscreen-nav{
+    position:absolute;
+    top:50%;
+    transform:translateY(-50%);
+    z-index:12;
+    width:52px;
+    height:72px;
+    border:1px solid rgba(0,234,255,.36);
+    border-radius:999px;
+    background:rgba(5,10,12,.72);
+    color:#dffcff;
+    font-size:42px;
+    line-height:1;
+    cursor:pointer;
+    backdrop-filter:blur(8px);
+    transition:border-color .15s ease,background .15s ease,color .15s ease,box-shadow .15s ease;
+}
+.fullscreen-nav:hover{border-color:#00eaff;background:rgba(0,234,255,.10);color:#00eaff;box-shadow:0 0 18px rgba(0,234,255,.12)}
+.fullscreen-nav[hidden]{display:none!important}
+.fullscreen-prev{left:24px}
+.fullscreen-next{right:24px}
+.close-image{border:1px solid rgba(0,234,255,.36);background:rgba(5,10,12,.82);color:#dffcff}
+.close-image:hover{border-color:#00eaff;background:rgba(0,234,255,.10);color:#00eaff}
+@media (max-width:760px){.fullscreen-nav{width:42px;height:58px;font-size:34px}.fullscreen-prev{left:10px}.fullscreen-next{right:10px}}
+
+/* Preserve Blur Mature when a mature gallery image is opened fullscreen. */
+.image-overlay.sensitive-blurred #fullscreenImage {
+    filter: blur(18px);
+}
+

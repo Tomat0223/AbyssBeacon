@@ -1,0 +1,22 @@
+<div id="scanProgress" class="scan-progress hidden">
+    <div class="scan-progress-head">
+        <div class="scan-title">
+            <span class="radar-dot"></span>
+            <span id="scanTitleText">Scanning selected sources...</span>
+        </div>
+        <div class="scan-progress-actions">
+            <button id="hideScanButton" class="scan-hide-button" type="button">Hide Scan</button>
+            <button id="stopScanButton" class="scan-stop-button" type="button">Stop Scan</button>
+        </div>
+    </div>
+
+    <div id="scanSourceGrid" class="scan-source-grid" aria-live="polite"></div>
+
+    <div id="scanMessage" class="scan-subtitle scan-summary-message">Starting scan...</div>
+    <div id="scanSource" class="scan-source scan-current-source" hidden></div>
+
+    <div class="scan-stats scan-stats-compact">
+        <div><span>New</span><strong id="scanAdded">0</strong></div>
+        <div><span>Updated</span><strong id="scanUpdated">0</strong></div>
+    </div>
+</div>

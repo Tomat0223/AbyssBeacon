@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Model Types</title>
+<style>
+:root{color-scheme:dark;font-family:Arial,sans-serif}*{box-sizing:border-box}body{margin:0;background:#080b10;color:#f4f7fb}.page{width:min(820px,calc(100% - 32px));margin:28px auto 42px}h1{margin:0 0 6px;color:#00eaff;font-size:24px}.subtitle{margin:0 0 20px;color:#8795a8;font-size:14px;line-height:1.5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.type{display:flex;gap:12px;align-items:center;padding:14px;background:#10151d;border:1px solid #263241;border-radius:11px}.type input{width:18px;height:18px;accent-color:#00d9ff}.type strong{display:block;color:#e8fbff}.type small{display:block;color:#718997;margin-top:3px}.actions{display:flex;gap:10px;align-items:center;margin-top:18px}button{border:1px solid rgba(0,234,255,.4);border-radius:16px;padding:9px 14px;background:#07151b;color:#00eaff;cursor:pointer}.status{color:#80e6a8;font-size:13px}@media(max-width:650px){.grid{grid-template-columns:1fr}}
+</style></head><body><div class="page">
+<h1>Model Types</h1>
+<p class="subtitle">Choose the model-type categories shown in AbyssBeacon's filters. Detection rules are maintained by AbyssBeacon and source metadata, so you never need to define what counts as a LoRA or Checkpoint.</p>
+<div class="grid" id="types">{% for name,data in model_types.items() %}<label class="type"><input type="checkbox" data-name="{{ name }}" {% if data.get('enabled',True) %}checked{% endif %}><span><strong>{{ name }}</strong><small>{{ data.get('keywords',[])|length }} internal recognition rule{{ '' if data.get('keywords',[])|length == 1 else 's' }}</small></span></label>{% endfor %}</div>
+<div class="actions"><button id="save" type="button">Save Changes</button><span class="status" id="status"></span></div>
+</div><script>
+document.getElementById('save').onclick=async()=>{const payload={};document.querySelectorAll('#types input').forEach(i=>payload[i.dataset.name]=i.checked);const s=document.getElementById('status');s.textContent='Saving…';const r=await fetch('/settings/model_types',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:payload})});s.textContent=r.ok?'Saved.':'Save failed.'};
+</script></body></html>

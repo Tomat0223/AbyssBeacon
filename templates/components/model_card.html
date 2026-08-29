@@ -1,0 +1,165 @@
+<article
+    class="model-card"
+    style="--source-color: {{ model['source_color'] }}; --new-pulse-delay: -{{ ((model['id'] or 0) % 2800) }}ms"
+    data-id="{{ model['id'] }}"
+    data-url="{{ model['url'] }}"
+    data-source="{{ model['source']|lower }}"
+    data-sources="{{ (model.get('source_list', [model['source']]))|join(' ')|lower }}"
+    data-architecture="{{ (model.get('architecture_list', [model['architecture']]))|join(' | ')|lower }}"
+    data-detected-architectures="{{ (model.get('detected_architecture_list', []))|join(' | ')|lower }}"
+    data-type="{{ model['model_type']|lower }}"
+    data-status="{{ 'new' if model['viewed'] == 0 else 'seen' }}"
+    data-latest-updated="{{ 'true' if model.get('latest_scan_updated') else 'false' }}"
+    data-name="{{ ((model['display_name'] or '') ~ ' ' ~ (model['name'] or '')) | lower }}"
+    data-author="{{ model['author']|lower }}"
+    data-tags="{{ (((model['tags'] or '') ~ ' ' ~ ((model['display_tags'] or [])|join(' '))) | lower) }}"
+    data-sha="{{ (model.get('sha256_list', []))|join(' ')|lower }}"
+    data-created="{{ model['created'] }}"
+    data-has-video="{{ 'true' if model['has_video'] else 'false' }}"
+    data-has-media="{{ 'true' if model['has_media'] else 'false' }}"
+    data-gated="{{ 'true' if model['gated'] else 'false' }}"
+    data-access="{{ model.get('access_status', 'gated' if model['gated'] else 'public') }}"
+    data-sensitive="{{ 'true' if model['sensitive'] else 'false' }}"
+    data-favorite="{{ 'true' if model['favorite'] else 'false' }}"
+    data-downloaded="{{ 'true' if model.get('downloaded') else 'false' }}"
+    data-update="{{ 'true' if model.get('update_available') else 'false' }}"
+>
+
+    <div
+        class="card-image"
+        data-has-image="{{ 'true' if model['image'] else 'false' }}"
+    >
+        {% if model.get('card_video') %}
+            <video
+                class="card-preview-video"
+                muted
+                loop
+                playsinline
+                preload="metadata"
+                data-src="{{ model['card_video'] }}"
+                {% if model.get('card_video_poster') %}poster="{{ model['card_video_poster'] }}"{% elif model['image'] %}poster="{{ model['image'] }}"{% endif %}
+                aria-label="Video preview for {{ model['name'] }}"
+            ></video>
+        {% elif model['image'] %}
+            <img
+                loading="lazy"
+                decoding="async"
+                src="{{ model['image'] }}"
+                alt="{{ model['name'] }}"
+                referrerpolicy="no-referrer"
+                onerror="this.onerror=null; this.src='{{ url_for('static', filename='images/video_preview.png' if model['has_video'] else 'images/no-preview.png') }}';"
+            >
+        {% elif model['has_video'] %}
+            <img
+                src="{{ url_for('static', filename='images/video_preview.png') }}"
+                alt="Video Preview Available"
+            >
+        {% else %}
+            <img
+                src="{{ url_for('static', filename='images/no-preview.png') }}"
+                alt="No Preview"
+            >
+        {% endif %}
+
+        <div class="card-image-shade" aria-hidden="true"></div>
+
+        <button
+            type="button"
+            class="model-favorite-btn {{ 'is-favorite' if model['favorite'] else '' }}"
+            data-model-id="{{ model['id'] }}"
+            data-favorite="{{ 'true' if model['favorite'] else 'false' }}"
+            title="{{ 'Remove from favorites' if model['favorite'] else 'Favorite model' }}"
+            aria-label="{{ 'Remove from favorites' if model['favorite'] else 'Favorite model' }}"
+        >{{ '★' if model['favorite'] else '☆' }}</button>
+
+        {% if model.get('access_status') == 'unconfirmed' %}
+            <span
+                class="card-access-icon is-unknown"
+                role="img"
+                aria-label="Download status unknown"
+                data-tooltip="Download status unknown"
+            >?</span>
+        {% elif model.get('access_status') == 'early_access' %}
+            <span
+                class="card-access-icon is-early-access"
+                role="img"
+                aria-label="Early Access"
+                data-tooltip="Early Access"
+            >⚡</span>
+        {% elif model.get('access_status') == 'paid_access' %}
+            <span
+                class="card-access-icon is-paid-access"
+                role="img"
+                aria-label="Paid Access"
+                data-tooltip="Paid Access"
+            >$</span>
+        {% elif model['gated'] %}
+            <span
+                class="card-access-icon is-gated"
+                role="img"
+                aria-label="Gated / no download"
+                data-tooltip="Gated / no download"
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 10V7a5 5 0 0 1 10 0v3h1.2A1.8 1.8 0 0 1 20 11.8v8.4a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 20.2v-8.4A1.8 1.8 0 0 1 5.8 10H7Zm2 0h6V7a3 3 0 0 0-6 0v3Z"/>
+                </svg>
+            </span>
+        {% elif model.get('access_status') == 'downloadable' %}
+            <span
+                class="card-access-icon is-downloadable"
+                role="img"
+                aria-label="Downloadable"
+                data-tooltip="Downloadable"
+            >↓</span>
+        {% endif %}
+
+        {% if model.get('show_download_status') and model.get('download_status') == 'downloaded' %}
+            <span class="card-download-state is-current" data-tooltip="Downloaded · current version" role="img" aria-label="Downloaded current version">✓</span>
+        {% elif model.get('show_download_status') and model.get('download_status') == 'update' %}
+            <span class="card-download-state is-update" data-tooltip="Update available" role="img" aria-label="Update available">↻</span>
+        {% endif %}
+
+        {% set activity = model | activity_time_parts %}
+
+        <div class="card-overlay-content">
+            <div class="card-title">
+                <h2 title="{{ model['display_name'] or model['name'] }}">
+                    {{ model['display_name'] or model['name'] }}
+                </h2>
+
+                <div class="author-badges" aria-label="Creator sources">
+                    {% for identity in model.get('author_sources', []) %}
+                        <a
+                            class="author-badge source-author-badge"
+                            href="/creator/{{ identity['author'] }}"
+                            title="{{ identity['author'] }} · {{ identity['source']|source_label }}"
+                            style="--author-source-color: {{ identity['color'] }}"
+                        >
+                            {{ identity['author'] }}
+                        </a>
+                    {% else %}
+                        <a class="author-badge" href="/creator/{{ model['author'] }}">{{ model['author'] }}</a>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="card-footer-row">
+                <div class="badges">
+                    {% set card_architectures = model.get('architecture_list', [model['architecture']]) %}
+                    {% for architecture in card_architectures %}
+                        <span class="badge architecture">{{ architecture }}</span>
+                    {% endfor %}
+                    <span class="badge type">{{ model['model_type'] }}</span>
+                </div>
+
+                {% if activity.relative %}
+                    <span class="image-time">
+                        <span class="image-time-label">{{ activity.label }}</span>
+                        <span class="image-time-value">{{ activity.relative }}</span>
+                        {% if activity.suffix %}<span class="image-time-label">{{ activity.suffix }}</span>{% endif %}
+                    </span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</article>

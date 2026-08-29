@@ -1,0 +1,25 @@
+body {
+
+    background:
+        radial-gradient(
+            circle at top,
+            rgba(0,234,255,0.05),
+            transparent 40%
+        ),
+        #050505;
+
+}
+
+
+body.loading {
+
+    visibility:hidden;
+
+}
+
+
+.hidden {
+
+    display:none !important;
+
+}

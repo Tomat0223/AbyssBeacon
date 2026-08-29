@@ -1,0 +1,26 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local editor / OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# AbyssBeacon local runtime data
+models.db
+*.db
+secrets.json
+browser_profiles/
+static/cache/
+*.part
+scan_terms.json
+app_config/active_downloads.json
+app_config/tensorhub_creator_state.json
+tensorhub_current.txt
+
+# Temporary/runtime files
+*.tmp
+*.log

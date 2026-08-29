@@ -1,0 +1,42 @@
+<div class="nav-actions">
+
+
+    <div class="options-wrapper">
+
+        <button id="optionsButton" class="options-button">
+            <span class="gear-icon">⚙</span>
+        </button>
+
+        <span class="options-tooltip">
+            Options
+        </span>
+
+        {% include "components/options_panel.html" %}
+
+    </div>
+
+
+    <button id="scanButton">
+        Scan Models
+    </button>
+
+
+    <div class="scan-details">
+
+        <span id="modelCount">
+            Scanned Models: {{ models|length }}
+        </span>
+
+        <span id="lastScan">
+            Updated {{ last_scan }}
+        </span>
+
+
+        <button id="scanDetailsButton">
+            Scan Details
+        </button>
+
+    </div>
+
+
+</div>

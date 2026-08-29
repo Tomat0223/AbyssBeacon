@@ -1,0 +1,305 @@
+.badge-new {
+
+    position:absolute;
+
+    top:12px;
+
+    right:12px;
+
+    width:9px;
+
+    height:9px;
+
+    border-radius:50%;
+
+    background:#00eaff;
+
+    border:1px solid rgba(0,234,255,.8);
+
+    box-shadow:
+        0 0 6px #00eaff,
+        0 0 12px rgba(0,234,255,.8);
+
+    z-index:10;
+
+    animation:radarPulse 1.8s infinite;
+
+}
+
+
+.badge-new::before {
+
+    content:"";
+
+    position:absolute;
+
+    inset:-6px;
+
+    border-radius:50%;
+
+    border:1px solid rgba(0,234,255,.7);
+
+    animation:radarRing 1.8s infinite;
+
+}
+
+
+.badge-gated {
+
+    position: absolute;
+
+    top: 50%;
+    left: 12px;
+
+    transform: translateY(-50%);
+
+    padding: 5px 10px;
+
+    border-radius: 14px;
+
+    background: rgba(0,0,0,.78);
+
+    color: #ffb300;
+
+    border: 1px solid #ffb300;
+
+    font-size: .72rem;
+
+    font-weight: 700;
+
+    letter-spacing: .5px;
+
+    z-index: 20;
+
+    backdrop-filter: blur(4px);
+
+    box-shadow: 0 0 10px rgba(255,179,0,.25);
+
+    pointer-events: none;
+}
+
+
+@keyframes radarPulse {
+
+    0%,
+    100% {
+
+        transform:scale(1);
+
+        opacity:1;
+
+    }
+
+
+    50% {
+
+        transform:scale(1.25);
+
+        opacity:.65;
+
+    }
+
+}
+
+
+@keyframes radarRing {
+
+    0% {
+
+        transform:scale(.5);
+
+        opacity:1;
+
+    }
+
+
+    100% {
+
+        transform:scale(1.8);
+
+        opacity:0;
+
+    }
+
+}
+
+
+@keyframes badgePulse {
+
+    0% {
+
+        box-shadow:
+            0 0 0 0 rgba(0,234,255,.8);
+
+    }
+
+    70% {
+
+        box-shadow:
+            0 0 0 8px rgba(0,234,255,0);
+
+    }
+
+    100% {
+
+        box-shadow:
+            0 0 0 0 rgba(0,234,255,0);
+
+    }
+
+}
+
+
+.badge {
+
+    padding:5px 10px;
+
+    border-radius:14px;
+
+    font-size:11px;
+
+    font-weight:600;
+
+    color:white;
+
+    display:inline-flex;
+
+    align-items:center;
+
+    white-space:nowrap;
+
+    gap:4px;
+
+    text-transform:uppercase;
+
+    letter-spacing:.5px;
+
+}
+
+
+.badges {
+
+    display:flex;
+
+    gap:6px;
+
+    flex-wrap:wrap;
+
+    margin:12px 0;
+
+}
+
+
+.badge.architecture{
+
+    background:#0099ff;
+
+}
+
+
+.badge.type{
+
+    background:#6d4aff;
+
+}
+
+
+.badge.source{
+
+    background:#1f8b4c;
+
+}
+
+
+.author-badge {
+
+    display:inline-flex;
+
+    align-items:center;
+
+    margin-top:8px;
+
+    padding:4px 10px;
+
+    border-radius:14px;
+
+    background:rgba(0,234,255,.06);
+
+    border:1px solid rgba(0,234,255,.2);
+
+    color:#00eaff;
+
+    font-size:12px;
+
+    text-decoration:none;
+
+    transition:.2s ease;
+
+}
+
+
+.author-badge:hover {
+
+    background:rgba(0,234,255,.15);
+
+    border-color:#00eaff;
+
+    box-shadow:
+        0 0 10px rgba(0,234,255,.35);
+
+}
+
+
+.detail-author-badge {
+
+    display:inline-flex;
+
+    align-items:center;
+
+    gap:6px;
+
+    margin-top:8px;
+
+    padding:6px 14px;
+
+    border-radius:18px;
+
+    background:rgba(0,234,255,.08);
+
+    border:1px solid rgba(0,234,255,.35);
+
+    color:#00eaff;
+
+    font-size:14px;
+
+    font-weight:600;
+
+    text-decoration:none;
+
+    transition:.2s ease;
+
+}
+
+
+.detail-author-badge:hover {
+
+    background:rgba(0,234,255,.15);
+
+    border-color:#00eaff;
+
+    box-shadow:
+        0 0 12px rgba(0,234,255,.35);
+
+}
+/* Gated status lives in the lower-left status corner; Updated stays lower-right. */
+.badge-gated {
+    top:auto;
+    bottom:10px;
+    left:10px;
+    transform:none;
+    padding:4px 8px;
+    font-size:.66rem;
+}
+
+.badge-access-unconfirmed,.badge-downloadable{position:absolute;left:10px;bottom:10px;z-index:20;padding:4px 8px;border-radius:14px;background:rgba(0,0,0,.80);backdrop-filter:blur(4px);font-size:.64rem;font-weight:700;letter-spacing:.35px;pointer-events:none}.badge-access-unconfirmed{color:#d8c68b;border:1px solid rgba(216,198,139,.78);box-shadow:0 0 9px rgba(216,198,139,.16)}.badge-downloadable{color:#00eaff;border:1px solid rgba(0,234,255,.70);box-shadow:0 0 10px rgba(0,234,255,.20)}
+.tensorhub-access-summary{margin:18px 0;padding:10px 14px;border:1px solid rgba(0,234,255,.22);border-radius:10px;background:rgba(0,234,255,.045);color:#aebbc0;font-size:.86rem;line-height:1.45}.tensorhub-access-summary strong{color:#e8f7f9}.file-download-btn.disabled{opacity:.35;cursor:not-allowed;pointer-events:none}

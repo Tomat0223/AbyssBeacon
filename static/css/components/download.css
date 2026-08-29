@@ -1,0 +1,486 @@
+/* =========================
+DOWNLOAD OVERLAY
+========================= */
+
+.download-overlay {
+
+    display: none !important;
+
+    position: absolute;
+
+    inset: 0;
+
+    z-index: 100;
+
+    background: rgba(0,0,0,.72);
+
+    align-items: center;
+
+    justify-content: center;
+
+    padding: 25px;
+
+    box-sizing: border-box;
+}
+
+.download-overlay.open {
+
+    display: flex !important;
+}
+
+
+/* =========================
+   DOWNLOAD PANEL
+========================= */
+
+.download-panel {
+
+    width:100%;
+
+    max-width:650px;
+
+    max-height:85%;
+
+    overflow-y:auto;
+
+    background:#181818;
+
+    border:1px solid rgba(0,234,255,.35);
+
+    border-radius:16px;
+
+    box-shadow:
+        0 20px 60px rgba(0,0,0,.7),
+        0 0 25px rgba(0,234,255,.08);
+
+}
+
+
+/* =========================
+   DOWNLOAD HEADER
+========================= */
+
+.download-header {
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:space-between;
+
+    gap:20px;
+
+    padding:16px 20px;
+
+    background:#080808;
+
+    border-bottom:1px solid rgba(0,234,255,.35);
+
+}
+
+
+.download-header h3 {
+
+    margin:0 0 4px;
+
+    color:#00eaff;
+
+    font-size:18px;
+
+}
+
+
+.download-model-name {
+
+    display:block;
+
+    color:#888;
+
+    font-size:12px;
+
+    white-space:nowrap;
+
+    overflow:hidden;
+
+    text-overflow:ellipsis;
+
+    max-width:480px;
+
+}
+
+
+/* =========================
+   DOWNLOAD CLOSE
+========================= */
+
+.download-close {
+
+    flex-shrink:0;
+
+    width:30px;
+
+    height:30px;
+
+    border:1px solid rgba(0,234,255,.35);
+
+    border-radius:50%;
+
+    background:#080808;
+
+    color:#00eaff;
+
+    font-size:18px;
+
+    cursor:pointer;
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:center;
+
+    line-height:1;
+
+    transition:.2s;
+
+}
+
+
+.download-close:hover {
+
+    border-color:#00eaff;
+
+    box-shadow:
+        0 0 10px rgba(0,234,255,.5);
+
+}
+
+
+/* =========================
+   DOWNLOAD CONTENT
+========================= */
+
+.download-content {
+
+    padding:20px;
+
+}
+
+
+.download-content h4 {
+
+    margin:0 0 14px;
+
+    color:#7CFF91;
+
+    font-size:14px;
+
+    text-transform:uppercase;
+
+    letter-spacing:.5px;
+
+}
+
+
+/* =========================
+   DOWNLOAD FILE LIST
+========================= */
+
+.download-file-list {
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:10px;
+
+}
+
+
+.download-file {
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:space-between;
+
+    gap:15px;
+
+    padding:13px 14px;
+
+    background:#222;
+
+    border:1px solid #333;
+
+    border-radius:10px;
+
+    transition:.2s;
+
+}
+
+
+.download-file:hover {
+
+    border-color:rgba(0,234,255,.45);
+
+    box-shadow:
+        0 0 12px rgba(0,234,255,.08);
+
+}
+
+
+/* =========================
+   FILE INFORMATION
+========================= */
+
+.download-file-info {
+
+    min-width:0;
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:5px;
+
+}
+
+
+.download-file-info strong {
+
+    color:white;
+
+    font-size:13px;
+
+    word-break:break-word;
+
+}
+
+
+.download-file-info span {
+
+    color:#888;
+
+    font-size:11px;
+
+}
+
+
+/* =========================
+   FILE DOWNLOAD BUTTON
+========================= */
+
+.file-download-btn {
+
+    flex-shrink:0;
+
+    width:34px;
+
+    height:34px;
+
+    border:none;
+
+    border-radius:50%;
+
+    background:#2ecc71;
+
+    color:#080808;
+
+    font-size:18px;
+
+    font-weight:bold;
+
+    cursor:pointer;
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:center;
+
+    transition:.2s;
+
+}
+
+
+.file-download-btn:hover {
+
+    background:#58d68d;
+
+    transform:scale(1.05);
+
+    box-shadow:
+        0 0 12px rgba(46,204,113,.3);
+
+}
+
+
+/* =========================
+   SHOW ALL DOWNLOADS
+========================= */
+
+.show-all-downloads {
+
+    width:100%;
+
+    margin-top:16px;
+
+    padding:10px;
+
+    border:1px solid #333;
+
+    border-radius:9px;
+
+    background:#222;
+
+    color:#00eaff;
+
+    font-size:12px;
+
+    cursor:pointer;
+
+    transition:.2s;
+
+}
+
+
+.show-all-downloads:hover {
+
+    border-color:#00eaff;
+
+    background:#282828;
+
+}
+
+
+/* =========================
+   ALL DOWNLOADS
+========================= */
+
+.all-downloads {
+
+    display:none;
+
+    margin-top:12px;
+
+    flex-direction:column;
+
+    gap:10px;
+
+}
+
+
+.all-downloads.open {
+
+    display:flex;
+
+}
+
+
+.download-file.secondary {
+
+    opacity:.8;
+
+}
+
+
+.download-file.secondary:hover {
+
+    opacity:1;
+
+}
+.download-version-state{display:block;margin-top:5px;font-size:11px;font-weight:700;letter-spacing:.2px}.download-version-state.current{color:#76f7c3}.download-version-state.update{color:#ffd166}
+
+/* Multi-source download chooser */
+.download-source-group{margin:0 0 14px;padding:14px 16px;border:1px solid rgba(255,255,255,.09);border-radius:10px;background:rgba(255,255,255,.025)}
+.download-source-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.download-source-heading>strong{font-size:.92rem;color:#eefcff}
+.download-source-state{font-size:.72rem;font-weight:700;letter-spacing:.25px}.download-source-state.downloadable{color:#00eaff}.download-source-state.gated{color:#ffb86b}.download-source-state.paid-access{color:#ff6b96}.download-source-state.unknown{color:#d8c68b}
+.download-source-note,.download-source-missing{font-size:.76rem;line-height:1.45;color:#8fa4aa;margin:4px 0 10px}.download-source-missing{padding:8px 10px;border-radius:7px;background:rgba(255,255,255,.035)}
+
+/* Preview-model source chooser */
+.media-download-source-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0 7px;margin-top:5px;border-top:1px solid rgba(255,255,255,.08)}
+.media-download-source-heading:first-child{border-top:0;margin-top:0}
+.media-download-source-heading strong{color:#eefcff;font-size:.9rem}
+.media-download-source-state{font-size:.72rem;font-weight:700;letter-spacing:.2px;color:#d8c68b}
+.media-download-source-state.downloadable{color:#00eaff}.media-download-source-state.gated{color:#ff8a9c}
+.media-download-source-note{font-size:.76rem;line-height:1.4;color:#8fa4aa;margin:0 0 7px}
+
+/* =========================
+   VERSION-AWARE DOWNLOADS
+========================= */
+.download-source-state.early-access{color:#ffd166}
+.download-version-list{display:flex;flex-direction:column;gap:10px}
+.download-version-group{border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;background:rgba(0,0,0,.16)}
+.download-version-group.version-filter-hidden{display:none}
+.download-version-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:rgba(255,255,255,.035);border-bottom:1px solid rgba(255,255,255,.06)}
+.download-version-heading>div{display:flex;align-items:center;gap:8px;min-width:0}
+.download-version-heading strong{color:#f3fbfd;font-size:.9rem}
+.download-version-subtype{font-size:.68rem;color:#81979d;text-transform:uppercase;letter-spacing:.45px}
+.download-version-access{font-size:.7rem;font-weight:800;white-space:nowrap}
+.download-version-access.downloadable{color:#00eaff}.download-version-access.early-access{color:#ffd166}.download-version-access.gated{color:#ff8a9c}
+.download-early-access-note{padding:9px 12px;background:rgba(255,183,0,.06);color:#d7c58f;font-size:.75rem;line-height:1.45;border-bottom:1px solid rgba(255,183,0,.13)}
+.download-version-group .download-file-list{padding:0}
+.download-version-group .download-file{border-radius:0;border-left:0;border-right:0;border-bottom:0}
+.download-version-group .download-file:first-child{border-top:0}
+.download-filter-banner{display:none;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;margin:0 0 10px;border:1px solid rgba(0,234,255,.18);border-radius:9px;background:rgba(0,234,255,.05);color:#9cb3b9;font-size:.76rem}
+.download-filter-banner.open{display:flex}.download-filter-banner button{border:0;background:transparent;color:#00eaff;cursor:pointer;font:inherit;font-weight:700}
+
+
+/* =========================
+   STICKY HEADER DOWNLOAD DRAWER
+   The canonical chooser expands from the command bar instead of opening at
+   the top of the document or in a detached modal.
+========================= */
+.detail-header .download-overlay {
+    display:none !important;
+    position:static !important;
+    inset:auto !important;
+    width:100%;
+    margin:12px 0 0;
+    padding:0;
+    background:transparent;
+    z-index:auto !important;
+    box-sizing:border-box;
+}
+.detail-header .download-overlay.open {
+    display:block !important;
+}
+.detail-header .download-panel {
+    width:100%;
+    max-width:none;
+    max-height:min(56vh,620px);
+    overflow-y:auto;
+    box-sizing:border-box;
+    background:#111516;
+    border:1px solid rgba(0,234,255,.28);
+    border-radius:12px;
+    box-shadow:0 14px 34px rgba(0,0,0,.45),0 0 20px rgba(0,234,255,.05);
+}
+.detail-header .download-header {
+    position:sticky;
+    top:0;
+    z-index:2;
+    padding:11px 14px;
+    background:#0b0e0f;
+}
+.detail-header .download-header h3 {
+    font-size:15px;
+    margin-bottom:2px;
+}
+.detail-header .download-model-name {
+    max-width:none;
+}
+.detail-header .download-content {
+    padding:14px;
+}
+.detail-header .download-source-group {
+    margin-bottom:10px;
+}
+.detail-header .download-close {
+    width:28px;
+    height:28px;
+}
+
+.download-paid-access-note,.paid-access-note{margin:.6rem 0;padding:.7rem .85rem;border:1px solid rgba(255,92,138,.32);border-radius:12px;background:rgba(255,92,138,.06);color:#ffc2d3}.download-paid-access-note{display:flex;align-items:center;justify-content:space-between;gap:12px}
