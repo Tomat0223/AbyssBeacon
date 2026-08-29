@@ -6,6 +6,8 @@ A local model discovery and download manager for Hugging Face, CivitAI, CivitAI 
 
 AbyssBeacon brings multiple model sources into one local interface so you can find new releases, track updates, inspect previews and metadata, follow creators, and manage downloads without checking each site individually.
 
+<img width="2048" height="1078" alt="main feed" src="https://github.com/user-attachments/assets/93e5f821-ae6a-4d22-add3-423a18196231" />
+
 ## Features
 
 - Scan multiple supported model sources from one interface.
@@ -22,6 +24,8 @@ AbyssBeacon brings multiple model sources into one local interface so you can fi
 - Hide mature content by default, with user-controlled visibility settings.
 - Block creators from individual sources or use supported universal creator exclusions.
 - Run locally with a SQLite database and local settings.
+
+<img width="1559" height="1116" alt="card_details" src="https://github.com/user-attachments/assets/499768cb-044f-43f1-88e0-7a269aa114bc" />
 
 ## Supported Sources
 
@@ -75,6 +79,8 @@ Open Settings to change these defaults before your first large scan.
 
 Use the `SCAN` button to choose the sources and model families for a normal scan.
 
+<img width="1072" height="1184" alt="scan_details" src="https://github.com/user-attachments/assets/acfae5da-0ffa-4f0b-bf55-3b5cbef4250c" />
+
 AbyssBeacon supports centralized scan limits:
 
 - A finite result limit stops a source and architecture search at that result ceiling.
@@ -88,9 +94,13 @@ Individual services can still impose their own backend or pagination limits.
 
 Normal scans use the tested model-family definitions configured in AbyssBeacon.
 
-Use Search Sources when you want to look for an arbitrary model name or keyword without adding it to the normal scan registry.
+The main search box filters models already in your AbyssBeacon feed.
 
-Discovery tools can use source-specific tags and creator information to find models outside the normal architecture searches.
+Use Search Sources when you want to look for an arbitrary model name or keyword without adding it to the normal scan registry. Type `search` in the main search box to open Search Sources.
+
+Discovery tools can use source-specific tags and creator information to find models outside the normal architecture searches. Type `discover` in the main search box to open Discovery.
+
+Additional explanations are available by hovering over controls inside AbyssBeacon.
 
 ## Downloads and ComfyUI
 
