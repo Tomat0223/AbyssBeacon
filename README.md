@@ -25,7 +25,7 @@ AbyssBeacon brings multiple model sources into one local interface so you can fi
 - Block creators from individual sources or use supported universal creator exclusions.
 - Run locally with a SQLite database and local settings.
 
-<img width="1559" height="1116" alt="card_details" src="https://github.com/user-attachments/assets/499768cb-044f-43f1-88e0-7a269aa114bc" />
+<img width="1593" height="1136" alt="card_details" src="https://github.com/user-attachments/assets/7d3d7656-3372-45a0-8345-7c23d1ca2df5" />
 
 ## Supported Sources
 
