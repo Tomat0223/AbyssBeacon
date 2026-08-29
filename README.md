@@ -66,7 +66,7 @@ The first startup can take longer while Python packages are installed.
 Fresh installations start with conservative defaults:
 
 - All supported sources and tested model families are available.
-- No sources or model families are preselected in the Scan window.
+- All supported sources and tested model families are preselected for the first scan. You can deselect anything you don't want to scan.
 - Normal scans use a global maximum of 150 results per source and architecture search.
 - Automatic Retention is off by default.
 - Mature models are hidden by default.
