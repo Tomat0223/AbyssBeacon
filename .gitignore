@@ -1,26 +1,36 @@
-# Python
-venv/
-.venv/
+# AbyssBeacon local credentials / authenticated browser state
+secrets.json
+secrets.json.tmp
+browser_profiles/
+
+# Local database/runtime state
+models.db
+models.db-wal
+models.db-shm
+models.db-journal
+app_config/active_downloads.json
+app_config/active_downloads.json.tmp
+settings.json.tmp
+/scan_terms.json
+app_config/tensorhub_creator_state.json
+app_config/tensorhub_creator_state.json.tmp
+
+# Downloaded/cached card previews (keep the directory itself)
+static/cache/previews/*
+!static/cache/previews/.gitkeep
+
+# Python environments and caches
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Local editor / OS files
-.vscode/
+# Local environment / logs / OS clutter
+.env
+.env.*
+*.log
 .DS_Store
 Thumbs.db
-
-# AbyssBeacon local runtime data
-models.db
-*.db
-secrets.json
-browser_profiles/
-static/cache/
-*.part
-scan_terms.json
-app_config/active_downloads.json
-app_config/tensorhub_creator_state.json
-tensorhub_current.txt
-
-# Temporary/runtime files
-*.tmp
-*.log

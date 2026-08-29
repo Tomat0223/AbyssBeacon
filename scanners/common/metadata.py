@@ -7,11 +7,46 @@ def _flatten_sensitive_text(value):
     if value is None:
         return ""
 
+    # card_data is commonly stored as a JSON string.  Treat it as structured
+    # metadata instead of raw prose so keys such as ``"nsfw": false`` do not
+    # accidentally trigger the word-based maturity detector.
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped[:1] in {"{", "["}:
+            try:
+                return _flatten_sensitive_text(json.loads(stripped))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return value
+
     if isinstance(value, dict):
-        return " ".join(
-            _flatten_sensitive_text(v)
-            for v in value.values()
-        )
+        parts = []
+        for key, nested in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+            # Preserve an explicit positive structured maturity flag while
+            # ignoring false/empty flags.  This keeps ``nsfw: true`` useful
+            # without treating the literal field name in ``nsfw: false`` as
+            # mature content.
+            if normalized_key in {"nsfw", "sensitive", "ismature", "isadult"}:
+                if isinstance(nested, bool):
+                    if nested:
+                        parts.append("nsfw")
+                    continue
+                if isinstance(nested, (int, float)):
+                    if nested != 0:
+                        parts.append("nsfw")
+                    continue
+                marker = str(nested or "").strip().lower()
+                if marker in {"true", "1", "yes", "adult", "mature", "explicit", "nsfw"}:
+                    parts.append("nsfw")
+                    continue
+                if marker in {"", "false", "0", "no", "none", "safe", "sfw"}:
+                    continue
+
+            parts.append(_flatten_sensitive_text(nested))
+
+        return " ".join(part for part in parts if part)
 
     if isinstance(value, (list, tuple, set)):
         return " ".join(

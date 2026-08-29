@@ -531,6 +531,10 @@ function setSelectFromSearch(id, requested, aliases={}){
     return true;
 }
 
+function normalizeSensitiveMode(value){
+    return String(value || "hide").toLowerCase() === "show" ? "show" : "hide";
+}
+
 function applyStructuredSearchToOptions(rawTerm){
     const term=String(rawTerm || "").trim();
     const match=term.match(/^([a-z-]+):(.*)$/i);
@@ -563,12 +567,11 @@ function applyStructuredSearchToOptions(rawTerm){
         changed=setSelectFromSearch("accessFilter", value, {unknown:"unconfirmed"});
     } else if(key === "mature"){
         const normalized=value.toLowerCase();
-        if(["true","yes","1","only"].includes(normalized)){
-            document.getElementById("sensitiveFilter").value="only"; changed=true;
-        } else if(["false","no","0","hide"].includes(normalized)){
+        if(["true","yes","1","show"].includes(normalized)){
+            document.getElementById("sensitiveFilter").value="show"; changed=true;
+        } else if(["false","no","0","hide","blur","only"].includes(normalized)){
+            // Legacy Blur/Only values safely collapse to Hide in the two-state UI.
             document.getElementById("sensitiveFilter").value="hide"; changed=true;
-        } else if(["show","blur"].includes(normalized)){
-            document.getElementById("sensitiveFilter").value=normalized; changed=true;
         }
     } else if(key === "media"){
         const normalized=value.toLowerCase();
@@ -744,7 +747,7 @@ function renderFilterPills(){
     if(access!=="all"){const labels={downloadable:"Downloadable",unconfirmed:"Unknown",gated:"Gated / No Download",public:"Public"};addFilterPill(container,labels[access]||access,resetSelect("accessFilter","all"));}
     // Maturity is a persistent display preference controlled from Settings.
     // Do not surface it as a removable/active search pill; clearing filters must
-    // never change Show / Hide / Blur / Mature Only.
+    // never change the persistent Hide / Show preference.
     if(favorite!=="all") addFilterPill(container,favorite==="favorite"?"★ Favorites":"Not favorited",resetSelect("favoriteFilter","all"));
     if(creatorFavorite!=="all") addFilterPill(container,creatorFavorite==="favorite"?"Favorite Creators":"Creators not favorited",resetSelect("creatorFavoriteFilter","all"));
     if(downloadStatus!=="all"){
@@ -798,7 +801,7 @@ function filterCards(){
     const modelType = (document.getElementById("modelTypeFilter")?.value || "").toLowerCase();
     const status = (document.getElementById("statusFilter")?.value || "all").toLowerCase();
     const access = (document.getElementById("accessFilter")?.value || "all").toLowerCase();
-    const sensitiveMode = (document.getElementById("sensitiveFilter")?.value || "hide").toLowerCase();
+    const sensitiveMode = normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value);
     const favoriteMode = (document.getElementById("favoriteFilter")?.value || "all").toLowerCase();
     const creatorFavoriteMode = (document.getElementById("creatorFavoriteFilter")?.value || "all").toLowerCase();
     const downloadStatusMode = (document.getElementById("downloadStatusFilter")?.value || "all").toLowerCase();
@@ -819,7 +822,7 @@ function filterCards(){
         const creatorFavorite = favoriteCreatorNames.has((card.dataset.author || "").toLowerCase());
         const downloaded = card.dataset.downloaded === "true" || card.dataset.downloaded === "1";
         const updateAvailable = card.dataset.update === "true" || card.dataset.update === "1";
-        card.classList.toggle("sensitive-blurred", sensitive && sensitiveMode === "blur");
+        card.classList.remove("sensitive-blurred");
 
         let visible = true;
 
@@ -842,7 +845,6 @@ function filterCards(){
         if(access === "public") visible = visible && !["gated","paid_access"].includes(cardAccess);
         if(access === "gated") visible = visible && ["gated","paid_access"].includes(cardAccess);
         if(sensitiveMode === "hide") visible = visible && !sensitive;
-        if(sensitiveMode === "only") visible = visible && sensitive;
         if(favoriteMode === "favorite") visible = visible && favorite;
         if(favoriteMode === "not_favorite") visible = visible && !favorite;
         if(creatorFavoriteMode === "favorite") visible = visible && creatorFavorite;
@@ -984,7 +986,7 @@ function persistPreferences(){
         selected_model_type: document.getElementById("modelTypeFilter")?.value || "",
         selected_status: document.getElementById("statusFilter")?.value || "All",
         selected_access: document.getElementById("accessFilter")?.value || "all",
-        selected_sensitive: document.getElementById("sensitiveFilter")?.value || "hide",
+        selected_sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value),
         selected_favorite: document.getElementById("favoriteFilter")?.value || "all",
         selected_creator_favorite: document.getElementById("creatorFavoriteFilter")?.value || "all",
         selected_download_status: document.getElementById("downloadStatusFilter")?.value || "all",
@@ -1048,7 +1050,7 @@ function restorePreferences(){
         modelTypeFilter: preferences.selected_model_type || "",
         statusFilter: preferences.selected_status || "All",
         accessFilter: preferences.selected_access || "all",
-        sensitiveFilter: preferences.selected_sensitive || "hide",
+        sensitiveFilter: normalizeSensitiveMode(preferences.selected_sensitive),
         favoriteFilter: preferences.selected_favorite || "all",
         creatorFavoriteFilter: preferences.selected_creator_favorite || "all",
         downloadStatusFilter: preferences.selected_download_status || "all"
@@ -1082,7 +1084,7 @@ function filtersAreActive(){
         type: document.getElementById("modelTypeFilter")?.value || "",
         status: (document.getElementById("statusFilter")?.value || "All").toLowerCase(),
         access: (document.getElementById("accessFilter")?.value || "all").toLowerCase(),
-        sensitive: (document.getElementById("sensitiveFilter")?.value || "hide").toLowerCase(),
+        sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value),
         favorite: (document.getElementById("favoriteFilter")?.value || "all").toLowerCase(),
         creatorFavorite: (document.getElementById("creatorFavoriteFilter")?.value || "all").toLowerCase(),
         downloadStatus: (document.getElementById("downloadStatusFilter")?.value || "all").toLowerCase(),
@@ -1115,7 +1117,7 @@ function updateFilterUI(){
 function resetFilters(){
     document.querySelectorAll('input[name="sources"]').forEach(input => input.checked = true);
     // Maturity is a persistent safety/display preference, not a disposable search filter.
-    // Clear All intentionally leaves Show/Hide/Blur/Mature Only unchanged.
+    // Clear All intentionally leaves the Hide/Show maturity preference unchanged.
     const defaults = {familyFilter:"", modelTypeFilter:"", statusFilter:"All", accessFilter:"all", favoriteFilter:"all", creatorFavoriteFilter:"all", downloadStatusFilter:"all"};
     Object.entries(defaults).forEach(([id,value]) => { const el=document.getElementById(id); if(el) el.value=value; });
     const media=document.getElementById("showMediaOnly"); if(media) media.checked=false;

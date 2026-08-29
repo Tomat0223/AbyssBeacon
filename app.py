@@ -2768,6 +2768,17 @@ def refresh_download_source(model_id, source, _batch=False):
             from scanners import civitai as civitai_scanner
 
             civitai_scanner._apply_auth()
+            # Preserve the revision this CivitAI source snapshot represents.
+            # Reload must refresh that exact modelVersionId rather than turning
+            # the parent model's historical galleries into one combined gallery.
+            previous_card = snapshot.get("card_data") or {}
+            if isinstance(previous_card, str):
+                try:
+                    previous_card = json.loads(previous_card or "{}")
+                except Exception:
+                    previous_card = {}
+            selected_version_id = str((previous_card or {}).get("version_id") or "").strip()
+
             # A previous broad scan may have disabled optional detail hydration
             # after a 429. An explicit user reload gets one fresh detail attempt.
             civitai_scanner._DETAIL_ENRICHMENT_DISABLED = False
@@ -2782,6 +2793,9 @@ def refresh_download_source(model_id, source, _batch=False):
                 }, 502
 
             details["_force_page"] = True
+            details["_force_version"] = True
+            if selected_version_id:
+                details["_selected_version_id"] = selected_version_id
             refreshed = civitai_scanner._build_model(details, enrich=False)
             snapshot = refreshed.as_dict()
             files = list(refreshed.files or [])
@@ -3036,13 +3050,16 @@ def refresh_download_source(model_id, source, _batch=False):
         if source_name in {"civitai", "civitaired"}:
             try:
                 refreshed_media = list(getattr(refreshed, "media", []) or [])
-                if refreshed_media:
-                    database.refresh_canonical_model_media(
-                        model_id,
-                        source_name,
-                        refreshed_media,
-                        fallback_image=str(getattr(refreshed, "image", "") or ""),
-                    )
+                # Explicit reload is authoritative for the canonical source's
+                # gallery, including an empty result. Leaving old rows behind
+                # when the fresh source exposes no media can preserve previews
+                # that came from an earlier broader/fallback hydration.
+                database.refresh_canonical_model_media(
+                    model_id,
+                    source_name,
+                    refreshed_media,
+                    fallback_image=str(getattr(refreshed, "image", "") or ""),
+                )
             except Exception as media_exc:
                 print(f"{label} media refresh skipped: {media_exc}")
 

@@ -32,6 +32,7 @@ from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff
 
 API = "https://civitai.com/api/v1/models"
 MODEL_DETAIL_API = "https://civitai.com/api/v1/models/{model_id}"
+MODEL_VERSION_API = "https://civitai.com/api/v1/model-versions/{version_id}"
 SEARCH_API = "https://search-new.civitai.com/multi-search"
 DEBUG_SCANNERS = False
 
@@ -493,6 +494,46 @@ def _file_record(file_data, version, model_id):
     }
 
 
+# CivitAI's website browsing levels are bitwise flags:
+#   1 = PG, 2 = PG-13, 4 = R, 8 = X, 16 = XXX, 32 = Blocked.
+# Regular civitai.com discovery is intentionally PG/PG-13 only; mature media
+# belongs to the separate CivitAI Red source.  The public model/version REST
+# endpoints can still return higher-level images even without authentication,
+# so enforce the .com browsing boundary locally before media reaches SQLite.
+_CIVITAI_COM_MATURE_MEDIA_MASK = 4 | 8 | 16 | 32
+
+
+def _civitai_com_media_allowed(image):
+    if not isinstance(image, dict):
+        return False
+
+    raw_level = image.get("nsfwLevel")
+    if raw_level not in (None, ""):
+        try:
+            level = int(raw_level)
+        except (TypeError, ValueError):
+            label = str(raw_level).strip().casefold().replace("-", "").replace("_", "")
+            if label in {"r", "mature", "x", "xxx", "blocked"}:
+                return False
+            if label in {"pg", "pg13", "soft", "none", "safe"}:
+                return True
+        else:
+            return (level & _CIVITAI_COM_MATURE_MEDIA_MASK) == 0
+
+    # Compatibility with older CivitAI payloads that exposed only `nsfw`.
+    raw_nsfw = image.get("nsfw")
+    if raw_nsfw is True:
+        return False
+    if isinstance(raw_nsfw, str):
+        label = raw_nsfw.strip().casefold().replace("-", "").replace("_", "")
+        if label in {"true", "1", "r", "mature", "x", "xxx", "blocked"}:
+            return False
+
+    # Do not throw away otherwise valid legacy media merely because CivitAI
+    # omitted a maturity field. Discovery itself is already .com-filtered.
+    return True
+
+
 def _media_records(versions, model_sensitive=False):
     media = []
     position = 0
@@ -502,6 +543,8 @@ def _media_records(versions, model_sensitive=False):
         model_files = [f.get("name") for f in (version.get("files") or []) if isinstance(f, dict) and f.get("name")]
         for index, image in enumerate(version.get("images") or []):
             if not isinstance(image, dict) or not image.get("url"):
+                continue
+            if not _civitai_com_media_allowed(image):
                 continue
             raw_type = str(image.get("type") or "image").lower()
             url = image.get("url") or ""
@@ -570,6 +613,35 @@ def _fetch_model_detail(model_id):
     except Exception as exc:
         debug_print("CivitAI model detail failed:", exc)
     return {}
+
+def _fetch_model_version(version_id):
+    """Fetch one exact CivitAI model-version payload.
+
+    Unlike the parent /models/{id} endpoint, this response represents exactly
+    one revision and CivitAI filters its images[] to the caller's browsing
+    level. That makes it the authoritative source for a selected version's
+    gallery.
+    """
+    if not version_id:
+        return {}
+    try:
+        response = get_with_backoff(
+            session,
+            MODEL_VERSION_API.format(version_id=version_id),
+            provider="CivitAI",
+            label=f"model version {version_id}",
+            pace_key="CivitAI.com", min_interval=1.25,
+            timeout=30,
+            max_retries=0,
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}
+        debug_print("CivitAI model version status:", response.status_code)
+    except Exception as exc:
+        debug_print("CivitAI model version failed:", exc)
+    return {}
+
 
 def _find_model_record(value, model_id):
     """Find the full model object embedded in CivitAI's Next.js page state."""
@@ -790,6 +862,26 @@ def _merge_child_records(primary, secondary):
     return out
 
 
+def _page_versions_without_media(versions):
+    """Keep rendered-page metadata from becoming gallery authority.
+
+    CivitAI's documented REST/version responses apply the caller's browsing
+    level to images. The rendered Next.js page can serialize a richer version
+    tree for filenames/access metadata, including previews that are not
+    actually exposed to the current CivitAI browsing level. Rendered-page
+    hydration is therefore allowed to repair version/file metadata, but it
+    must never add or replace gallery images.
+    """
+    cleaned = []
+    for version in versions or []:
+        if not isinstance(version, dict):
+            continue
+        item = dict(version)
+        item.pop("images", None)
+        cleaned.append(item)
+    return cleaned
+
+
 def _merge_version_lists(primary, secondary):
     """Merge version records, letting rendered page metadata fix REST files."""
     out = []
@@ -922,10 +1014,19 @@ def _tag_names(values):
 def _build_model(item, enrich=False):
     model_id = item.get("id")
     force_page = bool(item.get("_force_page"))
+    force_version = bool(item.get("_force_version"))
     listing_versions = [
         dict(v) for v in (item.get("modelVersions") or [])
         if isinstance(v, dict)
     ]
+    # Preserve the revision selected by discovery/the existing card before a
+    # parent-model detail response expands modelVersions to every historical
+    # revision. The gallery belongs to this one selected version.
+    selected_version_id = str(
+        item.get("_selected_version_id")
+        or _listing_version_id(item)
+        or ""
+    ).strip()
     versions = list(listing_versions)
 
     # Discovery responses are optimized for browsing and can expose only the
@@ -965,7 +1066,13 @@ def _build_model(item, enrich=False):
         else []
     )
     if filename_versions:
-        versions = _merge_version_lists(versions, filename_versions)
+        # The rendered page is filename/type authority only. Keep REST images
+        # untouched so hidden/mature page-state previews cannot enter the
+        # regular CivitAI gallery during filename repair.
+        versions = _merge_version_lists(
+            versions,
+            _page_versions_without_media(filename_versions),
+        )
 
     needs_page = force_page or (
         enrich and (
@@ -977,8 +1084,48 @@ def _build_model(item, enrich=False):
     page_metadata = _fetch_model_page_metadata(model_id) if needs_page else {}
     page_versions = [v for v in (page_metadata.get("versions") or []) if isinstance(v, dict)]
     if page_versions:
-        versions = _merge_version_lists(versions, page_versions)
-    latest_version = versions[0] if versions else {}
+        # Explicit Reload Model may force rendered-page hydration so access,
+        # descriptions and exact filenames can be repaired. Gallery media must
+        # remain sourced from CivitAI's REST response, which respects the
+        # caller's browsing level.
+        versions = _merge_version_lists(
+            versions,
+            _page_versions_without_media(page_versions),
+        )
+
+    def _selected_version(records):
+        if selected_version_id:
+            for record in records or []:
+                if isinstance(record, dict) and str(record.get("id") or "") == selected_version_id:
+                    return record
+        return (records or [None])[0] if records else None
+
+    selected_version = _selected_version(versions)
+
+    # The parent model response contains every revision and therefore every
+    # revision's previews. Never use that aggregate as the selected gallery.
+    # On explicit reload, or when discovery did not supply previews for the
+    # selected revision, ask CivitAI's exact model-version endpoint. Its
+    # images[] is browsing-level filtered and matches the revision shown by the
+    # modelVersionId URL.
+    need_exact_version = bool(selected_version_id) and (
+        force_version
+        or not isinstance(selected_version, dict)
+        or not (selected_version.get("images") or [])
+    )
+    exact_version = _fetch_model_version(selected_version_id) if need_exact_version else {}
+    if exact_version and str(exact_version.get("id") or "") == selected_version_id:
+        versions = _merge_version_lists(versions, [exact_version])
+        selected_version = _selected_version(versions)
+        if isinstance(selected_version, dict):
+            # Exact-version images are authoritative, including an explicitly
+            # empty list. Do not additive-merge stale/hidden parent images.
+            selected_version["images"] = [
+                dict(image) for image in (exact_version.get("images") or [])
+                if isinstance(image, dict)
+            ]
+
+    latest_version = selected_version if isinstance(selected_version, dict) else (versions[0] if versions else {})
 
     name = str(item.get("name") or f"CivitAI {model_id}")
     author = str((item.get("creator") or {}).get("username") or ((page_metadata.get("model") or {}).get("user") or {}).get("username") or "")
@@ -996,7 +1143,11 @@ def _build_model(item, enrich=False):
                 files.append(_file_record(file_data, version, model_id))
 
     sensitive = bool(item.get("nsfw"))
-    media = _media_records(versions, sensitive)
+    # One CivitAI card represents the selected/current revision. Keep files and
+    # version metadata for every revision, but never concatenate old revision
+    # galleries into the active card.
+    gallery_versions = [latest_version] if latest_version else []
+    media = _media_records(gallery_versions, sensitive)
     preview = next((m["url"] for m in media if m.get("type") == "image"), "")
     has_video = any(m.get("type") == "video" for m in media)
 
@@ -1054,7 +1205,7 @@ def _build_model(item, enrich=False):
     model.gated = bool(version_summaries) and not has_downloadable_version
     model.sensitive = sensitive or any(
         str((img.get("nsfw") if isinstance(img, dict) else "") or "").lower() not in {"", "none", "false", "0"}
-        for version in versions for img in (version.get("images") or [])
+        for version in gallery_versions for img in (version.get("images") or [])
     )
     model.card_data = {
         "civitai_id": model_id,
@@ -1382,9 +1533,14 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
             detail = _fetch_model_detail(model_id)
             if detail:
                 v9_detail_fetches += 1
-                # Preserve website activity fields/marker while allowing the
-                # rich API detail to supply versions/files/media.
-                item = {**item, **detail, "_models_v9_hit": True}
+                # Preserve the exact revision selected by website discovery
+                # before the parent detail payload expands to all revisions.
+                item = {
+                    **item,
+                    **detail,
+                    "_models_v9_hit": True,
+                    "_selected_version_id": source_sha,
+                }
 
         model = _build_model(item, enrich=bool(creator))
 

@@ -637,11 +637,10 @@ def refresh_canonical_model_media(model_id, source, media_items, fallback_image=
     c.execute(
         """
         UPDATE models
-        SET has_media=?, has_video=?, preview_count=?,
-            image=CASE WHEN ?<>'' THEN ? ELSE image END
+        SET has_media=?, has_video=?, preview_count=?, image=?
         WHERE id=?
         """,
-        (int(total>0),int(videos>0),len(images),image,image,int(model_id)),
+        (int(total>0),int(videos>0),len(images),image,int(model_id)),
     )
     conn.commit(); conn.close()
     return changed
