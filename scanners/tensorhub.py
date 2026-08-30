@@ -25,10 +25,21 @@ from scanners.common import metadata as common_metadata
 NAME = "tensorhub"
 
 # Non-user-configurable, source-specific safety exclusions.
-HARD_BLOCKED_CREATORS = {"e7g3", "kunjung"}
+HARD_BLOCKED_CREATORS = {
+    "e7g3",
+    "kunjung",
+    "shuteye404",
+    "jigger boo snickerdoodle",
+    "artificial-heart-ai",
+    "浅夏",
+}
 HARD_BLOCKED_OWNER_IDS = {
-    "838872246360732333",  # Kunjung
-    "893963469739538903",  # R
+    "838872246360732333",   # Kunjung
+    "893963469739538903",   # R
+    "829311455886071880",   # ShuTeye404
+    "1028139481795973773",  # Jigger boo snickerdoodle
+    "898710231087849791",   # Artificial-Heart-AI
+    "883507418028311138",   # 浅夏
 }
 
 
@@ -36,7 +47,11 @@ def _creator_identity_is_blocked(owner_id="", nickname="", blocked_creators=None
     owner_id = str(owner_id or "").strip()
     nickname = str(nickname or "").casefold().strip()
     blocked_creators = blocked_creators or set()
-    return owner_id in HARD_BLOCKED_OWNER_IDS or bool(nickname and nickname in blocked_creators)
+    return (
+        owner_id in HARD_BLOCKED_OWNER_IDS
+        or bool(nickname and nickname in HARD_BLOCKED_CREATORS)
+        or bool(nickname and nickname in blocked_creators)
+    )
 
 
 def _owner_is_blocked(owner, blocked_creators):

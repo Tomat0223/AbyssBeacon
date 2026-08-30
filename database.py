@@ -16,7 +16,14 @@ _INITIALIZED = False
 HARD_BLOCKED_CREATORS = {
     # Built-in, non-removable safety exclusions. Keep these source-scoped so
     # unrelated accounts on another provider are never affected.
-    "tensorhub": {"e7g3", "kunjung"},
+    "tensorhub": {
+        "e7g3",
+        "kunjung",
+        "shuteye404",
+        "jigger boo snickerdoodle",
+        "artificial-heart-ai",
+        "浅夏",
+    },
 }
 
 # TensorHub display names are not stable/unique enough for every hard block.
@@ -24,8 +31,12 @@ HARD_BLOCKED_CREATORS = {
 # (and avoid globally blocking a generic nickname such as "R").
 HARD_BLOCKED_SOURCE_CREATOR_IDS = {
     "tensorhub": {
-        "838872246360732333",  # Kunjung
-        "893963469739538903",  # R
+        "838872246360732333",   # Kunjung
+        "893963469739538903",   # R
+        "829311455886071880",   # ShuTeye404
+        "1028139481795973773",  # Jigger boo snickerdoodle
+        "898710231087849791",   # Artificial-Heart-AI
+        "883507418028311138",   # 浅夏
     },
 }
 
