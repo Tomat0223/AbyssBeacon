@@ -13,8 +13,17 @@
 <div class="detail-header">
 
     <div class="detail-header-main">
-        <h2>
-            {{ model['display_name'] or model['name'] }}
+        <h2 class="detail-model-title">
+            <button
+                type="button"
+                class="copy-model-link-title"
+                data-default-url="{{ model['url'] }}"
+                data-copy-url="{{ model['url'] }}"
+                aria-label="Copy model URL"
+            >
+                <span class="copy-model-link-title-text">{{ model['display_name'] or model['name'] }}</span>
+                <span class="copy-model-link-title-hint" aria-hidden="true">Copy URL</span>
+            </button>
         </h2>
 
         <div class="detail-actions">

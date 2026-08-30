@@ -397,6 +397,75 @@ document.getElementById("verboseScanLogging")?.addEventListener("change", async 
     } catch(error) { console.error("Could not save verbose scan logging preference", error); }
 });
 
+// Privacy-redacted support diagnostics. The report itself is generated server-side.
+async function fetchDiagnosticReport(){
+    const response=await fetch("/api/diagnostic-report", {cache:"no-store"});
+    if(!response.ok) throw new Error(`Diagnostic report failed (${response.status})`);
+    return await response.text();
+}
+
+async function copyDiagnosticText(text){
+    if(navigator.clipboard?.writeText){
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const textarea=document.createElement("textarea");
+    textarea.value=text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position="fixed";
+    textarea.style.opacity="0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied=document.execCommand("copy");
+    textarea.remove();
+    if(!copied) throw new Error("Clipboard copy was blocked by the browser.");
+}
+
+const diagnosticStatus=document.getElementById("diagnosticStatus");
+const copyDiagnosticButton=document.getElementById("copyDiagnosticReport");
+const exportDiagnosticButton=document.getElementById("exportDiagnosticReport");
+
+copyDiagnosticButton?.addEventListener("click", async event => {
+    event.stopPropagation();
+    if(diagnosticStatus) diagnosticStatus.textContent="Building report...";
+    copyDiagnosticButton.disabled=true;
+    try {
+        const report=await fetchDiagnosticReport();
+        await copyDiagnosticText(report);
+        if(diagnosticStatus) diagnosticStatus.textContent="Copied. Ready to paste into an issue.";
+    } catch(error) {
+        console.error(error);
+        if(diagnosticStatus) diagnosticStatus.textContent=error?.message || "Could not copy diagnostic report.";
+    } finally {
+        copyDiagnosticButton.disabled=false;
+    }
+});
+
+exportDiagnosticButton?.addEventListener("click", async event => {
+    event.stopPropagation();
+    if(diagnosticStatus) diagnosticStatus.textContent="Building report...";
+    exportDiagnosticButton.disabled=true;
+    try {
+        const report=await fetchDiagnosticReport();
+        const blob=new Blob([report], {type:"text/plain;charset=utf-8"});
+        const url=URL.createObjectURL(blob);
+        const stamp=new Date().toISOString().replace(/[:]/g, "-").replace(/\..+$/, "");
+        const link=document.createElement("a");
+        link.href=url;
+        link.download=`AbyssBeacon_Diagnostic_${stamp}.txt`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(()=>URL.revokeObjectURL(url), 1000);
+        if(diagnosticStatus) diagnosticStatus.textContent="Diagnostic report exported.";
+    } catch(error) {
+        console.error(error);
+        if(diagnosticStatus) diagnosticStatus.textContent=error?.message || "Could not export diagnostic report.";
+    } finally {
+        exportDiagnosticButton.disabled=false;
+    }
+});
+
 // Global media sanity limit used by scanner.py. 0 means unlimited.
 document.getElementById("mediaPerModelLimit")?.addEventListener("change", async event => {
     const input=event.target;

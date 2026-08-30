@@ -55,7 +55,7 @@ Windows is the tested platform for the initial release.
 
 1. Download or clone the repository.
 2. Open the `AbyssBeacon` folder.
-3. Double-click `Start AbyssBeacon.bat`.
+3. Double-click `AbyssBeacon.bat`.
 4. On first launch, AbyssBeacon creates a local Python virtual environment and installs the packages listed in `requirements.txt`.
 5. Open `http://127.0.0.1:5000` in your browser when the terminal says AbyssBeacon is ready.
 

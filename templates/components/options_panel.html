@@ -97,6 +97,14 @@
                         </div>
                         <div class="options-note">Maximum images/videos AbyssBeacon keeps for each discovered model. Use <strong>0</strong> for unlimited. Applies to future scans.</div>
                         <label class="option-toggle-row"><input id="verboseScanLogging" type="checkbox" {% if preferences.get('verbose_scan_logging', False) %}checked{% endif %}><span><strong>Verbose scan logging</strong><small>Show per-search and page-by-page scanner details in the terminal. Off keeps normal scans concise.</small></span></label>
+                        <div class="options-divider"></div>
+                        <div class="option-label options-edit-label">Diagnostic Report</div>
+                        <div class="options-note">Generate a redacted support report with runtime, source, scanner, database, and download information for troubleshooting or GitHub Issues. Review the report before sharing it publicly.</div>
+                        <div class="options-action-row">
+                            <button id="copyDiagnosticReport" class="options-secondary" type="button">Copy Diagnostic Report</button>
+                            <button id="exportDiagnosticReport" class="options-secondary" type="button">Export .txt</button>
+                        </div>
+                        <div id="diagnosticStatus" class="options-note" role="status" aria-live="polite" style="margin-bottom:0;"></div>
                     </div>
                 </details>
             </div>

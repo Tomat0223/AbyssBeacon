@@ -55,12 +55,13 @@ Not fully connected.
 
 <div class="seaart-browser-box">
   <div class="seaart-browser-title">SeaArt Browser Session</div>
-  <div class="seaart-browser-note">Click Connect SeaArt. A small SeaArt window opens; sign in normally on SeaArt. AbyssBeacon will try to close that isolated window automatically as soon as the session is detected. If it remains open after you are signed in, you may simply close the SeaArt window yourself, or click Finish Connection here.</div>
+  <div class="seaart-browser-note">Click Connect SeaArt. A small isolated SeaArt window opens; sign in normally. When SeaArt is visibly signed in, return here and click <strong>Finish Connection</strong>. AbyssBeacon will close that isolated window and verify the saved session. You can use <strong>Test Connection</strong> anytime afterward.</div>
   <div class="field"><label>Preferred browser</label><select class="seaart-browser-choice"><option value="firefox" {{ 'selected' if seaart_browser.get('preferred_browser') == 'firefox' else '' }}>Firefox</option><option value="chrome" {{ 'selected' if seaart_browser.get('preferred_browser') == 'chrome' else '' }}>Google Chrome</option><option value="edge" {{ 'selected' if seaart_browser.get('preferred_browser') == 'edge' else '' }}>Microsoft Edge</option></select><small>SeaArt only. Firefox is the default; your choice is remembered locally.</small></div>
   <div class="status seaart-browser-status {{ 'ok' if seaart_browser.get('connected') else '' }}">{{ seaart_browser.get('message') }}</div>
   <div class="actions">
     <button class="seaart-browser-connect primary" type="button">{{ 'Reconnect SeaArt' if seaart_browser.get('profile_saved') else 'Connect SeaArt' }}</button>
     <button class="seaart-browser-finish" type="button" {{ '' if seaart_browser.get('running') else 'disabled' }}>Finish Connection</button>
+    <button class="seaart-browser-test" type="button" {{ '' if seaart_browser.get('profile_saved') else 'disabled' }}>Test Connection</button>
     <button class="seaart-browser-clear danger" type="button" {{ '' if seaart_browser.get('profile_saved') else 'disabled' }}>Disconnect</button>
   </div>
 </div>
@@ -87,7 +88,9 @@ if(seaartCard){
   const browserStatus=seaartCard.querySelector('.seaart-browser-status');
   const browserConnect=seaartCard.querySelector('.seaart-browser-connect');
   const browserFinish=seaartCard.querySelector('.seaart-browser-finish');
+  const browserTest=seaartCard.querySelector('.seaart-browser-test');
   const browserClear=seaartCard.querySelector('.seaart-browser-clear');
+  const browserCapability=seaartCard.querySelector('.capability span');
   const browserChoice=seaartCard.querySelector('.seaart-browser-choice');
   let browserPoll=null;
   const renderBrowser=status=>{
@@ -99,7 +102,9 @@ if(seaartCard){
     browserConnect.textContent=status.running?'SeaArt window open…':(status.profile_saved?'Reconnect SeaArt':'Connect SeaArt');
     browserFinish.disabled=!status.running||status.state==='verifying';
     browserFinish.textContent=status.state==='verifying'?'Finishing…':'Finish Connection';
+    browserTest.disabled=!!status.running||(!status.profile_saved&&!status.connected);
     browserClear.disabled=!!status.running||(!status.profile_saved&&!status.connected);
+    if(browserCapability){browserCapability.textContent=status.connected?'Connected':'Not connected';browserCapability.classList.toggle('ready',!!status.connected);browserCapability.classList.toggle('off',!status.connected);}
     browserChoice.disabled=!!status.running;
     if(status.preferred_browser)browserChoice.value=status.preferred_browser;
     if(!status.running&&browserPoll){clearInterval(browserPoll);browserPoll=null;}
@@ -107,6 +112,7 @@ if(seaartCard){
   const fetchBrowserStatus=async()=>{try{const r=await fetch('/settings/accounts/seaart/browser');const j=await r.json();renderBrowser(j.seaart_browser)}catch(err){browserStatus.textContent='Could not read SeaArt browser-session status.';browserStatus.classList.add('bad')}};
   browserConnect.onclick=async()=>{browserStatus.textContent='Opening SeaArt…';browserStatus.classList.remove('bad');const r=await fetch('/settings/accounts/seaart/browser',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({browser:browserChoice.value})});const j=await r.json();renderBrowser(j.seaart_browser);if(!browserPoll)browserPoll=setInterval(fetchBrowserStatus,700)};
   browserFinish.onclick=async()=>{browserStatus.textContent='Finishing SeaArt connection…';browserStatus.classList.remove('bad');browserFinish.disabled=true;const r=await fetch('/settings/accounts/seaart/browser/finish',{method:'POST'});const j=await r.json();renderBrowser(j.seaart_browser);if(!browserPoll)browserPoll=setInterval(fetchBrowserStatus,500)};
+  browserTest.onclick=async()=>{browserStatus.textContent='Testing SeaArt connection…';browserStatus.classList.remove('ok','bad');browserTest.disabled=true;try{const r=await fetch('/settings/accounts/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'seaart'})});const j=await r.json();browserStatus.textContent=j.message||j.error||(r.ok?'SeaArt connection is ready.':'SeaArt connection test failed.');browserStatus.classList.toggle('ok',!!(r.ok&&j.success));browserStatus.classList.toggle('bad',!(r.ok&&j.success));if(r.ok&&j.success&&browserCapability){browserCapability.textContent='Connected';browserCapability.classList.add('ready');browserCapability.classList.remove('off')}}catch(err){browserStatus.textContent='Could not test the SeaArt connection.';browserStatus.classList.add('bad')}finally{browserTest.disabled=false}};
   browserClear.onclick=async()=>{if(!confirm('Disconnect SeaArt and remove AbyssBeacon’s isolated SeaArt browser profile?'))return;const r=await fetch('/settings/accounts/seaart/browser',{method:'DELETE'});const j=await r.json();renderBrowser(j.seaart_browser)};
 }
 
@@ -115,7 +121,7 @@ const connectHelp={
   modelscope:{title:'Connect ModelScope',body:`<p><strong>Signing in is optional.</strong> Public discovery continues to work without a token. Connecting enables authenticated OpenAPI requests and can allow resources available to your ModelScope account.</p><ol><li>Sign in to ModelScope.</li><li>Open <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" rel="noopener">My Access Token</a>. ModelScope also exposes this under Account Settings → Access Tokens.</li><li>Create or copy your access token.</li><li>Paste it into <strong>API token</strong>, click Save, then Test.</li></ol><div class="warning"><strong>Treat the token like a password.</strong> Store only the token itself in AbyssBeacon.</div>`},
   seaart:{title:'Connect SeaArt',body:`
 <p>SeaArt is handled differently from AbyssBeacon's other sources because SeaArt now signs its model-list/search requests inside its website frontend.</p>
-<ol><li>Click <strong>Connect SeaArt</strong>.</li><li>AbyssBeacon opens a small, isolated SeaArt browser window.</li><li>Sign in directly on SeaArt exactly as you normally would. AbyssBeacon never receives or stores your username/password.</li><li>AbyssBeacon normally detects the signed-in SeaArt session and closes the isolated window automatically.</li><li>If the window remains open after you are visibly signed in, you may close it yourself. AbyssBeacon will verify the saved session after Firefox finishes writing the profile. You can also click <strong>Finish Connection</strong> to have AbyssBeacon close and verify it for you.</li></ol>
+<ol><li>Click <strong>Connect SeaArt</strong>.</li><li>AbyssBeacon opens a small, isolated SeaArt browser window.</li><li>Sign in directly on SeaArt exactly as you normally would. AbyssBeacon never receives or stores your username/password.</li><li>Once SeaArt is visibly signed in, return to AbyssBeacon and click <strong>Finish Connection</strong>.</li><li>AbyssBeacon closes only its isolated SeaArt window, verifies the saved signed-in session, and marks the connection ready.</li><li>Use <strong>Test Connection</strong> whenever you want to confirm scanning and download access still work.</li></ol>
 <p>The session lives only inside AbyssBeacon's local <code>browser_profiles/seaart</code> folder. Choose Firefox, Chrome, or Edge; Firefox is the default. It is separate from your normal browser profile.</p>
 <div class="warning"><strong>SeaArt only:</strong> AbyssBeacon does not use browser automation for the other sources. This exists specifically because SeaArt's current discovery requests require SeaArt's own live browser signing code.</div>
 `},

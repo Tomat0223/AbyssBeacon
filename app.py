@@ -9,12 +9,12 @@ import logging
 import sys
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 from pathlib import Path
 
 _missing_dependencies = []
 try:
-    from flask import Flask, render_template, request, redirect
+    from flask import Flask, render_template, request, redirect, Response
 except ModuleNotFoundError:
     _missing_dependencies.append("Flask")
 try:
@@ -45,6 +45,7 @@ from scanners.common import metadata, processors
 import scanner_runner
 import scanner
 import scan_status
+from diagnostics import generate_diagnostic_report
 from scanners.source_registry import SOURCE_INFO
 
 from seaart_browser import (
@@ -1242,6 +1243,44 @@ def _annotate_download_file(file_data, source=""):
     return file_data
 
 
+def _model_version_share_url(source, source_url, version):
+    """Return the best public page URL for one source/version.
+
+    Most providers expose a stable model page and do not need a separate
+    version URL. CivitAI/CivitAI Red are the important exception: their
+    selected version is represented by ``modelVersionId`` on the model page.
+    Preserve any other harmless query parameters while replacing that one.
+    """
+    source = str(source or "").strip().lower()
+    source_url = str(source_url or "").strip()
+    version = version if isinstance(version, dict) else {}
+
+    for key in ("url", "page_url", "web_url", "model_url"):
+        candidate = str(version.get(key) or "").strip()
+        if candidate.startswith(("https://", "http://")):
+            return candidate
+
+    if not source_url:
+        return ""
+
+    version_id = str(version.get("id") or "").strip()
+    if source in {"civitai", "civitaired"} and version_id:
+        try:
+            parsed = urlparse(source_url)
+            query = [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.casefold() != "modelversionid"
+            ]
+            query.append(("modelVersionId", version_id))
+            return urlunparse(parsed._replace(query=urlencode(query)))
+        except Exception:
+            separator = "&" if "?" in source_url else "?"
+            return f"{source_url}{separator}modelVersionId={quote(version_id, safe='')}"
+
+    return source_url
+
+
 def _source_version_groups(src):
     """Group one source snapshot's flat file list back into model versions."""
     files = src.get("files") or []
@@ -1626,6 +1665,18 @@ def settings_page():
         scan_limits=settings.get("scan_limits", {}),
         preferences=settings.get("preferences", {}),
     )
+
+
+@app.route("/api/diagnostic-report", methods=["GET"])
+def diagnostic_report():
+    """Return a paste-ready support report without credential values."""
+    report = generate_diagnostic_report()
+    download = str(request.args.get("download") or "").strip().lower() in {"1", "true", "yes"}
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+        headers["Content-Disposition"] = f'attachment; filename="AbyssBeacon_Diagnostic_{stamp}.txt"'
+    return Response(report, status=200, mimetype="text/plain", headers=headers)
 
 
 @app.route("/settings/accounts", methods=["GET", "POST", "DELETE"])
@@ -7011,6 +7062,22 @@ def repair_preview_cache_api():
     return {"success": True, **result}
 
 
+@app.route("/api/library/backfill-descriptions", methods=["POST"])
+def backfill_descriptions():
+    from description_backfill import fetch_description
+    offset = max(0, int((request.json or {}).get("offset", 0)))
+    batch = database.get_models_missing_description(50, offset=offset)
+    updated = 0
+    checked = 0
+    for row in batch:
+        checked += 1
+        description = fetch_description(row)
+        if description:
+            database.update_description(row["id"], description)
+            updated += 1
+    remaining = database.count_models_missing_description()
+    return {"success": True, "checked": checked, "updated": updated, "remaining": remaining}
+
 @app.route("/api/library/cleanup-preview")
 def library_cleanup_preview():
     try:
@@ -7629,11 +7696,16 @@ def model_details(id):
                     if classified_version_architecture != "Other"
                     else raw_version_architecture
                 )
+                version_share_url = _model_version_share_url(
+                    src.get("source"), src.get("url"), version
+                )
                 entry = {
                     "name": label,
                     "id": version.get("id"),
                     "status": version.get("access_status"),
                     "sources": [],
+                    "share_url": version_share_url,
+                    "share_source": src.get("source") if version_share_url else "",
                     "description": version.get("description") or "",
                     "base_model": version.get("base_model") or "",
                     "architecture": display_version_architecture,
@@ -7646,6 +7718,20 @@ def model_details(id):
                 version_choices.append(entry)
             elif entry.get("status") != "downloadable" and version.get("access_status") == "downloadable":
                 entry["status"] = "downloadable"
+
+            version_share_url = _model_version_share_url(
+                src.get("source"), src.get("url"), version
+            )
+            canonical_source = str(model.get("source") or "").strip().lower()
+            current_share_source = str(entry.get("share_source") or "").strip().lower()
+            this_source = str(src.get("source") or "").strip().lower()
+            if version_share_url and (
+                not entry.get("share_url")
+                or (this_source == canonical_source and current_share_source != canonical_source)
+            ):
+                entry["share_url"] = version_share_url
+                entry["share_source"] = src.get("source") or ""
+
             if not entry.get("description") and version.get("description"):
                 entry["description"] = version.get("description")
             for field in ("base_model", "base_model_type", "early_access_deadline"):

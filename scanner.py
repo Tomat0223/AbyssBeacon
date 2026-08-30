@@ -515,6 +515,55 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
     }
 
 
+def _apply_scan_preflights(active_scanners, plan):
+    """Run optional source-level checks before any per-architecture jobs launch.
+
+    A source that fails preflight is skipped for this run without turning one
+    connection problem into one traceback/error per architecture. Other selected
+    sources remain runnable.
+    """
+    skipped = {}
+
+    for source_name, source in active_scanners.items():
+        if not plan.get(source_name):
+            continue
+
+        preflight = getattr(source, "scan_preflight", None)
+        if not callable(preflight):
+            continue
+
+        try:
+            ok, message = preflight()
+        except Exception:
+            ok = False
+            display = str(getattr(source, "DISPLAY", source_name) or source_name)
+            message = (
+                f"{display} skipped: connection preflight failed. "
+                f"Open Source Accounts to reconnect {display}."
+            )
+
+        if ok:
+            continue
+
+        message = str(message or f"{source_name} skipped: source is unavailable.").strip()
+        print(message)
+        plan[source_name] = []
+        skipped[source_name] = message
+        scan_status.update_source_health(source_name, "skipped", message)
+        scan_status.update_source_progress(
+            source_name,
+            status="skipped",
+            processed=0,
+            added=0,
+            updated=0,
+            images=0,
+            videos=0,
+            message=message,
+        )
+
+    return skipped
+
+
 def _commit_source_models(scan_id, source_name, models, stats):
     """Serialize database writes for one completed source worker."""
     source_stats = {
@@ -642,13 +691,14 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             readable = [f"{job['watch']} -> {job['term']} ({job['mode']})" for job in jobs]
             print(f"  {source_name}: {readable}")
 
+    scan_status.initialize_sources(list(active_scanners))
+    _apply_scan_preflights(active_scanners, plan)
+
     runnable = [
         (source_name, source, plan.get(source_name, []))
         for source_name, source in active_scanners.items()
         if plan.get(source_name, [])
     ]
-
-    scan_status.initialize_sources(list(active_scanners))
 
     if not runnable:
         print("No scanner jobs were resolved.")

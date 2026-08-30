@@ -1063,6 +1063,27 @@ def get_download_url(model_ver_no):
     return primary if primary.startswith(("http://", "https://")) else backup
 
 
+def scan_preflight():
+    """Validate SeaArt once before normal multi-architecture scan jobs start.
+
+    An enabled-but-disconnected SeaArt source used to let every architecture
+    worker discover the same missing/expired session independently, producing
+    repeated tracebacks. Keep that failure at the source boundary instead.
+    """
+    skipped_message = (
+        "SeaArt skipped: source is not connected. Open Source Accounts to configure SeaArt."
+    )
+
+    # Avoid even making a network/browser request when no scan connection exists.
+    if not browser_session_saved() and not seaart_scan_configured():
+        return False, skipped_message
+
+    ok, _detail = test_scan_connection()
+    if not ok:
+        return False, skipped_message
+    return True, ""
+
+
 def test_scan_connection():
     if browser_session_saved():
         try:

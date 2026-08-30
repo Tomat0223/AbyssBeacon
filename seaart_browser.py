@@ -3,10 +3,12 @@
 SeaArt signs discovery requests in its own frontend.  The connection step deliberately
 launches the user's installed browser *normally* (no Selenium/WebDriver/Playwright), so
 Google/SeaArt login sees an ordinary browser.  AbyssBeacon uses an isolated local browser
-profile and watches only for SeaArt's authenticated ``T`` cookie to appear.
+profile. The user finishes the connection explicitly after signing in so browser timing or stale session state cannot interrupt the login flow.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shutil
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -151,67 +154,342 @@ def _launch_browser(browser):
     return _PROCESS
 
 
-def _cookie_present_firefox(profile):
+def _decode_jwt_payload(token):
+    try:
+        parts = str(token or "").strip().split(".")
+        if len(parts) != 3 or not parts[0].startswith("eyJ"):
+            return {}
+        raw = parts[1] + ("=" * (-len(parts[1]) % 4))
+        data = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _looks_like_seaart_auth_token(value, expiry=0):
+    """Conservatively identify SeaArt's signed-in T cookie.
+
+    SeaArt's authenticated T value is a JWT.  Merely finding a cookie row is not
+    enough: Firefox can retain an empty/stale T row after logout and the login page
+    can create cookie state before the user has authenticated.
+    """
+    token = str(value or "").strip()
+    if len(token) < 40 or token.count(".") != 2 or not token.startswith("eyJ"):
+        return False
+    try:
+        expiry = int(expiry or 0)
+    except (TypeError, ValueError):
+        expiry = 0
+    now = int(time.time())
+    if expiry and expiry <= now:
+        return False
+    payload = _decode_jwt_payload(token)
+    if not payload:
+        return False
+    try:
+        jwt_exp = int(payload.get("exp") or 0)
+    except (TypeError, ValueError):
+        jwt_exp = 0
+    if jwt_exp and jwt_exp <= now:
+        return False
+    return True
+
+
+def _cookie_fingerprint(value):
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        raw = value
+    else:
+        raw = str(value or "").encode("utf-8", "ignore")
+    return hashlib.sha256(raw).hexdigest() if raw else ""
+
+
+def _cookie_state_firefox(profile):
     db = profile / "cookies.sqlite"
-    if not db.exists(): return False
+    if not db.exists():
+        return None
     try:
         conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=.25)
         try:
-            row = conn.execute("SELECT 1 FROM moz_cookies WHERE lower(name)='t' AND lower(host) LIKE '%seaart.ai' LIMIT 1").fetchone()
-            return bool(row)
+            rows = conn.execute(
+                "SELECT value, expiry, lastAccessed, creationTime FROM moz_cookies "
+                "WHERE lower(name)='t' AND lower(host) LIKE '%seaart.ai' "
+                "ORDER BY lastAccessed DESC"
+            ).fetchall()
         finally:
             conn.close()
     except (sqlite3.Error, OSError):
-        return False
+        return None
+    for value, expiry, last_accessed, creation_time in rows:
+        if not _looks_like_seaart_auth_token(value, expiry):
+            continue
+        return {
+            "fingerprint": _cookie_fingerprint(value),
+            "verified": True,
+            "changed_at": int(last_accessed or creation_time or 0),
+        }
+    return None
 
 
-def _cookie_present_chromium(profile):
+def _cookie_state_chromium(profile):
     candidates = [profile/"Default"/"Network"/"Cookies", profile/"Default"/"Cookies"]
     for db in candidates:
-        if not db.exists(): continue
+        if not db.exists():
+            continue
         try:
             conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=.25)
             try:
-                row = conn.execute("SELECT 1 FROM cookies WHERE lower(name)='t' AND lower(host_key) LIKE '%seaart.ai' LIMIT 1").fetchone()
-                if row: return True
+                rows = conn.execute(
+                    "SELECT value, encrypted_value, last_update_utc, creation_utc FROM cookies "
+                    "WHERE lower(name)='t' AND lower(host_key) LIKE '%seaart.ai' "
+                    "ORDER BY last_update_utc DESC"
+                ).fetchall()
             finally:
                 conn.close()
         except (sqlite3.Error, OSError):
-            pass
-    return False
+            continue
+        for value, encrypted_value, last_update, creation_time in rows:
+            # Some Chromium builds expose the plaintext value; when they do, use
+            # the same strong JWT check as Firefox.  Windows normally encrypts it,
+            # so in that case the watcher can only detect a *change* in the encrypted
+            # cookie after the login page has settled.
+            if _looks_like_seaart_auth_token(value):
+                return {
+                    "fingerprint": _cookie_fingerprint(value),
+                    "verified": True,
+                    "changed_at": int(last_update or creation_time or 0),
+                }
+            blob = bytes(encrypted_value or b"")
+            if blob:
+                return {
+                    "fingerprint": _cookie_fingerprint(blob),
+                    "verified": False,
+                    "changed_at": int(last_update or creation_time or 0),
+                }
+    return None
 
 
-def _seaart_cookie_present(browser):
+def _seaart_cookie_state(browser):
     profile = _PROFILE_ROOT / browser
-    return _cookie_present_firefox(profile) if browser == "firefox" else _cookie_present_chromium(profile)
+    return _cookie_state_firefox(profile) if browser == "firefox" else _cookie_state_chromium(profile)
+
+
+def _seaart_cookie_present(browser, *, allow_unverified=False):
+    state = _seaart_cookie_state(browser)
+    return bool(state and (state.get("verified") or allow_unverified))
+
+
+def _plaintext_profile_cookies(browser):
+    """Read SeaArt cookies that the local browser stores in plaintext.
+
+    Firefox stores cookie values directly in cookies.sqlite, which lets AbyssBeacon
+    perform a harmless server-side account check while the normal login window is
+    still open. Chromium normally encrypts cookie values on Windows; when that is
+    the case this returns only any plaintext values that are actually available.
+    """
+    profile = _PROFILE_ROOT / browser
+    rows = []
+    if browser == "firefox":
+        db = profile / "cookies.sqlite"
+        if not db.exists():
+            return {}
+        try:
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=.35)
+            try:
+                rows = conn.execute(
+                    "SELECT name, value, expiry, lastAccessed FROM moz_cookies "
+                    "WHERE lower(host) LIKE '%seaart.ai' ORDER BY lastAccessed DESC"
+                ).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError):
+            return {}
+        now = int(time.time())
+        out = {}
+        for name, value, expiry, _last_accessed in rows:
+            lname = str(name or "").strip().casefold()
+            text = str(value or "").strip()
+            try:
+                expired = bool(expiry and int(expiry) <= now)
+            except (TypeError, ValueError):
+                expired = False
+            if lname and text and not expired and lname not in out:
+                out[lname] = (str(name), text)
+        return out
+
+    candidates = [profile/"Default"/"Network"/"Cookies", profile/"Default"/"Cookies"]
+    for db in candidates:
+        if not db.exists():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=.35)
+            try:
+                rows = conn.execute(
+                    "SELECT name, value, last_update_utc FROM cookies "
+                    "WHERE lower(host_key) LIKE '%seaart.ai' ORDER BY last_update_utc DESC"
+                ).fetchall()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError):
+            continue
+        out = {}
+        for name, value, _last_update in rows:
+            lname = str(name or "").strip().casefold()
+            text = str(value or "").strip()
+            if lname and text and lname not in out:
+                out[lname] = (str(name), text)
+        if out:
+            return out
+    return {}
+
+
+def _verify_logged_in_account_from_profile(browser, timeout=7):
+    """Ask SeaArt whether the *currently open* isolated profile is signed in.
+
+    A JWT-shaped T cookie is only a candidate signal: SeaArt can retain or rotate
+    cookie state while logged out.  A connection is accepted only after
+    /api/v1/account/my returns success plus a real account id.  No credential value
+    is logged or persisted by this probe.
+    """
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if not curl:
+        return False, ""
+    cookies = _plaintext_profile_cookies(browser)
+    required = ("t", "deviceid", "browserid")
+    if any(not cookies.get(name, ("", ""))[1] for name in required):
+        return False, ""
+
+    allowed = ("t", "deviceid", "graytag", "pageid", "browserid", "app_id", "x-eyes", "lang")
+    cookie_parts = []
+    for lname in allowed:
+        original, value = cookies.get(lname, ("", ""))
+        if original and value:
+            cookie_parts.append(f"{original}={value}")
+    if not cookie_parts:
+        return False, ""
+
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+        "Content-Type": "application/json",
+        "Origin": "https://www.seaart.ai",
+        "Referer": "https://www.seaart.ai/personal",
+        "X-Platform": "web",
+        "X-Project-Id": "seaart",
+        "X-App-Id": "web_global_seaart",
+        "X-Request-Id": str(uuid.uuid4()),
+        "Cookie": "; ".join(cookie_parts),
+    }
+    mappings = {
+        "deviceid": "X-Device-Id",
+        "graytag": "X-Gray-Tag",
+        "browserid": "X-Browser-Id",
+        "pageid": "X-Page-Id",
+        "x-eyes": "X-Eyes",
+    }
+    for cookie_name, header_name in mappings.items():
+        value = cookies.get(cookie_name, ("", ""))[1]
+        if value:
+            headers[header_name] = value
+
+    command = [
+        curl, "--silent", "--show-error", "--compressed",
+        "--request", "POST", "--max-time", str(max(4, int(timeout))),
+        "--write-out", "\n__AB_HTTP__:%{http_code}",
+        "https://www.seaart.ai/api/v1/account/my",
+    ]
+    for name, value in headers.items():
+        command.extend(["--header", f"{name}: {value}"])
+    command.extend(["--data-raw", '{"show_exp_level":true}'])
+    try:
+        proc = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=max(8, int(timeout) + 3),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return False, ""
+    if proc.returncode != 0:
+        return False, ""
+    stdout = proc.stdout or ""
+    marker = "\n__AB_HTTP__:"
+    if marker in stdout:
+        raw, code_text = stdout.rsplit(marker, 1)
+    else:
+        raw, code_text = stdout, "0"
+    try:
+        http_code = int(code_text.strip().splitlines()[0])
+    except Exception:
+        http_code = 0
+    if http_code < 200 or http_code >= 300:
+        return False, ""
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return False, ""
+    status = payload.get("status") if isinstance(payload, dict) else {}
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    ok = (
+        isinstance(status, dict)
+        and status.get("code") in (10000, "10000")
+        and isinstance(data, dict)
+        and bool(data.get("id"))
+    )
+    if not ok:
+        return False, ""
+    return True, str(data.get("name") or "").strip()
 
 
 def _detect_existing_profile():
-    """Return the first browser profile that already contains a SeaArt T cookie.
+    """Recover only a profile SeaArt itself still recognizes as signed in.
 
-    This lets AbyssBeacon recover a successful login after Firefox was closed manually
-    before the live cookie watcher could see the cookie.
+    A leftover T cookie is not sufficient because logout can leave stale cookie rows
+    behind.  Firefox can be positively verified from its plaintext profile cookies.
+    Chromium profiles with encrypted cookies are intentionally not auto-recovered; the
+    user can reconnect and explicitly Finish Connection instead.
     """
     order = [preferred_browser()] + [b for b in ("firefox", "chrome", "edge") if b != preferred_browser()]
     for browser in order:
         try:
-            if _seaart_cookie_present(browser):
+            verified, _display_name = _verify_logged_in_account_from_profile(browser)
+            if verified:
                 return browser
         except Exception:
             pass
     return ""
 
 
-def _finalize_after_browser_close(browser, label, *, manual=False):
-    """Verify the profile after the browser has had a chance to flush cookies."""
+def _finalize_after_browser_close(browser, label, *, manual=False, baseline_fingerprint=""):
+    """Verify a closed SeaArt profile before saving it as connected.
+
+    Firefox is verified against SeaArt's account endpoint. Chromium may not expose
+    plaintext cookies on Windows, so an explicit Finish Connection remains the
+    conservative fallback there.
+    """
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        if _seaart_cookie_present(browser):
-            _write_marker(browser=browser)
+        verified, display_name = _verify_logged_in_account_from_profile(browser)
+        if verified:
+            _write_marker(display_name=display_name, browser=browser)
             suffix = " after Finish Connection" if manual else ""
-            _set_state("connected", f"SeaArt connected in {label}{suffix}.", connected=True)
+            _set_state(
+                "connected",
+                f"SeaArt connected in {label}{suffix}.",
+                connected=True,
+                display_name=display_name,
+            )
             return True
-        time.sleep(.35)
+        # Chrome/Edge cookie values are normally encrypted on Windows.  Only an
+        # explicit user Finish may use their existing conservative fallback.
+        if manual and browser != "firefox":
+            state = _seaart_cookie_state(browser)
+            if state:
+                _write_marker(browser=browser)
+                _set_state("connected", f"SeaArt connected in {label} after Finish Connection.", connected=True)
+                return True
+        time.sleep(.45)
     return False
 
 
@@ -302,39 +580,48 @@ def _normal_browser_worker():
         _PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
         _set_state("opening", f"Opening SeaArt in {label}…", connected=False)
         process = _launch_browser(browser)
-        _set_state(
-            "waiting",
-            f"Sign in to SeaArt in the {label} window. The window should close automatically when the session is detected. If you are visibly signed in and it stays open, click Finish Connection in AbyssBeacon.",
-            connected=False,
+        waiting_message = (
+            f"Sign in to SeaArt in the {label} window. When SeaArt is visibly signed in, return to "
+            "AbyssBeacon and click Finish Connection. The login window will stay open until you finish it or close it yourself."
         )
+        _set_state("waiting", waiting_message, connected=False)
         deadline = time.monotonic() + 15*60
-        detected = None
+
+        # Firefox can let the PID returned by Popen exit while handing the visible
+        # window to another firefox.exe process using the same isolated profile.
+        # Do not mistake that launcher hand-off for the user closing the SeaArt
+        # window.  Once a hand-off is observed, re-check the profile-owned process
+        # about once per second instead of killing it in the worker's finally block.
+        profile_path = str((_PROFILE_ROOT / browser).resolve())
+        handed_off_alive = False
+        next_handoff_probe = 0.0
+
         while time.monotonic() < deadline and not _STOP.is_set():
             if _FINISH.is_set():
-                _set_state("verifying", "Finishing SeaArt connection and verifying the saved browser session…", connected=False)
+                _set_state("verifying", "Finishing SeaArt connection and verifying the signed-in account…", connected=False)
                 _close_launched_browser()
                 if _finalize_after_browser_close(browser, label, manual=True):
                     return
-                _set_state("error", "SeaArt login was not found in the saved browser profile. Sign in fully, then try Finish Connection again.", connected=browser_session_saved())
+                _set_state("error", "SeaArt is not signed in yet. Reopen Connect SeaArt, finish signing in, then try Finish Connection again.", connected=False)
                 return
 
             if process.poll() is not None:
-                # Firefox may not expose the new cookie until its profile has been flushed on close.
-                if _finalize_after_browser_close(browser, label):
+                now = time.monotonic()
+                if now >= next_handoff_probe:
+                    handed_off_alive = bool(_profile_process_ids(browser, profile_path))
+                    next_handoff_probe = now + 1.0
+                if not handed_off_alive:
+                    if _finalize_after_browser_close(browser, label):
+                        return
+                    _set_state("idle", "SeaArt connection window was closed before a signed-in SeaArt account could be verified.", connected=False)
                     return
-                _set_state("idle", "SeaArt connection window was closed before a signed-in SeaArt session could be verified.", connected=browser_session_saved())
-                return
 
-            if _seaart_cookie_present(browser):
-                if detected is None:
-                    detected = time.monotonic()
-                if time.monotonic() - detected >= 2:
-                    _write_marker(browser=browser)
-                    _set_state("connected", f"SeaArt connected in {label}. The sign-in window closed automatically.", connected=True)
-                    return
-            else:
-                detected = None
-            time.sleep(.4)
+            # Deliberately do not auto-detect/auto-close here.  Browser cookie/process
+            # timing differs enough between Firefox/Chrome/Edge that automatic closing
+            # can interrupt a real login flow.  Finish Connection is the authoritative
+            # completion action; manually closing the isolated window is still detected
+            # above and verified conservatively.
+            time.sleep(.35)
         _set_state("idle" if _STOP.is_set() else "error", "SeaArt connection window closed." if _STOP.is_set() else "SeaArt sign-in timed out. Click Connect SeaArt to try again.", connected=browser_session_saved())
     except Exception as exc:
         _set_state("error", f"SeaArt connection failed: {exc}", connected=browser_session_saved())
@@ -356,6 +643,12 @@ def start_browser_connection():
     global _THREAD
     with _LOCK:
         if _THREAD and _THREAD.is_alive(): return browser_session_status()
+        # Reconnect is a fresh authentication attempt.  Do not let a marker from a
+        # previous session make a failed/logged-out reconnect look connected again.
+        try:
+            _MARKER.unlink(missing_ok=True)
+        except OSError:
+            pass
         _STOP.clear()
         _FINISH.clear()
         _THREAD = threading.Thread(target=_browser_worker, name="SeaArtBrowserConnect", daemon=True)
@@ -459,7 +752,7 @@ class SeaArtLiveSession:
                 raise RuntimeError("The SeaArt login browser is still open. Finish or close that SeaArt window, then retry the scan.")
 
             # Firefox can leave an isolated-profile process alive after the login window
-            # auto-closes (especially around a browser update).  It belongs only to
+            # closes (especially around a browser update).  It belongs only to
             # AbyssBeacon's SeaArt profile, so clean it up before opening the headless
             # scan instance instead of making the user reconnect.
             if os.name == "nt":

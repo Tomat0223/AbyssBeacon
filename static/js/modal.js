@@ -759,6 +759,78 @@ function initializeModal(){
                         let selectedVersionId = "";
                         let filterBanner = null;
 
+                        const copyLinkTarget = details.querySelector(".copy-model-link-title");
+                        const copyLinkHint = copyLinkTarget?.querySelector(".copy-model-link-title-hint");
+                        const defaultCopyLink = String(
+                            copyLinkTarget?.dataset.defaultUrl ||
+                            copyLinkTarget?.dataset.copyUrl ||
+                            ""
+                        ).trim();
+
+                        const setCopyLinkTarget = (choice) => {
+                            if (!copyLinkTarget) return;
+                            const versionUrl = String(choice?.share_url || "").trim();
+                            const target = versionUrl || defaultCopyLink;
+                            copyLinkTarget.dataset.copyUrl = target;
+                            const versionName = String(choice?.name || "").trim();
+                            copyLinkTarget.setAttribute(
+                                "aria-label",
+                                versionUrl && versionName
+                                    ? `Copy URL for ${versionName}`
+                                    : "Copy model URL"
+                            );
+                        };
+
+                        const writeClipboardText = async (value) => {
+                            const text = String(value || "").trim();
+                            if (!text) throw new Error("No model link is available to copy.");
+
+                            if (navigator.clipboard?.writeText && window.isSecureContext) {
+                                await navigator.clipboard.writeText(text);
+                                return;
+                            }
+
+                            const textarea = document.createElement("textarea");
+                            textarea.value = text;
+                            textarea.setAttribute("readonly", "");
+                            textarea.style.position = "fixed";
+                            textarea.style.opacity = "0";
+                            textarea.style.pointerEvents = "none";
+                            document.body.appendChild(textarea);
+                            textarea.select();
+                            textarea.setSelectionRange(0, textarea.value.length);
+                            const copied = document.execCommand("copy");
+                            textarea.remove();
+                            if (!copied) throw new Error("The browser did not allow clipboard access.");
+                        };
+
+                        if (copyLinkTarget) {
+                            copyLinkTarget.addEventListener("click", async event => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (copyLinkTarget.dataset.copying === "true") return;
+
+                                copyLinkTarget.dataset.copying = "true";
+                                try {
+                                    await writeClipboardText(copyLinkTarget.dataset.copyUrl);
+                                    copyLinkTarget.classList.add("copied");
+                                    if (copyLinkHint) copyLinkHint.textContent = "Copied!";
+                                    showModelRadarToast("Link copied");
+                                    setTimeout(() => {
+                                        copyLinkTarget.classList.remove("copied");
+                                        if (copyLinkHint) copyLinkHint.textContent = "Copy URL";
+                                    }, 1400);
+                                } catch (error) {
+                                    await window.modelRadarAlert(
+                                        error.message || "Unable to copy the model link.",
+                                        {title:"Copy Link", okText:"OK"}
+                                    );
+                                } finally {
+                                    delete copyLinkTarget.dataset.copying;
+                                }
+                            });
+                        }
+
                         let additionalFilesVisible = false;
                         const setAdditionalFilesVisible = (visible) => {
                             additionalFilesVisible = Boolean(visible);
@@ -971,6 +1043,7 @@ function initializeModal(){
                                 String(item.name || "").trim().toLocaleLowerCase() === selectedVersionName.toLocaleLowerCase()
                             );
                             renderVersionSummary(choice);
+                            setCopyLinkTarget(choice);
                             if (detailArchitectureBadge) {
                                 detailArchitectureBadge.textContent = String(
                                     choice?.architecture || choice?.base_model || defaultDetailArchitecture
@@ -1270,6 +1343,7 @@ function initializeModal(){
 
                         setAdditionalFilesVisible(false);
                         if (versionPills.length) selectVersion(versionPills[0]);
+                        else setCopyLinkTarget(null);
 
 
                         if (
