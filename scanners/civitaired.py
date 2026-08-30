@@ -1786,6 +1786,16 @@ def scan_tag(tag_value, max_results=100, sort="NEWEST", tag_name=""):
     return models
 
 
+def scan_preflight():
+    """Skip normal CivitAI Red scan jobs once when no local session is saved."""
+    if not _credentials().get("__Secure-civ-token"):
+        return False, (
+            "CivitAI Red skipped: source is not connected. "
+            "Open Source Accounts to configure CivitAI Red."
+        )
+    return True, ""
+
+
 def test_connection():
     cookies = _credentials()
     if not cookies.get("__Secure-civ-token"):

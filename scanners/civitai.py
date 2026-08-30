@@ -237,7 +237,7 @@ def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type=""
     _apply_auth()
     token = get_civitai_search_key()
     if not token:
-        builtins.print("CivitAI models_v9 discovery unavailable: no saved website search key")
+        builtins.print("CivitAI limited scan mode: connect CivitAI in Source Accounts for broader discovery.")
         return None
 
     try:
@@ -587,11 +587,8 @@ def _civitai_com_media_allowed(image):
 def _media_records(versions, model_sensitive=False, include_mature_media=False):
     media = []
     position = 0
+    identity_index = {}
     for version in versions:
-        # Keep the final safety dedupe scoped to one model version. The same
-        # preview can legitimately belong to multiple versions and must retain
-        # each version association for the gallery/version filters.
-        identity_index = {}
         version_name = str(version.get("name") or version.get("id") or "version")
         version_id = version.get("id")
         model_files = [f.get("name") for f in (version.get("files") or []) if isinstance(f, dict) and f.get("name")]

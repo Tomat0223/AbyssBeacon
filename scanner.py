@@ -23,6 +23,25 @@ MAX_PARALLEL_SEARCHES_PER_SOURCE = {
 }
 
 
+def _source_display_name(source_name, source=None):
+    """Return the scanner's user-facing source name for logs/status text."""
+    source = source or ALL_SCANNERS.get(str(source_name or ""))
+    display = str(getattr(source, "DISPLAY", "") or "").strip() if source else ""
+    return display or str(source_name or "")
+
+
+
+def _source_scan_summary(display_name, source_stats, duration):
+    """Render persisted per-source results instead of the misleading processed count."""
+    source_stats = source_stats or {}
+    added = int(source_stats.get("added", 0) or 0)
+    updated = int(source_stats.get("updated", 0) or 0)
+    unchanged = int(source_stats.get("unchanged", 0) or 0)
+    return (
+        f"{display_name:<14}: {added} new · {updated} updated · "
+        f"{unchanged} unchanged in {duration:.2f}s"
+    )
+
 def get_search_terms():
     settings = load_settings()
     value = settings.get("search_terms", [])
@@ -243,13 +262,14 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
     if scan_control.should_stop():
         return {"watch": watch, "term": term, "models": [], "count": 0, "duration": 0.0, "error": None}
 
+    display_name = _source_display_name(source_name, source)
     if verbose_enabled():
         print(f"\nSEARCH WATCH: {watch}")
-        print(f"Scanning {source_name}: {term}")
+        print(f"Scanning {display_name}: {term}")
     scan_status.update_status(
         status="running",
         source=source_name,
-        message=f"Scanning {source_name}: {watch}",
+        message=f"Scanning {display_name}: {watch}",
     )
 
     source_settings = dict(search_settings.get(source_name, {}))
@@ -396,8 +416,8 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
 
         duration = time.perf_counter() - job_start
         if verbose_enabled():
-            print(f"{source_name}: {len(models)} models in {duration:.2f}s")
-            print(f"{source_name}: processed {len(models)} models")
+            print(f"{display_name}: {len(models)} models in {duration:.2f}s")
+            print(f"{display_name}: processed {len(models)} models")
         return {
             "watch": watch,
             "term": term,
@@ -478,7 +498,7 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
             job_results.append(result)
     else:
         if verbose_enabled():
-            print(f"\n{source_name}: parallel aliases enabled ({per_source_workers} workers max)")
+            print(f"\n{_source_display_name(source_name, source)}: parallel aliases enabled ({per_source_workers} workers max)")
         with ThreadPoolExecutor(
             max_workers=per_source_workers,
             thread_name_prefix=f"modelradar-{source_name}-alias",
@@ -505,7 +525,7 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
     discovered = _dedupe_discovered_models(discovered)
     collapsed = raw_count - len(discovered)
     if collapsed:
-        print(f"{source_name}: collapsed {collapsed} overlapping alias result(s) before commit")
+        print(f"{_source_display_name(source_name, source)}: collapsed {collapsed} overlapping alias result(s) before commit")
 
     return {
         "source_name": source_name,
@@ -722,7 +742,8 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
         )
         total += source_stats["processed"]
         if not verbose_enabled():
-            print(f"{source_name:<12}: {source_stats['processed']} models in {result['duration']:.2f}s")
+            display_name = _source_display_name(source_name, source)
+            print(_source_scan_summary(display_name, source_stats, result["duration"]))
         scan_status.update_status(
             status="stopping" if scan_control.should_stop() else "running",
             source=source_name,
@@ -732,11 +753,16 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             media=stats["media"],
             images=stats["images"],
             videos=stats["videos"],
-            message=f"{source_name}: {source_stats['processed']} models processed",
+            message=(
+                f"{_source_display_name(source_name, source)}: "
+                f"{source_stats.get('added', 0)} new, "
+                f"{source_stats.get('updated', 0)} updated, "
+                f"{source_stats.get('unchanged', 0)} unchanged"
+            ),
         )
     else:
         workers = min(MAX_PARALLEL_SOURCES, len(runnable))
-        source_names = ", ".join(item[0] for item in runnable)
+        source_names = ", ".join(_source_display_name(item[0], item[1]) for item in runnable)
         if verbose_enabled():
             print("\n========================================")
             print("PARALLEL SOURCE SCAN")
@@ -795,7 +821,8 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
                 )
                 total += source_stats["processed"]
 
-                print(f"{source_name:<12}: {source_stats['processed']} models in {result['duration']:.2f}s")
+                display_name = _source_display_name(source_name, active_scanners.get(source_name))
+                print(_source_scan_summary(display_name, source_stats, result["duration"]))
                 scan_status.update_status(
                     status="stopping" if scan_control.should_stop() else "running",
                     source=source_name,
@@ -805,7 +832,11 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
                     media=stats["media"],
                     images=stats["images"],
                     videos=stats["videos"],
-                    message=f"{source_name} complete; {total} total models processed",
+                    message=(
+                        f"{display_name}: {source_stats.get('added', 0)} new, "
+                        f"{source_stats.get('updated', 0)} updated, "
+                        f"{source_stats.get('unchanged', 0)} unchanged"
+                    ),
                 )
 
     # A selected source with no resolved jobs should still get a zero row in the

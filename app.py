@@ -4389,7 +4389,7 @@ def scan():
 
     print("======================")
     print("ACTIVE SOURCES FROM UI")
-    print(selected_sources)
+    print([source_label(name) for name in selected_sources])
     print("======================")
 
     # Start each scan with a clean stop flag BEFORE exposing the running scan
