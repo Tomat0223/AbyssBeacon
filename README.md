@@ -173,6 +173,23 @@ Do not post API keys, cookies, session tokens, passwords, or your `secrets.json`
 
 AbyssBeacon is actively developed. This is the first public release, so issues may still appear, especially in integrations that depend on third-party websites and APIs.
 
+## Support AbyssBeacon
+
+AbyssBeacon is a free, open-source project that I work on in my spare time. If it has been useful to you and you'd like to support continued development, anything helps and is greatly appreciated.
+
+<p align="center">
+  <a href="https://cash.app/$AbyssBeacon">
+    <img src="static/images/cashapp-qr.png" alt="Cash App QR Code for AbyssBeacon donations" width="220">
+  </a>
+</p>
+
+- [$1 - It helped a little](https://cash.app/$AbyssBeacon/1.00)
+- [$5 - Pretty useful](https://cash.app/$AbyssBeacon/5.00)
+- [$10 - Huge time saver](https://cash.app/$AbyssBeacon/10.00)
+- [Custom amount - Game changer](https://cash.app/$AbyssBeacon)
+
+There's absolutely no obligation to donate. Using AbyssBeacon, reporting bugs, suggesting improvements, or simply sharing the project helps too.
+
 ## License
 
 AbyssBeacon is licensed under the **GNU General Public License v3.0 only (GPL-3.0-only)**.
