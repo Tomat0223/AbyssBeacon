@@ -36,12 +36,12 @@
             >{{ '★' if model['favorite'] else '☆' }}</button>
 
             {% set source_labels = {'huggingface':'Hugging Face','modelscope':'ModelScope','civitai':'CivitAI','civitaired':'CivitAI Red','tensorhub':'TensorHub Art','seaart':'SeaArt'} %}
-            <a class="source-btn source-{{ model['source'] }}" href="{{ model['url'] }}" target="_blank" style="--button-source-color: {{ source_colors.get(model['source'], model['source_color']) }}">
+            <a class="source-btn source-{{ model['source'] }}" data-source="{{ model['source'] }}" href="{{ model['url'] }}" target="_blank" style="--button-source-color: {{ source_colors.get(model['source'], model['source_color']) }}">
                 {{ source_labels.get(model['source'], model['source']|capitalize) }}
             </a>
             {% for link in model.get('source_links', []) %}
                 {% if link['source'] != model['source'] and link['url'] %}
-                <a class="source-btn source-fallback-btn source-{{ link['source'] }}" href="{{ link['url'] }}" target="_blank" title="Alternate source for the same model" style="--button-source-color: {{ source_colors.get(link['source'], '#00eaff') }}">
+                <a class="source-btn source-fallback-btn source-{{ link['source'] }}" data-source="{{ link['source'] }}" href="{{ link['url'] }}" target="_blank" title="Alternate source for the same model" style="--button-source-color: {{ source_colors.get(link['source'], '#00eaff') }}">
                     {{ source_labels.get(link['source'], link['source']|capitalize) }}
                 </a>
                 {% endif %}
@@ -63,6 +63,7 @@
                 class="model-version-pill{% if loop.first %} selected{% endif %}{% if version.get('status') == 'early_access' %} early-access{% elif version.get('status') == 'paid_access' %} paid-access{% elif version.get('status') == 'gated' %} gated{% endif %}"
                 data-version-name="{{ version.get('name') }}"
                 data-version-id="{{ version.get('id') or '' }}"
+                data-version-sources="{{ (version.get('sources') or [])|join(' ') }}"
                 title="Show {{ version.get('name') }}"
             >
                 {{ version.get('name') }}
@@ -415,6 +416,7 @@
     <script type="application/json" class="media-data-json">{{ media | tojson }}</script>
     <script type="application/json" class="model-files-json">{{ model['files'] | tojson }}</script>
     <script type="application/json" class="download-sources-json">{{ model.get('download_sources', []) | tojson }}</script>
+    <script type="application/json" class="source-contexts-json">{{ model.get('source_contexts', {}) | tojson }}</script>
 
     <div class="detail-info">
 
@@ -422,6 +424,7 @@
             {% for identity in model.get('author_sources', []) %}
                 <a
                     class="author-badge source-author-badge"
+                    data-source="{{ identity['source'] }}"
                     href="/creator/{{ identity['author'] }}"
                     title="{{ identity['author'] }} · {{ identity['source']|source_label }}"
                     style="--author-source-color: {{ identity['color'] }}"
@@ -436,12 +439,12 @@
 
         <div class="badges">
 
-            <span class="badge architecture">
+            <span class="badge architecture" data-detail-field="architecture">
                 {{ model['architecture'] }}
             </span>
 
 
-            <span class="badge type">
+            <span class="badge type" data-detail-field="model_type">
                 {{ model['model_type'] }}
             </span>
 
@@ -465,7 +468,7 @@
                 Downloads
             </strong>
 
-            <span>
+            <span data-detail-stat="downloads">
                 {{ model['downloads'] or 0 }}
             </span>
 
@@ -479,7 +482,7 @@
                 Likes
             </strong>
 
-            <span>
+            <span data-detail-stat="likes">
                 {{ model['likes'] or 0 }}
             </span>
 
@@ -493,7 +496,7 @@
                 {{ 'Created' if model['created'] or model['updated'] else 'Scanned' }}
             </strong>
 
-            <span>
+            <span data-detail-stat="created">
                 {{ (model['created'] if model['created'] or model['updated'] else model['first_seen']) | format_date }}
             </span>
 
@@ -507,7 +510,7 @@
                 Updated
             </strong>
 
-            <span>
+            <span data-detail-stat="updated">
 
                 {{ model | updated_date }}
 
@@ -525,22 +528,16 @@
     {% set full_model_name = model['display_name'] or model['name'] %}
     {% set clean_description = model['description'] | description_text %}
 
-    {% if full_model_name and full_model_name|length > 90 %}
-    <section class="full-model-name-section">
+    <section class="full-model-name-section" data-detail-full-name-section{% if not full_model_name or full_model_name|length <= 90 %} hidden{% endif %}>
         <h3>Full model name</h3>
-        <div class="full-model-name">{{ full_model_name }}</div>
+        <div class="full-model-name" data-detail-full-name>{{ full_model_name }}</div>
     </section>
-    {% endif %}
 
-    {% if clean_description %}
-    <section class="model-description-section">
+    <section class="model-description-section" data-detail-description-section{% if not clean_description %} hidden{% endif %}>
         <h3>About this model</h3>
-        <div class="model-description{% if clean_description|length > 500 %} collapsed{% endif %}">{{ clean_description }}</div>
-        {% if clean_description|length > 500 %}
-        <button type="button" class="description-toggle">Read more</button>
-        {% endif %}
+        <div class="model-description{% if clean_description|length > 500 %} collapsed{% endif %}" data-detail-description>{{ clean_description }}</div>
+        <button type="button" class="description-toggle"{% if clean_description|length <= 500 %} hidden{% endif %}>Read more</button>
     </section>
-    {% endif %}
 
 
     <!-- DETAILS -->
@@ -564,7 +561,7 @@
                     Base Model
                 </strong>
 
-                <span>
+                <span data-detail-field="base_model">
                     {{ model['base_model'] or "Not specified" }}
                 </span>
 
@@ -578,7 +575,7 @@
                     Pipeline
                 </strong>
 
-                <span>
+                <span data-detail-field="pipeline">
                     {{ model['pipeline'] or "Not specified" }}
                 </span>
 
@@ -592,7 +589,7 @@
                     Format
                 </strong>
 
-                <span>
+                <span data-detail-field="format">
                     {{ model['format'] or "Not specified" }}
                 </span>
 
@@ -606,7 +603,7 @@
                     License
                 </strong>
 
-                <span>
+                <span data-detail-field="license">
                     {{ model['license'] or "Not specified" }}
                 </span>
 
@@ -620,7 +617,7 @@
                     Parameters
                 </strong>
 
-                <span>
+                <span data-detail-field="parameters">
                     {{ model['parameters'] or "Not specified" }}
                 </span>
 
@@ -634,7 +631,7 @@
                     Quantization
                 </strong>
 
-                <span>
+                <span data-detail-field="quantization">
                     {{ model['quantization'] or "Not specified" }}
                 </span>
 
@@ -659,7 +656,7 @@
         </h3>
 
 
-        <div class="tag-list">
+        <div class="tag-list" data-detail-tags>
 
 
             {% if model.get('detail_tags') %}

@@ -20,6 +20,8 @@
     data-gated="{{ 'true' if model['gated'] else 'false' }}"
     data-access="{{ model.get('access_status', 'gated' if model['gated'] else 'public') }}"
     data-sensitive="{{ 'true' if model['sensitive'] else 'false' }}"
+    data-has-safe-source="{{ 'true' if model.get('has_safe_source', not model['sensitive']) else 'false' }}"
+    data-has-sensitive-source="{{ 'true' if model.get('has_sensitive_source', model['sensitive']) else 'false' }}"
     data-favorite="{{ 'true' if model['favorite'] else 'false' }}"
     data-downloaded="{{ 'true' if model.get('downloaded') else 'false' }}"
     data-update="{{ 'true' if model.get('update_available') else 'false' }}"

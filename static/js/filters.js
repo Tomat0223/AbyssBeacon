@@ -113,6 +113,7 @@ function initializeFilters(){
                 "familyFilter",
                 "modelTypeFilter",
                 "statusFilter",
+                "sensitiveFilter",
                 "favoriteFilter",
                 "creatorFavoriteFilter",
                 "downloadStatusFilter"
@@ -617,6 +618,8 @@ function tokenMatchesCard(card, token){
     const gated=card.dataset.gated === "true" || card.dataset.gated === "1";
     const access=(card.dataset.access || (gated ? "gated" : "public")).toLowerCase();
     const sensitive=card.dataset.sensitive === "true" || card.dataset.sensitive === "1";
+    const hasSafeSource=card.dataset.hasSafeSource === "true" || card.dataset.hasSafeSource === "1";
+    const hasSensitiveSource=card.dataset.hasSensitiveSource === "true" || card.dataset.hasSensitiveSource === "1";
     const media=card.dataset.hasMedia === "true" || card.dataset.hasMedia === "1";
     const favorite=card.dataset.favorite === "true" || card.dataset.favorite === "1";
     const downloaded=card.dataset.downloaded === "true" || card.dataset.downloaded === "1";
@@ -644,7 +647,7 @@ function tokenMatchesCard(card, token){
             if(value === "paid_access") return access === "paid_access";
             if(value === "public") return access !== "gated" && access !== "paid_access";
             return true;
-        case "mature": return ["1","true","yes","only","mature"].includes(value) ? sensitive : ["0","false","no","hide","safe"].includes(value) ? !sensitive : true;
+        case "mature": return ["1","true","yes","only","mature"].includes(value) ? hasSensitiveSource : ["0","false","no","hide","safe"].includes(value) ? hasSafeSource : true;
         case "media": return ["1","true","yes","only"].includes(value) ? media : ["0","false","no"].includes(value) ? !media : true;
         case "downloaded": return ["1","true","yes","only"].includes(value) ? downloaded : ["0","false","no"].includes(value) ? !downloaded : true;
         case "update": return ["1","true","yes","only"].includes(value) ? updateAvailable : ["0","false","no"].includes(value) ? !updateAvailable : true;
@@ -717,6 +720,7 @@ function renderFilterPills(){
         "familyFilter",
         "modelTypeFilter",
         "statusFilter",
+        "sensitiveFilter",
         "favoriteFilter",
         "creatorFavoriteFilter",
         "downloadStatusFilter"

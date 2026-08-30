@@ -53,6 +53,7 @@ function initializeFeedWindowing(){
             downloadStatus: document.getElementById("downloadStatusFilter")?.value || "all",
             searchText: window.modelRadarGetBackendSearchText?.() || "",
             media: document.getElementById("showMediaOnly")?.checked || false,
+            mature: document.getElementById("sensitiveFilter")?.value || "hide",
             sources: searchSources.length ? searchSources : optionSources,
             allSourceCount: sourceInputs.length,
             sourceSearchActive: searchSources.length > 0,
@@ -71,6 +72,7 @@ function initializeFeedWindowing(){
         if(state.downloadStatus && ["downloaded","updates","not_downloaded"].includes(String(state.downloadStatus).toLowerCase())) url.searchParams.set("download_status",state.downloadStatus);
         if(state.searchText) url.searchParams.set("search",state.searchText);
         if(state.media) url.searchParams.set("media","1");
+        url.searchParams.set("mature",String(state.mature || "hide"));
         if(
             state.sourceSearchActive
             || (state.allSourceCount && state.sources.length !== state.allSourceCount)

@@ -365,7 +365,8 @@ function initializeModal(){
                 cleanupActiveGallery();
                 stopDetailMedia();
 
-                fetch(`/model/${id}`)
+                const maturityModeForDetail = document.getElementById("sensitiveFilter")?.value || "hide";
+                fetch(`/model/${id}?mature=${encodeURIComponent(maturityModeForDetail)}`)
 
                     .then(response => response.text())
 
@@ -759,6 +760,14 @@ function initializeModal(){
                         let selectedVersionId = "";
                         let filterBanner = null;
 
+                        const sourceViewSelect = details.querySelector(".media-source-view-select");
+                        let sourceContexts = {};
+                        try {
+                            const sourceJson = details.querySelector(".source-contexts-json");
+                            sourceContexts = sourceJson ? JSON.parse(sourceJson.textContent || "{}") : {};
+                        } catch (e) { sourceContexts = {}; }
+                        let activeSourceView = "combined";
+
                         const copyLinkTarget = details.querySelector(".copy-model-link-title");
                         const copyLinkHint = copyLinkTarget?.querySelector(".copy-model-link-title-hint");
                         const defaultCopyLink = String(
@@ -769,13 +778,17 @@ function initializeModal(){
 
                         const setCopyLinkTarget = (choice) => {
                             if (!copyLinkTarget) return;
-                            const versionUrl = String(choice?.share_url || "").trim();
-                            const target = versionUrl || defaultCopyLink;
+                            const sourceContext = sourceContexts?.[activeSourceView] || sourceContexts?.combined || {};
+                            const sourceVersionUrl = activeSourceView !== "combined"
+                                ? String(choice?.source_share_urls?.[activeSourceView] || choice?.share_url || "").trim()
+                                : String(choice?.share_url || "").trim();
+                            const sourceDefaultUrl = String(sourceContext?.url || defaultCopyLink).trim();
+                            const target = sourceVersionUrl || sourceDefaultUrl || defaultCopyLink;
                             copyLinkTarget.dataset.copyUrl = target;
                             const versionName = String(choice?.name || "").trim();
                             copyLinkTarget.setAttribute(
                                 "aria-label",
-                                versionUrl && versionName
+                                sourceVersionUrl && versionName
                                     ? `Copy URL for ${versionName}`
                                     : "Copy model URL"
                             );
@@ -830,6 +843,67 @@ function initializeModal(){
                                 }
                             });
                         }
+
+                        const sourceViewContext = source => {
+                            const key = String(source || "combined").trim().toLowerCase();
+                            return sourceContexts?.[key] || sourceContexts?.combined || {};
+                        };
+
+                        const setDetailText = (selector, value, fallback="Not specified") => {
+                            const node = details.querySelector(selector);
+                            if (!node) return;
+                            const text = String(value ?? "").trim();
+                            node.textContent = text || fallback;
+                        };
+
+                        const updateDescriptionForSource = context => {
+                            const section = details.querySelector("[data-detail-description-section]");
+                            const description = details.querySelector("[data-detail-description]");
+                            const toggle = details.querySelector(".description-toggle");
+                            const text = String(context?.description || "").trim();
+                            if (section) section.hidden = !text;
+                            if (description) {
+                                description.textContent = text;
+                                description.classList.toggle("collapsed", text.length > 500);
+                            }
+                            if (toggle) {
+                                toggle.hidden = text.length <= 500;
+                                toggle.textContent = "Read more";
+                            }
+                        };
+
+                        const updateTagsForSource = context => {
+                            const list = details.querySelector("[data-detail-tags]");
+                            if (!list) return;
+                            list.replaceChildren();
+                            const tags = Array.isArray(context?.tags) ? context.tags : [];
+                            (tags.length ? tags : ["No tags"]).forEach(value => {
+                                const tag = document.createElement("span");
+                                tag.className = "tag";
+                                tag.textContent = String(value || "").trim() || "No tags";
+                                list.appendChild(tag);
+                            });
+                        };
+
+                        const applyDownloadSourceVisibility = source => {
+                            const wanted = String(source || "combined").trim().toLowerCase();
+                            details.querySelectorAll(".download-source-group[data-source]").forEach(group => {
+                                const groupSource = String(group.dataset.source || "").trim().toLowerCase();
+                                group.hidden = wanted !== "combined" && groupSource !== wanted;
+                            });
+                            const chooserHeading = details.querySelector(".download-content > h4");
+                            const chooserNote = details.querySelector(".download-content > .download-source-note");
+                            if (chooserHeading) chooserHeading.hidden = wanted !== "combined";
+                            if (chooserNote) chooserNote.hidden = wanted !== "combined";
+                        };
+
+                        const sourceChoiceForVersion = choice => {
+                            if (!choice || activeSourceView === "combined") return choice;
+                            const sourceMeta = choice?.source_metadata?.[activeSourceView];
+                            return sourceMeta ? {...choice, ...sourceMeta, share_url:sourceMeta.share_url || choice.share_url} : choice;
+                        };
+
+                        let applySourceView = null;
 
                         let additionalFilesVisible = false;
                         const setAdditionalFilesVisible = (visible) => {
@@ -1038,12 +1112,13 @@ function initializeModal(){
                             selectedVersionName = String(pill.dataset.versionName || "").trim();
                             selectedVersionId = String(pill.dataset.versionId || "").trim();
                             versionPills.forEach(node => node.classList.toggle("selected", node === pill));
-                            const choice = versionChoices.find(item =>
+                            const baseChoice = versionChoices.find(item =>
                                 (selectedVersionId && String(item.id || "") === selectedVersionId) ||
                                 String(item.name || "").trim().toLocaleLowerCase() === selectedVersionName.toLocaleLowerCase()
                             );
+                            const choice = sourceChoiceForVersion(baseChoice);
                             renderVersionSummary(choice);
-                            setCopyLinkTarget(choice);
+                            setCopyLinkTarget(baseChoice);
                             if (detailArchitectureBadge) {
                                 detailArchitectureBadge.textContent = String(
                                     choice?.architecture || choice?.base_model || defaultDetailArchitecture
@@ -1069,6 +1144,97 @@ function initializeModal(){
                                 bubbles: true
                             }));
                         };
+
+                        applySourceView = (requestedSource, {preserveVersion=true}={}) => {
+                            const requested = String(requestedSource || "combined").trim().toLowerCase();
+                            activeSourceView = sourceContexts?.[requested] ? requested : "combined";
+                            if (sourceViewSelect && sourceViewSelect.value !== activeSourceView) {
+                                sourceViewSelect.value = activeSourceView;
+                            }
+
+                            const context = sourceViewContext(activeSourceView);
+                            const modelDetail = details.querySelector(".model-detail");
+                            const detailPanel = overlay.querySelector(".model-panel");
+                            const effectiveSource = activeSourceView === "combined"
+                                ? String(context?.source || modelDetail?.dataset.source || "").trim().toLowerCase()
+                                : activeSourceView;
+                            const sourceColor = String(context?.color || "#00eaff").trim() || "#00eaff";
+
+                            if (modelDetail) {
+                                modelDetail.dataset.source = effectiveSource;
+                                modelDetail.style.setProperty("--source-color", sourceColor);
+                            }
+                            if (detailPanel) {
+                                detailPanel.dataset.source = effectiveSource;
+                                detailPanel.style.setProperty("--detail-source-color", sourceColor);
+                            }
+
+                            const titleText = details.querySelector(".copy-model-link-title-text");
+                            if (titleText) titleText.textContent = String(context?.name || "").trim();
+                            const downloadName = details.querySelector(".download-model-name");
+                            if (downloadName) downloadName.textContent = String(context?.name || "").trim();
+
+                            details.querySelectorAll(".source-btn[data-source]").forEach(button => {
+                                const source = String(button.dataset.source || "").trim().toLowerCase();
+                                button.hidden = activeSourceView !== "combined" && source !== activeSourceView;
+                            });
+                            details.querySelectorAll(".source-author-badge[data-source]").forEach(badge => {
+                                const source = String(badge.dataset.source || "").trim().toLowerCase();
+                                badge.hidden = activeSourceView !== "combined" && source !== activeSourceView;
+                            });
+                            applyDownloadSourceVisibility(activeSourceView);
+
+                            setDetailText('[data-detail-field="architecture"]', context?.architecture, defaultDetailArchitecture || "Not specified");
+                            setDetailText('[data-detail-field="model_type"]', context?.model_type);
+                            setDetailText('[data-detail-field="base_model"]', context?.base_model);
+                            setDetailText('[data-detail-field="pipeline"]', context?.pipeline);
+                            setDetailText('[data-detail-field="format"]', context?.format);
+                            setDetailText('[data-detail-field="license"]', context?.license);
+                            setDetailText('[data-detail-field="parameters"]', context?.parameters);
+                            setDetailText('[data-detail-field="quantization"]', context?.quantization);
+                            setDetailText('[data-detail-stat="downloads"]', context?.downloads, "0");
+                            setDetailText('[data-detail-stat="likes"]', context?.likes, "0");
+                            setDetailText('[data-detail-stat="created"]', context?.created, "Not specified");
+                            setDetailText('[data-detail-stat="updated"]', context?.updated, "Not specified");
+                            updateDescriptionForSource(context);
+                            updateTagsForSource(context);
+
+                            const fullNameSection = details.querySelector("[data-detail-full-name-section]");
+                            const fullName = details.querySelector("[data-detail-full-name]");
+                            const currentName = String(context?.name || "").trim();
+                            if (fullName) fullName.textContent = currentName;
+                            if (fullNameSection) fullNameSection.hidden = currentName.length <= 90;
+
+                            versionPills.forEach(pill => {
+                                const sources = String(pill.dataset.versionSources || "")
+                                    .trim().toLowerCase().split(/\s+/).filter(Boolean);
+                                pill.hidden = activeSourceView !== "combined" && !sources.includes(activeSourceView);
+                            });
+
+                            const visiblePills = Array.from(versionPills).filter(pill => !pill.hidden);
+                            let selectedPill = Array.from(versionPills).find(pill => pill.classList.contains("selected") && !pill.hidden);
+                            if (!preserveVersion || !selectedPill) selectedPill = visiblePills[0] || null;
+
+                            (modelDetail || details).dispatchEvent(new CustomEvent("modelradar:source", {
+                                detail: {source: activeSourceView},
+                                bubbles: true
+                            }));
+
+                            if (selectedPill) selectVersion(selectedPill);
+                            else {
+                                selectedVersionName = "";
+                                selectedVersionId = "";
+                                setCopyLinkTarget(null);
+                            }
+                            requestAnimationFrame(updateVersionScrollControls);
+                        };
+
+                        if (sourceViewSelect) {
+                            sourceViewSelect.addEventListener("change", event => {
+                                event.stopPropagation();
+                                applySourceView(event.target.value);
+                            });
+                        }
 
                         if (downloadContent && additionalDownloadFiles.length > 0) {
                             filterBanner = document.createElement("div");
@@ -1342,7 +1508,12 @@ function initializeModal(){
                         });
 
                         setAdditionalFilesVisible(false);
-                        if (versionPills.length) selectVersion(versionPills[0]);
+                        // Combined is the transparent default even though the
+                        // source-aware viewer selector is intentionally not exposed.
+                        // This keeps all eligible provider snapshots merged according
+                        // to the user's Mature Content setting.
+                        if (applySourceView) applySourceView("combined", {preserveVersion:false});
+                        else if (versionPills.length) selectVersion(versionPills[0]);
                         else setCopyLinkTarget(null);
 
 

@@ -930,7 +930,9 @@ def _decode_source_snapshot(link, canonical=None):
             "files", "card_data", "sha", "updated", "created", "gated",
             "url", "model_key", "source", "format", "quantization",
             "parameters", "license", "pipeline", "base_model",
-            "architecture", "model_type"
+            "architecture", "model_type", "name", "display_name", "author",
+            "description", "image", "tags", "display_tags", "sensitive",
+            "downloads", "likes", "has_media", "has_video", "preview_count"
         )
         snap = {key: canonical.get(key) for key in snapshot_keys if key in canonical}
 
@@ -944,6 +946,11 @@ def _decode_source_snapshot(link, canonical=None):
         canonical_source = str(canonical.get("source") or "").lower()
         if canonical_source in {"civitai", "civitaired"} and str(link.get("model_key") or "") == str(canonical.get("model_key") or ""):
             snap = _source_snapshot_for_download(canonical, source)
+            # This is only a compatibility shell for old merged rows that did
+            # not preserve source_data yet.  Never let the sibling provider's
+            # card_data become maturity evidence for this source.
+            snap["_mirrored_download_fallback"] = True
+            snap["_mirrored_from_source"] = canonical_source
 
     # Source-specific download snapshots intentionally focus on provider data and
     # may omit the canonical card identity. The local installer still needs that
@@ -3101,10 +3108,10 @@ def refresh_download_source(model_id, source, _batch=False):
         if source_name in {"civitai", "civitaired"}:
             try:
                 refreshed_media = list(getattr(refreshed, "media", []) or [])
-                # Explicit reload is authoritative for the canonical source's
-                # gallery, including an empty result. Leaving old rows behind
-                # when the fresh source exposes no media can preserve previews
-                # that came from an earlier broader/fallback hydration.
+                # Explicit reload is authoritative for this provider's own
+                # gallery, including an empty result. Merged source galleries
+                # remain independent; only the canonical provider updates the
+                # storage-level models.image/media summary columns.
                 database.refresh_canonical_model_media(
                     model_id,
                     source_name,
@@ -4546,6 +4553,188 @@ def display_media_url(url, source=""):
 FEED_INITIAL_CARD_LIMIT = 120
 FEED_CHUNK_CARD_LIMIT = 80
 
+# Feed presentation is deliberately separate from database canonical-source
+# priority. The canonical row exists for storage/merge stability; this order
+# controls only which eligible source supplies the visible feed card.
+FEED_PRESENTATION_SOURCE_PRIORITY = (
+    "civitai",
+    "tensorhub",
+    "seaart",
+    "huggingface",
+    "modelscope",
+    "civitaired",
+)
+
+SOURCE_VIEW_LABELS = {
+    "huggingface": "Hugging Face",
+    "modelscope": "ModelScope",
+    "civitai": "CivitAI",
+    "civitaired": "CivitAI Red",
+    "tensorhub": "TensorHub Art",
+    "seaart": "SeaArt",
+}
+
+
+def _normalize_maturity_mode(value):
+    return "show" if str(value or "hide").strip().lower() == "show" else "hide"
+
+
+def _boolish(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    marker = str(value or "").strip().lower()
+    if marker in {"1", "true", "yes", "on", "adult", "mature", "explicit", "nsfw"}:
+        return True
+    if marker in {"", "0", "false", "no", "off", "none", "safe", "sfw"}:
+        return False
+    return bool(marker)
+
+
+def _source_snapshot_sensitive(snapshot, canonical=None):
+    """Classify one provider snapshot without letting sibling sources bleed in."""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+
+    if "sensitive" in snapshot and snapshot.get("sensitive") not in (None, ""):
+        return _boolish(snapshot.get("sensitive"))
+
+    card_data = snapshot.get("card_data") or {}
+    if isinstance(card_data, str):
+        try:
+            card_data = json.loads(card_data or "{}")
+        except Exception:
+            card_data = {}
+    if not isinstance(card_data, dict):
+        card_data = {}
+
+    # Old CivitAI/CivitAI Red merged rows can synthesize a missing source from
+    # its sibling solely so downloads still work.  That compatibility snapshot
+    # contains the sibling's card_data, so it is not valid maturity evidence.
+    # We may still classify explicit text on the source identity itself.
+    if snapshot.get("_mirrored_download_fallback"):
+        return bool(metadata.detect_sensitive(
+            snapshot.get("name", ""),
+            snapshot.get("display_name", ""),
+            snapshot.get("tags", ""),
+            snapshot.get("display_tags", []),
+            {},
+            snapshot.get("description", ""),
+        ))
+
+    # Several providers expose a numeric maturity level rather than a boolean.
+    # CivitAI/Red use 0/1 for safe-ish content and values above 1 for mature.
+    for key in ("nsfw_level", "nsfwLevel", "maturity_level", "maturityLevel"):
+        raw = card_data.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            if int(raw) > 1:
+                return True
+        except Exception:
+            marker = str(raw or "").strip().lower()
+            if marker in {"mature", "adult", "explicit", "nsfw", "r", "x", "xxx"}:
+                return True
+
+    for key in ("content_rating", "contentRating", "rating"):
+        marker = str(card_data.get(key) or "").strip().lower()
+        if marker in {"mature", "adult", "explicit", "nsfw", "r", "x", "xxx"}:
+            return True
+
+    detected = metadata.detect_sensitive(
+        snapshot.get("name", ""),
+        snapshot.get("display_name", ""),
+        snapshot.get("tags", ""),
+        snapshot.get("display_tags", []),
+        card_data,
+        snapshot.get("description", ""),
+    )
+    if detected:
+        return True
+
+    # Do not fall back to models.sensitive here. That column belongs to the
+    # merged/canonical card and legacy databases may already have a sibling's
+    # maturity state baked into it. A source is mature only when its own saved
+    # snapshot provides evidence. The no-model_sources fallback created by
+    # _decode_source_snapshot copies the canonical row's sensitive value into
+    # the snapshot explicitly, so true single-source cards still retain it.
+    return False
+
+
+def _source_snapshot_has_media(snapshot, media_rows=None):
+    if not isinstance(snapshot, dict):
+        return False
+    if str(snapshot.get("image") or "").strip():
+        return True
+    if _boolish(snapshot.get("has_media")):
+        return True
+    source = str(snapshot.get("source") or "").strip().lower()
+    return any(str(row.get("source") or "").strip().lower() == source for row in (media_rows or []))
+
+
+def _eligible_source_snapshots(snapshots, maturity_mode="hide"):
+    snapshots = [dict(item) for item in (snapshots or []) if isinstance(item, dict)]
+    for item in snapshots:
+        item["sensitive"] = bool(_source_snapshot_sensitive(item))
+    if _normalize_maturity_mode(maturity_mode) == "show":
+        return snapshots
+    return [item for item in snapshots if not item.get("sensitive")]
+
+
+def _choose_presentation_snapshot(snapshots, selected_sources=None, media_rows=None):
+    """Choose a deterministic visible provider without changing merge identity."""
+    candidates = [dict(item) for item in (snapshots or []) if isinstance(item, dict)]
+    selected = {
+        str(value or "").strip().lower()
+        for value in (selected_sources or [])
+        if str(value or "").strip()
+    }
+    if selected:
+        narrowed = [item for item in candidates if str(item.get("source") or "").strip().lower() in selected]
+        if narrowed:
+            candidates = narrowed
+    if not candidates:
+        return None
+
+    priority = {source: index for index, source in enumerate(FEED_PRESENTATION_SOURCE_PRIORITY)}
+    candidates.sort(key=lambda item: priority.get(str(item.get("source") or "").strip().lower(), 999))
+    with_media = [item for item in candidates if _source_snapshot_has_media(item, media_rows)]
+    return (with_media or candidates)[0]
+
+
+def _apply_presentation_snapshot(model, snapshot):
+    """Overlay source-owned display metadata onto one merged feed/detail model."""
+    if not isinstance(model, dict) or not isinstance(snapshot, dict):
+        return model
+
+    source = str(snapshot.get("source") or model.get("source") or "").strip().lower()
+    model["presentation_source"] = source
+    model["source"] = source
+
+    # Identity/description values may fall back to the canonical row when an
+    # older source snapshot predates those fields. Source-owned operational
+    # values must not fall back, or a hidden sibling can leak its media/access.
+    for key in (
+        "name", "display_name", "author", "description", "base_model",
+        "architecture", "model_type", "pipeline", "format", "quantization",
+        "parameters", "license", "created", "updated", "downloads", "likes",
+        "sha",
+    ):
+        value = snapshot.get(key)
+        if value not in (None, "", [], {}):
+            model[key] = value
+
+    model["url"] = str(snapshot.get("url") or "")
+    model["model_key"] = str(snapshot.get("model_key") or "")
+    model["image"] = str(snapshot.get("image") or "").strip()
+    model["files"] = snapshot.get("files") or []
+    model["card_data"] = snapshot.get("card_data") or {}
+    model["gated"] = bool(snapshot.get("gated"))
+    model["tags"] = snapshot.get("tags") or ""
+    model["display_tags"] = snapshot.get("display_tags") or []
+    model["sensitive"] = bool(snapshot.get("sensitive", False))
+    return model
+
 
 def _architecture_search_terms(architecture):
     """Return every configured source spelling for one AbyssBeacon architecture.
@@ -4872,146 +5061,279 @@ def _feed_window_base_query(
     return query, params, order
 
 
-def _prepare_feed_chunk_models(models, preferences, sources):
-    """Prepare a small lazy-loaded card batch using the normal feed semantics."""
+def _prepare_feed_chunk_models(
+    models,
+    preferences,
+    sources,
+    maturity_mode=None,
+    selected_sources=None,
+):
+    """Prepare a lazy feed batch from maturity-eligible source snapshots."""
     if not models:
         return []
+
+    maturity_mode = _normalize_maturity_mode(
+        maturity_mode if maturity_mode is not None else preferences.get("selected_sensitive", "hide")
+    )
+    selected_sources = [
+        str(value or "").strip().lower()
+        for value in (selected_sources or [])
+        if str(value or "").strip()
+    ]
 
     conn = database.connect()
     conn.row_factory = sqlite3.Row
     ids = [int(model["id"]) for model in models if model.get("id") is not None]
-    source_lists = {}
-    source_snapshots = {}
-    attribution_rows = []
-    card_videos = {}
+    links_by_model = {}
+    videos_by_model_source = {}
+    images_by_model_source = {}
 
     if ids:
         placeholders = ",".join("?" for _ in ids)
-        attribution_rows = conn.execute(
+        for row in conn.execute(
             f"SELECT model_id,source,model_key,url,source_data FROM model_sources WHERE model_id IN ({placeholders}) ORDER BY model_id,source",
             ids,
-        ).fetchall()
-        for row in attribution_rows:
-            mid = int(row["model_id"])
-            source_lists.setdefault(mid, []).append(row["source"])
-            try:
-                snapshot = json.loads(row["source_data"] or "{}")
-                if not isinstance(snapshot, dict): snapshot = {}
-            except Exception:
-                snapshot = {}
-            snapshot["source"] = str(row["source"] or "").lower()
-            snapshot["model_key"] = str(row["model_key"] or "")
-            snapshot["url"] = str(row["url"] or snapshot.get("url") or "")
-            source_snapshots.setdefault(mid, []).append(snapshot)
+        ).fetchall():
+            links_by_model.setdefault(int(row["model_id"]), []).append(dict(row))
 
         for row in conn.execute(
-            f"SELECT model_id,source,url,thumbnail,position FROM model_media WHERE model_id IN ({placeholders}) AND lower(type)='video' ORDER BY model_id,position,id",
+            f"""
+            SELECT model_id,source,url,thumbnail,position,id
+            FROM model_media
+            WHERE model_id IN ({placeholders}) AND lower(type)='video'
+            ORDER BY model_id,source,position,id
+            """,
             ids,
         ).fetchall():
-            mid=int(row["model_id"])
-            if mid not in card_videos: card_videos[mid]=dict(row)
+            key = (int(row["model_id"]), str(row["source"] or "").strip().lower())
+            videos_by_model_source.setdefault(key, dict(row))
+
+        for row in conn.execute(
+            f"""
+            SELECT model_id,source,url,thumbnail,position,id
+            FROM model_media
+            WHERE model_id IN ({placeholders}) AND lower(type)='image'
+            ORDER BY model_id,source,position,id
+            """,
+            ids,
+        ).fetchall():
+            key = (int(row["model_id"]), str(row["source"] or "").strip().lower())
+            images_by_model_source.setdefault(key, dict(row))
     conn.close()
 
     history = database.get_download_history_lookup() if preferences.get("track_downloads", True) is not False else {}
     sha_lookup = database.get_model_sha256_lookup(ids)
 
     card_color_overrides = preferences.get("source_card_colors", {}) if isinstance(preferences.get("source_card_colors", {}), dict) else {}
-    source_themes = {name:{"color":card_color_overrides.get(name,data.get("color","#00eaff"))} for name,data in sources.items()}
-    default_color="#00eaff"
-
-    by_model={}
-    tag_union={}
-    architecture_union={}
-    for row in attribution_rows:
-        source=str(row["source"] or "").strip().lower()
-        try: snapshot=json.loads(row["source_data"] or "{}")
-        except Exception: snapshot={}
-        author=str(snapshot.get("author") or "").strip() if isinstance(snapshot,dict) else ""
-        if not author: author=_infer_source_author(source,row["model_key"],row["url"])
-        if author:
-            entry={"author":author,"source":source,"color":source_themes.get(source,{}).get("color",default_color)}
-            bucket=by_model.setdefault(int(row["model_id"]),[])
-            if not any(x["source"]==source and x["author"].casefold()==author.casefold() for x in bucket): bucket.append(entry)
-        values=[]
-        if isinstance(snapshot,dict):
-            values.extend(part.strip() for part in re.split(r"[,\n]",str(snapshot.get("tags") or "")) if part.strip())
-            display=snapshot.get("display_tags") or []
-            if isinstance(display,list): values.extend(str(x).strip() for x in display if str(x).strip())
-        bucket=tag_union.setdefault(int(row["model_id"]),[])
-        seen={str(x).casefold() for x in bucket}
-        for value in values:
-            if value.casefold() not in seen: bucket.append(value); seen.add(value.casefold())
-
-        if isinstance(snapshot, dict):
-            raw_architectures = _snapshot_architecture_values(snapshot)
-            searchable_architectures, detected_architectures = _classify_detected_architectures(raw_architectures)
-
-            arch_bucket = architecture_union.setdefault(int(row["model_id"]), {"searchable": [], "detected": []})
-            for snapshot_arch in searchable_architectures:
-                if snapshot_arch.casefold() not in {str(x).casefold() for x in arch_bucket["searchable"]}:
-                    arch_bucket["searchable"].append(snapshot_arch)
-            for raw_arch in detected_architectures:
-                if raw_arch.casefold() not in {str(x).casefold() for x in arch_bucket["detected"]}:
-                    arch_bucket["detected"].append(raw_arch)
+    source_themes = {
+        name: {"color": card_color_overrides.get(name, data.get("color", "#00eaff"))}
+        for name, data in sources.items()
+    }
+    default_color = "#00eaff"
 
     for model in models:
-        mid=int(model["id"])
-        model["sha256_list"]=sha_lookup.get(mid,[])
-        try: model["display_tags"]=json.loads(model.get("display_tags") or "[]") if model.get("display_tags") else []
-        except Exception: model["display_tags"]=[]
-        model["source_list"]=source_lists.get(mid,[]) or [model.get("source","")]
-        architecture_list = []
-        canonical_arch = str(model.get("architecture") or "").strip()
-        if canonical_arch and canonical_arch.casefold() != "other":
-            architecture_list.append(canonical_arch)
-        architecture_data = architecture_union.get(mid, {"searchable": [], "detected": []})
-        for snapshot_arch in architecture_data.get("searchable", []):
-            if snapshot_arch.casefold() not in {str(x).casefold() for x in architecture_list}:
-                architecture_list.append(snapshot_arch)
-        if not architecture_list:
-            architecture_list = [canonical_arch or "Other"]
-        model["architecture_list"] = architecture_list
-        model["detected_architecture_list"] = architecture_data.get("detected", [])
-        model["image"]=display_media_url(model.get("image"),model.get("source"))
-        video=card_videos.get(mid)
-        model["card_video"]=display_media_url(video.get("url"),video.get("source")) if video else ""
-        model["card_video_poster"]=display_media_url(video.get("thumbnail"),video.get("source")) if video else ""
+        mid = int(model["id"])
+        original = dict(model)
+        model["sha256_list"] = sha_lookup.get(mid, [])
+
+        raw_links = links_by_model.get(mid, [])
+        snapshots = []
+        for link in raw_links:
+            snap = _decode_source_snapshot(link, original)
+            snap["sensitive"] = bool(_source_snapshot_sensitive(snap, original))
+            snapshots.append(snap)
+
+        if not snapshots:
+            fallback_link = {
+                "source": original.get("source", ""),
+                "url": original.get("url", ""),
+                "model_key": original.get("model_key", ""),
+                "source_data": "",
+            }
+            snap = _decode_source_snapshot(fallback_link, original)
+            snap["sensitive"] = bool(_source_snapshot_sensitive(snap, original))
+            snapshots = [snap]
+
+        # Give older source snapshots a usable preview from their own saved
+        # gallery when the snapshot predates per-source image persistence.
+        for snap in snapshots:
+            snap_source = str(snap.get("source") or "").strip().lower()
+            first_image = images_by_model_source.get((mid, snap_source))
+            first_video = videos_by_model_source.get((mid, snap_source))
+            if not str(snap.get("image") or "").strip() and first_image:
+                snap["image"] = str(first_image.get("url") or "").strip()
+            if first_image or first_video:
+                snap["has_media"] = 1
+            if first_video:
+                snap["has_video"] = 1
+
+        safe_snapshots = [snap for snap in snapshots if not snap.get("sensitive")]
+        mature_snapshots = [snap for snap in snapshots if snap.get("sensitive")]
+        visible_snapshots = snapshots if maturity_mode == "show" else safe_snapshots
+        presentation_pool = visible_snapshots or snapshots
+
+        presentation = _choose_presentation_snapshot(
+            presentation_pool,
+            selected_sources=selected_sources,
+        ) or dict(presentation_pool[0])
+
+        # The canonical row normally points at a local preview cache. Preserve
+        # that faster path when the canonical provider wins presentation; an
+        # alternate provider still uses its own snapshot/gallery preview.
+        presentation_source_name = str(presentation.get("source") or "").strip().lower()
+        canonical_source_name = str(original.get("source") or "").strip().lower()
+        if presentation_source_name == canonical_source_name and str(original.get("image") or "").strip():
+            presentation["image"] = original.get("image")
+
+        _apply_presentation_snapshot(model, presentation)
+
+        presentation_source = str(model.get("source") or "").strip().lower()
+        presentation_video = videos_by_model_source.get((mid, presentation_source))
+        model["image"] = display_media_url(model.get("image"), presentation_source)
+        model["card_video"] = display_media_url(
+            presentation_video.get("url"), presentation_video.get("source")
+        ) if presentation_video else ""
+        model["card_video_poster"] = display_media_url(
+            presentation_video.get("thumbnail"), presentation_video.get("source")
+        ) if presentation_video else ""
         if model["card_video_poster"]:
-            clean=model["card_video_poster"].split("?",1)[0].split("#",1)[0].lower()
-            if model["card_video_poster"]==model["card_video"] or clean.endswith((".mp4",".webm",".mov",".m4v",".avi",".mkv")):
-                model["card_video_poster"]=""
-        model["gated"]=bool(model.get("gated")) or metadata.is_gated(model.get("card_data",""))
-        model["access_status"]=_source_access_status(model.get("source"),model["gated"],model.get("card_data"))
-        model["gated"]=model["access_status"] in {"gated","paid_access"}
-        source=str(model.get("source") or "").lower()
-        if model["access_status"]=="public" and source not in {"tensorhub","seaart"}:
-            try: files=json.loads(model.get("files") or "[]") if isinstance(model.get("files"),str) else (model.get("files") or [])
-            except Exception: files=[]
-            if isinstance(files,list) and any(isinstance(f,str) or (isinstance(f,dict) and (f.get("primary") or f.get("download_url") or f.get("model_file_id") or f.get("path") or f.get("name"))) for f in files): model["access_status"]="downloadable"
-        if source=="tensorhub":
+            clean = model["card_video_poster"].split("?", 1)[0].split("#", 1)[0].lower()
+            if model["card_video_poster"] == model["card_video"] or clean.endswith((".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv")):
+                model["card_video_poster"] = ""
+
+        model["has_video"] = bool(model.get("card_video")) or _boolish(presentation.get("has_video"))
+        model["has_media"] = bool(model.get("image") or model.get("card_video")) or _boolish(presentation.get("has_media"))
+        model["preview_count"] = presentation.get("preview_count", model.get("preview_count", 0)) or 0
+
+        # A merged card is hidden by the Mature preference only when every
+        # attached source is mature. Mixed cards remain visible through their
+        # safe snapshots and never borrow Red/mature media for presentation.
+        model["has_safe_source"] = bool(safe_snapshots)
+        model["has_sensitive_source"] = bool(mature_snapshots)
+        model["sensitive"] = bool(snapshots) and not bool(safe_snapshots)
+        model["all_source_list"] = [str(snap.get("source") or "") for snap in snapshots]
+        model["source_list"] = [
+            str(snap.get("source") or "") for snap in (visible_snapshots or snapshots)
+        ]
+
+        # Build metadata unions only from sources the current maturity setting
+        # allows. A hidden source therefore cannot leak tags/creator/family into
+        # the visible feed card.
+        active_snapshots = visible_snapshots or snapshots
+        architecture_list = []
+        detected_architectures = []
+        combined_tags = []
+        seen_tags = set()
+        author_sources = []
+
+        for snap in active_snapshots:
+            raw_architectures = _snapshot_architecture_values(snap)
+            searchable_architectures, detected = _classify_detected_architectures(raw_architectures)
+            for architecture in searchable_architectures:
+                if architecture.casefold() not in {str(x).casefold() for x in architecture_list}:
+                    architecture_list.append(architecture)
+            for raw_arch in detected:
+                if raw_arch.casefold() not in {str(x).casefold() for x in detected_architectures}:
+                    detected_architectures.append(raw_arch)
+
+            values = [
+                part.strip()
+                for part in re.split(r"[,\n]", str(snap.get("tags") or ""))
+                if part.strip()
+            ]
+            display = snap.get("display_tags") or []
+            if isinstance(display, list):
+                values.extend(str(value).strip() for value in display if str(value).strip())
+            for value in values:
+                key = value.casefold()
+                if key not in seen_tags:
+                    seen_tags.add(key)
+                    combined_tags.append(value)
+
+            source = str(snap.get("source") or "").strip().lower()
+            author = str(snap.get("author") or "").strip()
+            if not author:
+                author = _infer_source_author(source, snap.get("model_key", ""), snap.get("url", ""))
+            if author and not any(
+                item["source"] == source and item["author"].casefold() == author.casefold()
+                for item in author_sources
+            ):
+                author_sources.append({
+                    "author": author,
+                    "source": source,
+                    "color": source_themes.get(source, {}).get("color", default_color),
+                })
+
+        presentation_arch = str(model.get("architecture") or "").strip()
+        if presentation_arch and presentation_arch.casefold() != "other" and presentation_arch.casefold() not in {str(x).casefold() for x in architecture_list}:
+            architecture_list.insert(0, presentation_arch)
+        model["architecture_list"] = architecture_list or [presentation_arch or "Other"]
+        model["detected_architecture_list"] = detected_architectures
+        model["tags"] = ",".join(combined_tags)
+        model["display_tags"] = combined_tags
+        model["author_sources"] = author_sources or [{
+            "author": str(model.get("author") or ""),
+            "source": presentation_source,
+            "color": source_themes.get(presentation_source, {}).get("color", default_color),
+        }]
+
+        model["gated"] = bool(model.get("gated")) or metadata.is_gated(model.get("card_data", ""))
+        model["access_status"] = _source_access_status(
+            presentation_source,
+            model["gated"],
+            model.get("card_data"),
+        )
+        model["gated"] = model["access_status"] in {"gated", "paid_access"}
+        if model["access_status"] == "public" and presentation_source not in {"tensorhub", "seaart"}:
+            files = model.get("files") or []
+            if isinstance(files, str):
+                try:
+                    files = json.loads(files or "[]")
+                except Exception:
+                    files = []
+            if isinstance(files, list) and any(
+                isinstance(file_data, str)
+                or (
+                    isinstance(file_data, dict)
+                    and (
+                        file_data.get("primary")
+                        or file_data.get("download_url")
+                        or file_data.get("model_file_id")
+                        or file_data.get("path")
+                        or file_data.get("name")
+                    )
+                )
+                for file_data in files
+            ):
+                model["access_status"] = "downloadable"
+        if presentation_source == "tensorhub":
             try:
-                card=json.loads(model.get("card_data") or "{}")
-                access=str(((card.get("tensorhub") or {}).get("download_access") or "")).strip().lower()
-            except Exception: access=""
-            if access=="downloadable": model["access_status"]="downloadable"
-            elif access in {"paid_access","paid","buffet"}: model["access_status"]="paid_access"; model["gated"]=True
-            elif access in {"gated","non_downloadable","restricted","disabled"}: model["access_status"]="gated"; model["gated"]=True
-            else: model["access_status"]="unconfirmed"
-        elif source=="seaart":
-            model["access_status"]=_source_access_status("seaart",model.get("gated"),model.get("card_data")); model["gated"]=model["access_status"] in {"gated","paid_access"}
-        _annotate_download_state(model,history,preferences,source_snapshots.get(mid,[]))
-        model["sensitive"]=bool(model.get("sensitive")) or metadata.detect_sensitive(model.get("name",""),model.get("display_name",""),model.get("tags",""),model.get("card_data",""),model.get("description",""))
-        model["source_color"]=source_themes.get(model.get("source"),{}).get("color",default_color)
-        attrs=by_model.get(mid,[])
-        canonical_author=str(model.get("author") or "").strip(); canonical_source=source
-        if canonical_author and not any(x["source"]==canonical_source and x["author"].casefold()==canonical_author.casefold() for x in attrs):
-            attrs.insert(0,{"author":canonical_author,"source":canonical_source,"color":source_themes.get(canonical_source,{}).get("color",default_color)})
-        model["author_sources"]=attrs or [{"author":canonical_author,"source":canonical_source,"color":model["source_color"]}]
-        combined=[]; seen=set()
-        for value in [p.strip() for p in re.split(r"[,\n]",str(model.get("tags") or "")) if p.strip()] + list(model.get("display_tags") or []) + tag_union.get(mid,[]):
-            text=str(value or "").strip()
-            if text and text.casefold() not in seen: seen.add(text.casefold()); combined.append(text)
-        model["tags"]=",".join(combined); model["display_tags"]=combined
+                card = model.get("card_data") or {}
+                if isinstance(card, str):
+                    card = json.loads(card or "{}")
+                access = str(((card.get("tensorhub") or {}).get("download_access") or "")).strip().lower()
+            except Exception:
+                access = ""
+            if access == "downloadable":
+                model["access_status"] = "downloadable"
+            elif access in {"paid_access", "paid", "buffet"}:
+                model["access_status"] = "paid_access"; model["gated"] = True
+            elif access in {"gated", "non_downloadable", "restricted", "disabled"}:
+                model["access_status"] = "gated"; model["gated"] = True
+            else:
+                model["access_status"] = "unconfirmed"
+        elif presentation_source == "seaart":
+            model["access_status"] = _source_access_status("seaart", model.get("gated"), model.get("card_data"))
+            model["gated"] = model["access_status"] in {"gated", "paid_access"}
+
+        _annotate_download_state(
+            model,
+            history,
+            preferences,
+            active_snapshots,
+        )
+        model["source_color"] = source_themes.get(presentation_source, {}).get("color", default_color)
+
     return models
 
 
@@ -5542,6 +5864,18 @@ def home():
             model["tags"] = ",".join(combined)
             model["display_tags"] = combined
 
+    # Re-prepare the first feed window through the same source-aware pipeline
+    # used by lazy chunks. The older preparation above remains temporarily for
+    # compatibility with unrelated card state, while this final pass makes
+    # maturity eligibility and presentation-source choice authoritative.
+    models = _prepare_feed_chunk_models(
+        models,
+        preferences,
+        sources,
+        maturity_mode=preferences.get("selected_sensitive", "hide"),
+        selected_sources=selected_sources,
+    )
+
     _home_marks["source_attribution"] = time.perf_counter()
 
     # Navbar summary. These values reflect the models currently loaded for
@@ -5727,6 +6061,9 @@ def feed_chunk():
     selected_sources = [value.strip().lower() for value in raw_sources.split(",") if value.strip()]
     settings = load_settings()
     preferences = settings.get("preferences", {})
+    maturity_mode = _normalize_maturity_mode(
+        request.args.get("mature", preferences.get("selected_sensitive", "hide"))
+    )
     show_media_only = preferences.get("show_media_only", False)
 
     base_query, params, order = _feed_window_base_query(
@@ -5754,7 +6091,13 @@ def feed_chunk():
     ).fetchall()
     conn.close()
 
-    models = _prepare_feed_chunk_models([dict(row) for row in rows], preferences, settings.get("sources", {}))
+    models = _prepare_feed_chunk_models(
+        [dict(row) for row in rows],
+        preferences,
+        settings.get("sources", {}),
+        maturity_mode=maturity_mode,
+        selected_sources=selected_sources,
+    )
     try:
         latest = database.get_scan_history(1)
         latest_scan_id = int(latest[0]["id"]) if latest else 0
@@ -6088,6 +6431,7 @@ def creator_page(author):
         (author,)
     ).fetchall()
     models = [dict(row) for row in rows]
+    creator_raw_models = [dict(model) for model in models]
     settings = load_settings()
     sources = settings.get("sources", {})
 
@@ -6283,6 +6627,29 @@ def creator_page(author):
 
         source = model.get("source") or "unknown"
         source_counts[source] = source_counts.get(source, 0) + 1
+        total_downloads += int(model.get("downloads") or 0)
+        total_likes += int(model.get("likes") or 0)
+        if not model.get("viewed"):
+            new_count += 1
+
+    # Final creator-card preparation uses the same independent source-snapshot
+    # pipeline as the home feed. Keep the legacy preparation above as a low-risk
+    # compatibility pass for now, but do not let its canonical maturity/source
+    # assumptions decide what the user ultimately sees.
+    models = _prepare_feed_chunk_models(
+        creator_raw_models,
+        creator_preferences,
+        sources,
+        maturity_mode=creator_preferences.get("selected_sensitive", "hide"),
+        selected_sources=creator_preferences.get("selected_sources", []),
+    )
+    source_counts = {}
+    total_downloads = 0
+    total_likes = 0
+    new_count = 0
+    for model in models:
+        source_name = str(model.get("source") or "unknown")
+        source_counts[source_name] = source_counts.get(source_name, 0) + 1
         total_downloads += int(model.get("downloads") or 0)
         total_likes += int(model.get("likes") or 0)
         if not model.get("viewed"):
@@ -7612,7 +7979,80 @@ def model_details(id):
 
 
     model = dict(model)
-    model["source_links"] = [dict(row) for row in database.get_model_sources(id)]
+    canonical_model = dict(model)
+    maturity_mode = _normalize_maturity_mode(request.args.get("mature", "hide"))
+
+    detail_settings = load_settings()
+    detail_preferences = detail_settings.get("preferences", {}) if isinstance(detail_settings.get("preferences", {}), dict) else {}
+    detail_card_colors = detail_preferences.get("source_card_colors", {}) if isinstance(detail_preferences.get("source_card_colors", {}), dict) else {}
+    source_colors = {
+        name: detail_card_colors.get(name, data.get("color", "#00eaff"))
+        for name, data in detail_settings.get("sources", {}).items()
+    }
+
+    raw_source_links = [dict(row) for row in database.get_model_sources(id)]
+    raw_media_rows = [dict(row) for row in database.get_media(id)]
+    source_snapshots = []
+    for link in raw_source_links:
+        snapshot = _decode_source_snapshot(link, canonical_model)
+        snapshot["sensitive"] = bool(_source_snapshot_sensitive(snapshot, canonical_model))
+
+        # Older source snapshots may not contain an image even though their own
+        # gallery does. Use only that provider's media as the fallback.
+        if not str(snapshot.get("image") or "").strip():
+            first_image = next((
+                row for row in raw_media_rows
+                if str(row.get("source") or "").strip().lower() == str(snapshot.get("source") or "").strip().lower()
+                and str(row.get("type") or "").strip().lower() == "image"
+                and str(row.get("url") or "").strip()
+            ), None)
+            if first_image:
+                snapshot["image"] = str(first_image.get("url") or "").strip()
+                snapshot["has_media"] = 1
+        source_snapshots.append(snapshot)
+
+    if not source_snapshots:
+        fallback_link = {
+            "source": canonical_model.get("source", ""),
+            "url": canonical_model.get("url", ""),
+            "model_key": canonical_model.get("model_key", ""),
+            "source_data": "",
+        }
+        snapshot = _decode_source_snapshot(fallback_link, canonical_model)
+        snapshot["sensitive"] = bool(_source_snapshot_sensitive(snapshot, canonical_model))
+        source_snapshots = [snapshot]
+
+    eligible_snapshots = (
+        source_snapshots
+        if maturity_mode == "show"
+        else [snapshot for snapshot in source_snapshots if not snapshot.get("sensitive")]
+    )
+    if not eligible_snapshots:
+        conn.close()
+        return "Model hidden by Mature Content setting", 404
+
+    presentation = _choose_presentation_snapshot(eligible_snapshots, media_rows=raw_media_rows) or dict(eligible_snapshots[0])
+    presentation_source = str(presentation.get("source") or "").strip().lower()
+    canonical_source = str(canonical_model.get("source") or "").strip().lower()
+    if presentation_source == canonical_source and str(canonical_model.get("image") or "").strip():
+        presentation["image"] = canonical_model.get("image")
+    _apply_presentation_snapshot(model, presentation)
+
+    # Only maturity-eligible source contexts are exposed to this detail view.
+    # Source pills, downloads, galleries, and the source selector all derive
+    # from this same list so hidden mature providers cannot bleed back in.
+    source_priority_index = {source: index for index, source in enumerate(FEED_PRESENTATION_SOURCE_PRIORITY)}
+    eligible_snapshots.sort(
+        key=lambda snapshot: source_priority_index.get(str(snapshot.get("source") or "").strip().lower(), 999)
+    )
+    model["source_links"] = [dict(snapshot) for snapshot in eligible_snapshots]
+    model["source_view_options"] = [
+        {
+            "source": str(snapshot.get("source") or "").strip().lower(),
+            "label": SOURCE_VIEW_LABELS.get(str(snapshot.get("source") or "").strip().lower(), str(snapshot.get("source") or "").strip()),
+        }
+        for snapshot in eligible_snapshots
+    ]
 
     # Installed-file records survive page reloads. Match them by source +
     # fingerprint so the path automatically disappears when the upstream file
@@ -7633,7 +8073,7 @@ def model_details(id):
     # after they have been scanned once with this version of AbyssBeacon.
     model["download_sources"] = []
     for link in model["source_links"]:
-        src = _decode_source_snapshot(link, model)
+        src = dict(link)
         src_files = src.get("files") or []
         for idx, f in enumerate(src_files):
             if isinstance(f, dict): f["_download_index"] = idx
@@ -7706,6 +8146,8 @@ def model_details(id):
                     "sources": [],
                     "share_url": version_share_url,
                     "share_source": src.get("source") if version_share_url else "",
+                    "source_share_urls": {},
+                    "source_metadata": {},
                     "description": version.get("description") or "",
                     "base_model": version.get("base_model") or "",
                     "architecture": display_version_architecture,
@@ -7725,6 +8167,40 @@ def model_details(id):
             canonical_source = str(model.get("source") or "").strip().lower()
             current_share_source = str(entry.get("share_source") or "").strip().lower()
             this_source = str(src.get("source") or "").strip().lower()
+            if version_share_url:
+                entry.setdefault("source_share_urls", {})[this_source] = version_share_url
+
+            raw_source_architecture = str(
+                version.get("architecture") or version.get("base_model") or src.get("architecture") or ""
+            ).strip()
+            classified_source_architecture = processors.classify_architecture(raw_source_architecture)
+            source_architecture = (
+                classified_source_architecture
+                if classified_source_architecture != "Other"
+                else raw_source_architecture
+            )
+            source_formats = []
+            for source_file in version.get("files", []):
+                if not isinstance(source_file, dict):
+                    continue
+                source_format = str(
+                    source_file.get("fp") or source_file.get("format") or source_file.get("size_label") or ""
+                ).strip()
+                if source_format and source_format.casefold() not in {str(x).casefold() for x in source_formats}:
+                    source_formats.append(source_format)
+            entry.setdefault("source_metadata", {})[this_source] = {
+                "name": label,
+                "id": version.get("id"),
+                "status": version.get("access_status"),
+                "share_url": version_share_url,
+                "description": version.get("description") or src.get("description") or "",
+                "base_model": version.get("base_model") or src.get("base_model") or "",
+                "architecture": source_architecture or src.get("architecture") or "",
+                "base_model_type": version.get("base_model_type") or "",
+                "trained_words": version.get("trained_words") or [],
+                "early_access_deadline": version.get("early_access_deadline") or "",
+                "formats": source_formats,
+            }
             if version_share_url and (
                 not entry.get("share_url")
                 or (this_source == canonical_source and current_share_source != canonical_source)
@@ -7961,13 +8437,6 @@ def model_details(id):
         if source_descriptions:
             model["description"] = max(source_descriptions, key=len)
 
-    detail_settings = load_settings()
-    detail_preferences = detail_settings.get("preferences", {}) if isinstance(detail_settings.get("preferences", {}), dict) else {}
-    detail_card_colors = detail_preferences.get("source_card_colors", {}) if isinstance(detail_preferences.get("source_card_colors", {}), dict) else {}
-    source_colors = {
-        name: detail_card_colors.get(name, data.get("color", "#00eaff"))
-        for name, data in detail_settings.get("sources", {}).items()
-    }
     model["source_color"] = source_colors.get(model.get("source"), "#00eaff")
 
     # Preserve creator attribution per source on merged model detail pages.
@@ -7977,11 +8446,8 @@ def model_details(id):
     author_sources = []
     for link in model["source_links"]:
         source = str(link.get("source") or "").strip().lower()
-        try:
-            snapshot = json.loads(link.get("source_data") or "{}")
-        except Exception:
-            snapshot = {}
-        author = str(snapshot.get("author") or "").strip() if isinstance(snapshot, dict) else ""
+        snapshot = link if isinstance(link, dict) else {}
+        author = str(snapshot.get("author") or "").strip()
         if not author:
             author = _infer_source_author(source, link.get("model_key", ""), link.get("url", ""))
         if not author:
@@ -8012,14 +8478,14 @@ def model_details(id):
 
     if model.get("files"):
 
-        try:
-
-            model["files"] = json.loads(
-                model["files"]
-            )
-
-        except Exception:
-
+        if isinstance(model.get("files"), str):
+            try:
+                model["files"] = json.loads(model["files"] or "[]")
+            except Exception:
+                model["files"] = []
+        elif isinstance(model.get("files"), list):
+            model["files"] = list(model["files"])
+        else:
             model["files"] = []
 
 
@@ -8100,31 +8566,41 @@ def model_details(id):
             file_data["size_display"] = str(file_data.get("size_label") or "").strip()
 
     if model.get("display_tags"):
-
-        try:
-            model["display_tags"] = json.loads(
-                model["display_tags"]
-            )
-
-        except Exception:
+        if isinstance(model.get("display_tags"), str):
+            try:
+                model["display_tags"] = json.loads(model["display_tags"] or "[]")
+            except Exception:
+                model["display_tags"] = []
+        elif isinstance(model.get("display_tags"), list):
+            model["display_tags"] = list(model["display_tags"])
+        else:
             model["display_tags"] = []
-
     else:
-
         model["display_tags"] = []
 
-    model["detail_tags"] = _normalized_model_tags(
-        model.get("source"),
-        model.get("tags"),
-        model.get("card_data"),
-    )
+    model["detail_tags"] = []
+    _detail_tag_seen = set()
+    for _snapshot in eligible_snapshots:
+        for _tag in _normalized_model_tags(
+            _snapshot.get("source"),
+            _snapshot.get("tags"),
+            _snapshot.get("card_data"),
+        ):
+            _tag_text = str(_tag or "").strip()
+            if _tag_text and _tag_text.casefold() not in _detail_tag_seen:
+                _detail_tag_seen.add(_tag_text.casefold())
+                model["detail_tags"].append(_tag_text)
 
     model["access_status"] = _source_access_status(model.get("source"), bool(model.get("gated")), model.get("card_data"))
     if model["access_status"] == "public" and model.get("files"):
         model["access_status"] = "downloadable"
     if str(model.get("source") or "").lower() == "tensorhub":
         try:
-            tensor_card = json.loads(model.get("card_data") or "{}")
+            tensor_card = model.get("card_data") or {}
+            if isinstance(tensor_card, str):
+                tensor_card = json.loads(tensor_card or "{}")
+            if not isinstance(tensor_card, dict):
+                tensor_card = {}
             tensor_access = str(((tensor_card.get("tensorhub") or {}).get("download_access") or "")).strip().lower()
         except Exception:
             tensor_access = ""
@@ -8178,11 +8654,18 @@ def model_details(id):
     database.mark_viewed(id)
 
 
-    media_rows = database.get_media(id)
+    media_rows = raw_media_rows
     media = []
+    eligible_source_names = {
+        str(snapshot.get("source") or "").strip().lower()
+        for snapshot in eligible_snapshots
+    }
     _detail_fallback_assigned = False
     for row in media_rows:
         item = dict(row)
+        item_source = str(item.get("source") or "").strip().lower()
+        if item_source and item_source not in eligible_source_names:
+            continue
         raw_metadata = item.get("metadata") or ""
         if isinstance(raw_metadata, str):
             try:
@@ -8205,14 +8688,18 @@ def model_details(id):
                 item["path"] = parsed_path.rsplit("/", 1)[-1]
         if not item.get("filename"):
             item["filename"] = (item.get("path") or "").rsplit("/", 1)[-1]
-        item["url"] = display_media_url(item.get("url"), model.get("source"))
+        item["url"] = display_media_url(item.get("url"), item_source or model.get("source"))
         if item.get("thumbnail"):
-            item["thumbnail"] = display_media_url(item.get("thumbnail"), model.get("source"))
+            item["thumbnail"] = display_media_url(item.get("thumbnail"), item_source or model.get("source"))
 
         # The feed already has a canonical preview that may be cached locally
         # even when an older/source-specific media URL has expired. Let image
         # gallery items fall back to that known-good card preview on load error.
-        if str(item.get("type") or "").lower() != "video" and not _detail_fallback_assigned:
+        if (
+            str(item.get("type") or "").lower() != "video"
+            and not _detail_fallback_assigned
+            and (not item_source or item_source == str(model.get("source") or "").strip().lower())
+        ):
             _fallback_image = str(model.get("image") or "").strip()
             if _fallback_image and _fallback_image != str(item.get("url") or ""):
                 item["fallback_url"] = _fallback_image
@@ -8230,16 +8717,107 @@ def model_details(id):
         media.append(item)
 
 
-    # Re-evaluate mature-content classification for the detail view as well,
-    # so older rows and newly improved detection rules stay consistent with
-    # the feed card.
-    model["sensitive"] = bool(model.get("sensitive")) or metadata.detect_sensitive(
-        model.get("name", ""),
-        model.get("display_name", ""),
-        model.get("tags", ""),
-        model.get("card_data", ""),
-        model.get("description", ""),
+    # Ensure every eligible source has at least one source-owned preview in the
+    # selector, even for older merged rows whose galleries predate per-source
+    # media persistence. A normal rescan will populate the complete gallery.
+    media_sources = {str(item.get("source") or "").strip().lower() for item in media}
+    synthetic_media_id = -1
+    for snapshot in eligible_snapshots:
+        source_name = str(snapshot.get("source") or "").strip().lower()
+        preview_url = str(snapshot.get("image") or "").strip()
+        if not preview_url or source_name in media_sources:
+            continue
+        media.append({
+            "id": synthetic_media_id,
+            "model_id": id,
+            "source": source_name,
+            "type": "image",
+            "url": display_media_url(preview_url, source_name),
+            "thumbnail": "",
+            "filename": "preview",
+            "path": "preview",
+            "position": 0,
+            "metadata_obj": {"source": SOURCE_VIEW_LABELS.get(source_name, source_name)},
+            "metadata": {"source": SOURCE_VIEW_LABELS.get(source_name, source_name)},
+        })
+        media_sources.add(source_name)
+        synthetic_media_id -= 1
+
+    # Combined view follows the same deterministic presentation-source order as
+    # the feed. gallery.js deduplicates identical URLs across mirrors while each
+    # source-specific view still retains its complete provider-owned gallery.
+    media.sort(key=lambda item: (
+        source_priority_index.get(str(item.get("source") or "").strip().lower(), 999),
+        int(item.get("position") or 0),
+        int(item.get("id") or 0),
+    ))
+
+    def _detail_source_context(snapshot):
+        source_name = str(snapshot.get("source") or "").strip().lower()
+        source_tags = _normalized_model_tags(
+            source_name, snapshot.get("tags"), snapshot.get("card_data")
+        )
+        created_value = snapshot.get("created") or ""
+        updated_value = snapshot.get("updated") or ""
+        return {
+            "source": source_name,
+            "label": SOURCE_VIEW_LABELS.get(source_name, source_name),
+            "color": source_colors.get(source_name, "#00eaff"),
+            "url": str(snapshot.get("url") or ""),
+            "name": str(snapshot.get("display_name") or snapshot.get("name") or model.get("display_name") or model.get("name") or ""),
+            "author": str(snapshot.get("author") or ""),
+            "architecture": str(snapshot.get("architecture") or ""),
+            "model_type": str(snapshot.get("model_type") or ""),
+            "downloads": snapshot.get("downloads", 0) or 0,
+            "likes": snapshot.get("likes", 0) or 0,
+            "created": format_date(created_value) if created_value else "",
+            "updated": format_date(updated_value) if updated_value else "",
+            "description": description_text(snapshot.get("description") or ""),
+            "base_model": str(snapshot.get("base_model") or ""),
+            "pipeline": str(snapshot.get("pipeline") or ""),
+            "format": str(snapshot.get("format") or ""),
+            "license": str(snapshot.get("license") or ""),
+            "parameters": str(snapshot.get("parameters") or ""),
+            "quantization": str(snapshot.get("quantization") or ""),
+            "tags": source_tags,
+            "sensitive": bool(snapshot.get("sensitive")),
+        }
+
+    model["source_contexts"] = {
+        "combined": {
+            "source": str(model.get("source") or "").strip().lower(),
+            "label": "Combined",
+            "color": model.get("source_color") or "#00eaff",
+            "url": str(model.get("url") or ""),
+            "name": str(model.get("display_name") or model.get("name") or ""),
+            "author": str(model.get("author") or ""),
+            "architecture": str(model.get("architecture") or ""),
+            "model_type": str(model.get("model_type") or ""),
+            "downloads": model.get("downloads", 0) or 0,
+            "likes": model.get("likes", 0) or 0,
+            "created": format_date(model.get("created")) if model.get("created") else "",
+            "updated": format_date(model.get("updated")) if model.get("updated") else "",
+            "description": description_text(model.get("description") or ""),
+            "base_model": str(model.get("base_model") or ""),
+            "pipeline": str(model.get("pipeline") or ""),
+            "format": str(model.get("format") or ""),
+            "license": str(model.get("license") or ""),
+            "parameters": str(model.get("parameters") or ""),
+            "quantization": str(model.get("quantization") or ""),
+            "tags": list(model.get("detail_tags") or []),
+            "sensitive": bool(model.get("sensitive")),
+        }
+    }
+    for snapshot in eligible_snapshots:
+        source_name = str(snapshot.get("source") or "").strip().lower()
+        model["source_contexts"][source_name] = _detail_source_context(snapshot)
+
+    # Mixed cards are not mature as a whole. In Show mode the mature source
+    # remains selectable; Hide mode never receives that source context at all.
+    model["sensitive"] = bool(eligible_snapshots) and all(
+        bool(snapshot.get("sensitive")) for snapshot in eligible_snapshots
     )
+    model["source_contexts"]["combined"]["sensitive"] = bool(model["sensitive"])
 
     return render_template(
         "components/model_detail.html",

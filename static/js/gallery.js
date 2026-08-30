@@ -20,6 +20,7 @@ function initializeGallery(){
     const metadataRestore = detail.querySelector(".media-metadata-restore");
     const folderBtn = detail.querySelector(".media-folder-btn");
     const downloadModelBtn = detail.querySelector(".media-download-model-btn");
+    const sourceViewSelect = detail.querySelector(".media-source-view-select");
     const expandBtn = detail.querySelector(".media-expand-btn");
     const filesPanel = detail.querySelector(".media-files-panel");
     const filesList = detail.querySelector(".media-files-list");
@@ -41,7 +42,37 @@ function initializeGallery(){
     const modelFiles = readJson(".model-files-json", []);
     const downloadSources = readJson(".download-sources-json", []);
     const fallbackItems = Array.from(detail.querySelectorAll(".media-item"));
-    let visibleIndices = Array.from({length: mediaData.length || fallbackItems.length}, (_,i)=>i);
+    let activeSourceView=String(sourceViewSelect?.value||"combined").trim().toLowerCase()||"combined";
+
+    function sourceMatchesIndex(index){
+        if(activeSourceView==="combined") return true;
+        return String(dataFor(index).source||"").trim().toLowerCase()===activeSourceView;
+    }
+
+    function mediaIdentityKey(index){
+        const data=dataFor(index);
+        const url=String(data.url||data.thumbnail||"").trim();
+        if(!url) return `index:${index}`;
+        return url.split("#",1)[0].split("?",1)[0].toLowerCase();
+    }
+
+    function dedupeMediaIndices(indices){
+        const seen=new Set();
+        return indices.filter(index=>{
+            const key=mediaIdentityKey(index);
+            if(seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function sourceVisibleIndices(){
+        const count=mediaData.length || fallbackItems.length;
+        const indices=Array.from({length:count},(_,i)=>i).filter(sourceMatchesIndex);
+        return activeSourceView==="combined" ? dedupeMediaIndices(indices) : indices;
+    }
+
+    let visibleIndices = sourceVisibleIndices();
     let total = visibleIndices.length;
     if(total === 0) return;
     fallbackItems.filter(item=>item.tagName==="VIDEO").forEach(video=>{
@@ -292,11 +323,14 @@ function initializeGallery(){
     function renderFiles(index,modelOnly){
         if(!filesPanel||!filesList)return;
         const {folder,files}=folderCandidates(index); filesList.innerHTML="";
-        if(modelOnly && downloadSources.length){
-            filesTitle.textContent=downloadSources.length>1?"Choose download source":"Model files for this preview";
-            filesFolder.textContent=downloadSources.length>1?"This model is available from multiple sources":(folder?folder+"/":"Available model files");
+        const viewDownloadSources=activeSourceView==="combined"
+            ? downloadSources
+            : downloadSources.filter(src=>String(src?.source||"").trim().toLowerCase()===activeSourceView);
+        if(modelOnly && viewDownloadSources.length){
+            filesTitle.textContent=viewDownloadSources.length>1?"Choose download source":"Model files for this preview";
+            filesFolder.textContent=viewDownloadSources.length>1?"This model is available from multiple sources":(folder?folder+"/":"Available model files");
             let count=0;
-            downloadSources.forEach(src=>{
+            viewDownloadSources.forEach(src=>{
                 let srcFiles=Array.isArray(src.files)?src.files:[];
                 let primary=srcFiles.map((f,i)=>({f,i})).filter(x=>x.f&&typeof x.f==="object"&&isModelFile(x.f)&&x.f.primary);
                 let shown=primary.length?primary:srcFiles.map((f,i)=>({f,i})).filter(x=>x.f&&typeof x.f==="object"&&isModelFile(x.f));
@@ -305,8 +339,11 @@ function initializeGallery(){
             });
             if(!count){const e=document.createElement("div");e.className="media-files-empty";e.textContent="No downloadable model files were found. Rescan the source to refresh its file metadata.";filesList.appendChild(e);}
         }else{
-            let shown=modelOnly?files.filter(isModelFile):modelFiles;
-            if(modelOnly&&shown.length===0)shown=modelFiles.filter(isModelFile);
+            const sourceRepositoryFiles=(activeSourceView!=="combined" && viewDownloadSources.length===1)
+                ? (Array.isArray(viewDownloadSources[0].files)?viewDownloadSources[0].files:[])
+                : modelFiles;
+            let shown=modelOnly?files.filter(isModelFile):sourceRepositoryFiles;
+            if(modelOnly&&shown.length===0)shown=sourceRepositoryFiles.filter(isModelFile);
             filesTitle.textContent=modelOnly?"Model files for this preview":"All repository files";
             filesFolder.textContent=modelOnly?(folder?folder+"/":"Repository root / available files"):"Repository root + subfolders";
             if(!shown.length){const e=document.createElement("div");e.className="media-files-empty";e.textContent="No downloadable files were found here.";filesList.appendChild(e);}
@@ -336,6 +373,29 @@ function initializeGallery(){
         if(next) next.style.display=total<=1?"none":"";
     }
 
+    function renderEmptyMedia(message="No previews found for this source."){
+        pauseCurrentVideo();
+        total=0;
+        current=0;
+        if(virtualStage){
+            const empty=document.createElement("div");
+            empty.className="media-version-loading";
+            empty.textContent=message;
+            virtualStage.replaceChildren(empty);
+            currentNode=empty;
+        }else{
+            fallbackItems.forEach(item=>item.classList.remove("active"));
+            currentNode=null;
+        }
+        if(counter) counter.textContent="0 / 0";
+        if(prev) prev.style.display="none";
+        if(next) next.style.display="none";
+        if(filenameEl) filenameEl.textContent="";
+        if(pathEl) pathEl.textContent="";
+        if(metadataBody) metadataBody.innerHTML="";
+        if(filesPanel) filesPanel.classList.remove("open");
+    }
+
     const versionMetadataRequests=new Map();
 
     function versionIdentity(index){
@@ -363,12 +423,13 @@ function initializeGallery(){
         wantedId=String(wantedId||"").trim();
         const matches=[];
         mediaData.forEach((_,i)=>{
+            if(!sourceMatchesIndex(i)) return;
             const identity=versionIdentity(i);
             if((wantedId&&identity.id===wantedId)||(wantedName&&identity.name===wantedName)){
                 matches.push(i);
             }
         });
-        return matches;
+        return activeSourceView==="combined" ? dedupeMediaIndices(matches) : matches;
     }
 
     function mergeReturnedVersionMedia(items){
@@ -447,7 +508,9 @@ function initializeGallery(){
         wantedId=String(wantedId||"").trim();
         if(!wantedName&&!wantedId) return;
 
-        const source=String(detail.dataset.source||"").trim().toLowerCase();
+        const source=activeSourceView!=="combined"
+            ? activeSourceView
+            : String(detail.dataset.source||"").trim().toLowerCase();
         let matches=matchingVersionIndices(wantedName,wantedId);
 
         // Only sources whose media rows actually carry version identity should
@@ -456,10 +519,11 @@ function initializeGallery(){
         // sources must keep their normal full gallery instead of falling into
         // the Red-specific "Loading this version's previews..." state.
         if(!matches.length && source!=="civitaired"){
-            visibleIndices=Array.from({length:mediaData.length},(_,i)=>i);
+            visibleIndices=sourceVisibleIndices();
             total=visibleIndices.length;
             current=0;
             if(visibleIndices.length) showImage(0);
+            else renderEmptyMedia("No previews found for this source.");
             return;
         }
 
@@ -521,6 +585,32 @@ function initializeGallery(){
 
     detail.addEventListener("modelradar:version", event=>{
         applyVersionFilter(event.detail?.name,event.detail?.id);
+    });
+
+    async function applySourceFilter(source){
+        const normalized=String(source||"combined").trim().toLowerCase()||"combined";
+        activeSourceView=normalized;
+        if(sourceViewSelect && sourceViewSelect.value!==normalized) sourceViewSelect.value=normalized;
+        if(filesPanel) filesPanel.classList.remove("open");
+
+        const selected=detail.querySelector(".model-version-pill.selected[data-version-name]");
+        if(selected){
+            await applyVersionFilter(
+                selected.dataset.versionName||"",
+                selected.dataset.versionId||""
+            );
+            return;
+        }
+
+        visibleIndices=sourceVisibleIndices();
+        total=visibleIndices.length;
+        current=0;
+        if(total) showImage(0);
+        else renderEmptyMedia();
+    }
+
+    detail.addEventListener("modelradar:source", event=>{
+        applySourceFilter(event.detail?.source||"combined");
     });
 
     if(prev)prev.onclick=()=>showImage(current-1); if(next)next.onclick=()=>showImage(current+1);

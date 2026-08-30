@@ -439,6 +439,7 @@ def _source_snapshot(model):
         "author": model.get("author") or "",
         "name": model.get("name") or "",
         "display_name": model.get("display_name") or "",
+        "sensitive": int(bool(model.get("sensitive", 0))),
         # Preserve a remote recovery URL separately from models.image, which
         # normally becomes a local /static/cache/previews/... path.
         "image": model.get("_remote_preview_url") or (
@@ -456,6 +457,11 @@ def _source_snapshot(model):
         "metadata_hash": model.get("metadata_hash") or "",
         "updated": model.get("updated") or "",
         "created": model.get("created") or "",
+        "downloads": model.get("downloads", 0) or 0,
+        "likes": model.get("likes", 0) or 0,
+        "has_media": int(bool(model.get("has_media", 0))),
+        "has_video": int(bool(model.get("has_video", 0))),
+        "preview_count": model.get("preview_count", 0) or 0,
         "gated": int(bool(model.get("gated", 0))),
         "description": model.get("description") or "",
         "base_model": model.get("base_model") or "",
@@ -613,36 +619,44 @@ def refresh_model_source_snapshot(model_id, source, model_key, snapshot, url="")
     return changed
 
 def refresh_canonical_model_media(model_id, source, media_items, fallback_image=""):
-    """Refresh gallery media only when this source owns the canonical card.
+    """Refresh one provider's gallery inside a merged card.
 
-    Alternate mirror reloads must never replace a stronger canonical source's
-    gallery. CivitAI Red/CivitAI explicit reloads can safely repair stale media
-    when the reloaded source is the card currently representing the model.
+    The historical function name is retained for callers, but alternate source
+    reloads now own independent model_media rows instead of being discarded.
+    Only the storage-canonical provider is allowed to update models.image and
+    the canonical media summary columns.
     """
-    source=str(source or "").strip().lower()
-    conn=connect()
-    c=conn.cursor()
-    canonical=c.execute("SELECT source FROM models WHERE id=?",(int(model_id),)).fetchone()
-    if not canonical or str(canonical["source"] or "").strip().lower()!=source:
+    source = str(source or "").strip().lower()
+    conn = connect()
+    c = conn.cursor()
+    canonical = c.execute("SELECT source FROM models WHERE id=?", (int(model_id),)).fetchone()
+    if not canonical:
         conn.close()
         return False
 
-    cleaned=[item for item in (media_items or []) if isinstance(item,dict) and str(item.get("url") or "").strip()]
-    changed=_replace_media_rows(c,int(model_id),source,cleaned)
+    cleaned = [
+        item for item in (media_items or [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    changed = _replace_media_rows(c, int(model_id), source, cleaned)
 
-    total=len(cleaned)
-    videos=sum(1 for item in cleaned if str(item.get("type") or "").lower()=="video")
-    images=[item for item in cleaned if str(item.get("type") or "").lower()!="video"]
-    image=str((images[0].get("url") if images else "") or fallback_image or "").strip()
-    c.execute(
-        """
-        UPDATE models
-        SET has_media=?, has_video=?, preview_count=?, image=?
-        WHERE id=?
-        """,
-        (int(total>0),int(videos>0),len(images),image,int(model_id)),
-    )
-    conn.commit(); conn.close()
+    canonical_source = str(canonical["source"] or "").strip().lower()
+    if canonical_source == source:
+        total = len(cleaned)
+        videos = sum(1 for item in cleaned if str(item.get("type") or "").lower() == "video")
+        images = [item for item in cleaned if str(item.get("type") or "").lower() != "video"]
+        image = str((images[0].get("url") if images else "") or fallback_image or "").strip()
+        c.execute(
+            """
+            UPDATE models
+            SET has_media=?, has_video=?, preview_count=?, image=?
+            WHERE id=?
+            """,
+            (int(total > 0), int(videos > 0), len(images), image, int(model_id)),
+        )
+
+    conn.commit()
+    conn.close()
     return changed
 
 
@@ -1529,16 +1543,27 @@ def _media_identity_from_items(media_items):
     return rows
 
 
-def _media_identity_from_db(cursor, model_id):
-    rows = cursor.execute(
-        """
-        SELECT type, url, thumbnail, filename, path, position
-        FROM model_media
-        WHERE model_id=?
-        ORDER BY position, id
-        """,
-        (model_id,)
-    ).fetchall()
+def _media_identity_from_db(cursor, model_id, source=None):
+    if source is None:
+        rows = cursor.execute(
+            """
+            SELECT type, url, thumbnail, filename, path, position
+            FROM model_media
+            WHERE model_id=?
+            ORDER BY position, id
+            """,
+            (model_id,)
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            """
+            SELECT type, url, thumbnail, filename, path, position
+            FROM model_media
+            WHERE model_id=? AND lower(COALESCE(source,''))=lower(?)
+            ORDER BY position, id
+            """,
+            (model_id, str(source or ""))
+        ).fetchall()
     return [
         (
             str(row["type"] or "image"),
@@ -1553,14 +1578,18 @@ def _media_identity_from_db(cursor, model_id):
 
 
 def _replace_media_rows(cursor, model_id, source, media_items):
-    """Replace media only when the incoming media identity actually changed."""
+    """Replace one provider's gallery without erasing merged-source media."""
+    source = str(source or "").strip().lower()
     incoming = _media_identity_from_items(media_items)
-    existing = _media_identity_from_db(cursor, model_id)
+    existing = _media_identity_from_db(cursor, model_id, source)
 
     if incoming == existing:
         return False
 
-    cursor.execute("DELETE FROM model_media WHERE model_id = ?", (model_id,))
+    cursor.execute(
+        "DELETE FROM model_media WHERE model_id = ? AND lower(COALESCE(source,''))=lower(?)",
+        (model_id, source),
+    )
 
     rows = []
     for item in media_items or []:
@@ -1630,6 +1659,12 @@ def add_model(model):
                 c.execute("UPDATE model_file_hashes SET model_id=? WHERE model_id=?", (cross["id"], incoming_existing["id"]))
                 c.execute("DELETE FROM model_media WHERE model_id=?", (incoming_existing["id"],))
                 c.execute("DELETE FROM models WHERE id=?", (incoming_existing["id"],))
+            media_changed = _replace_media_rows(
+                c,
+                cross["id"],
+                incoming_source,
+                model.get("media", []) or [],
+            )
             now_seen = datetime.now(timezone.utc).isoformat()
             c.execute("UPDATE models SET last_seen=? WHERE id=?", (now_seen, cross["id"]))
             conn.commit()
@@ -1637,8 +1672,8 @@ def add_model(model):
             return {
                 "model_id": cross["id"],
                 "state": "unchanged",
-                "media_changed": False,
-                "media_count": 0,
+                "media_changed": bool(media_changed),
+                "media_count": len(model.get("media", []) or []) if media_changed else 0,
             }
 
         # A richer source (currently Red over regular CivitAI) replaces the
@@ -1649,8 +1684,12 @@ def add_model(model):
         preserved_retention_mode = cross["retention_mode"] or "source"
         preserved_creator_discovered_at = cross["creator_discovered_at"] or ""
         old_id = cross["id"]
-        links = c.execute("SELECT source,url,model_key FROM model_sources WHERE model_id=?", (old_id,)).fetchall()
+        links = c.execute("SELECT source,url,model_key,source_data FROM model_sources WHERE model_id=?", (old_id,)).fetchall()
         preserved_hashes = c.execute("SELECT source,model_key,sha256 FROM model_file_hashes WHERE model_id=?", (old_id,)).fetchall()
+        preserved_media = c.execute(
+            "SELECT source,type,url,thumbnail,filename,path,metadata,position FROM model_media WHERE model_id=? ORDER BY position,id",
+            (old_id,),
+        ).fetchall()
         c.execute("DELETE FROM model_media WHERE model_id=?", (old_id,))
         c.execute("DELETE FROM model_sources WHERE model_id=?", (old_id,))
         c.execute("DELETE FROM model_file_hashes WHERE model_id=?", (old_id,))
@@ -1664,6 +1703,7 @@ def add_model(model):
         setattr(model, "_preserved_creator_discovered_at", preserved_creator_discovered_at)
         setattr(model, "_preserved_links", [dict(row) for row in links])
         setattr(model, "_preserved_hashes", [dict(row) for row in preserved_hashes])
+        setattr(model, "_preserved_media", [dict(row) for row in preserved_media])
         if incoming_existing:
             c.execute("UPDATE models SET favorite=?, viewed=?, first_seen=COALESCE(NULLIF(first_seen,''), ?) WHERE id=?", (
                 max(int(incoming_existing["favorite"] or 0), preserved_favorite),
@@ -1929,15 +1969,55 @@ def add_model(model):
 
     _register_model_source(c, model_id, model.get("source", ""), model.get("url", ""), model.get("model_key", ""), model)
     for link in model.get("_preserved_links", []):
-        _register_model_source(c, model_id, link.get("source", ""), link.get("url", ""), link.get("model_key", ""))
+        c.execute(
+            """
+            INSERT INTO model_sources(model_id,source,url,model_key,source_data)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(source,model_key) DO UPDATE SET
+                model_id=excluded.model_id,
+                url=CASE WHEN excluded.url<>'' THEN excluded.url ELSE model_sources.url END,
+                source_data=CASE WHEN excluded.source_data NOT IN ('','{}') THEN excluded.source_data ELSE model_sources.source_data END
+            """,
+            (
+                model_id,
+                link.get("source", ""),
+                link.get("url", ""),
+                link.get("model_key", ""),
+                link.get("source_data", "") or "",
+            ),
+        )
     for hash_row in model.get("_preserved_hashes", []):
         c.execute(
             "INSERT OR REPLACE INTO model_file_hashes(model_id,source,model_key,sha256) VALUES(?,?,?,?)",
             (model_id, hash_row.get("source", ""), hash_row.get("model_key", ""), hash_row.get("sha256", "")),
         )
 
-    # Replace all media using the same connection and a single transaction.
-    # This keeps repositories with thousands of previews fast.
+    # Restore galleries from sources that were already attached before a
+    # canonical-source promotion, then replace only the incoming provider's
+    # own gallery. This keeps each merged source independently viewable.
+    preserved_media_rows = []
+    for item in model.get("_preserved_media", []):
+        preserved_media_rows.append((
+            model_id,
+            item.get("source", ""),
+            item.get("type", "image"),
+            item.get("url", ""),
+            item.get("thumbnail", ""),
+            item.get("filename", ""),
+            item.get("path", ""),
+            item.get("metadata", "") or "",
+            item.get("position", 0),
+        ))
+    if preserved_media_rows:
+        c.executemany(
+            """
+            INSERT INTO model_media
+            (model_id,source,type,url,thumbnail,filename,path,metadata,position)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            preserved_media_rows,
+        )
+
     media_changed = _replace_media_rows(
         c,
         model_id,
@@ -2377,6 +2457,15 @@ def clear_media(model_id):
 
     conn.close()
 
+
+
+def update_description(model_id, description):
+    if not description:
+        return
+    conn = connect()
+    conn.execute("UPDATE models SET description = ? WHERE id = ?", (description, model_id))
+    conn.commit()
+    conn.close()
 
 
 def mark_viewed(model_id):
@@ -4064,8 +4153,10 @@ def migrate():
                if sha_reconcile.get("skipped_ambiguous") else "")
         )
 
-    # Reconcile pre-existing CivitAI/Red duplicate cards. Red is the canonical
-    # presentation source; the regular CivitAI URL remains as a fallback link.
+    # Reconcile pre-existing CivitAI/Red duplicate cards. Red remains the
+    # storage-canonical row for historical merge stability, but feed/detail
+    # presentation is chosen independently in app.py. Preserve both providers'
+    # source snapshots and galleries while collapsing only the card identity.
     pairs = c.execute("""
         SELECT r.id AS red_id, c.id AS civ_id,
                r.model_key AS model_key,
@@ -4090,8 +4181,18 @@ def migrate():
                   (red_id, 'civitai', pair["civ_url"] or '', pair["model_key"], civ_source_data))
         c.execute("UPDATE model_sources SET model_id=? WHERE model_id=?", (red_id, civ_id))
         c.execute("UPDATE model_file_hashes SET model_id=? WHERE model_id=?", (red_id, civ_id))
-        c.execute("DELETE FROM model_media WHERE model_id=?", (civ_id,))
+        c.execute("UPDATE model_media SET model_id=? WHERE model_id=?", (red_id, civ_id))
         c.execute("DELETE FROM models WHERE id=?", (civ_id,))
+
+    # Versioned one-time data upgrades live under migrations/ so database.py
+    # stays focused on the current schema. Each successful migration records a
+    # marker in models.db and is skipped forever after that.
+    from migrations.runner import run_pending_migrations
+
+    for migration_result in run_pending_migrations(c):
+        message = str(migration_result.get("message") or "").strip()
+        if message:
+            print(message)
 
     conn.commit()
     conn.close()
@@ -4272,6 +4373,30 @@ def get_scan_results(scan_id):
     rows = c.fetchall()
     conn.close()
     return rows
+
+
+def get_models_missing_description(limit=100, offset=0):
+    """Return models whose description is blank, oldest IDs first for stable backfill batches."""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT id, model_key, source, url, card_data, name, sha
+           FROM models
+           WHERE description IS NULL OR TRIM(description) = ''
+           ORDER BY id ASC
+           LIMIT ? OFFSET ?""",
+        (max(1, int(limit)), max(0, int(offset))),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def count_models_missing_description():
+    conn = connect()
+    value = conn.execute(
+        "SELECT COUNT(*) FROM models WHERE description IS NULL OR TRIM(description) = ''"
+    ).fetchone()[0]
+    conn.close()
+    return int(value or 0)
 
 
 
