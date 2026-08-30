@@ -17,7 +17,7 @@ try {
     favoriteCreatorNames = new Set(JSON.parse(document.getElementById("favorite-creators-data")?.textContent || "[]").map(name => String(name).toLowerCase()));
 } catch (_) {}
 window.favoriteCreatorNames = favoriteCreatorNames;
-const SEARCH_COMMANDS = ["discover", "search", "exclude:", "author:", "arch:", "type:", "source:", "tag:", "sha:", "status:", "access:", "downloaded:", "update:", "mature:", "media:", "favorite:", "favorite-creator:"];
+const SEARCH_COMMANDS = ["discover", "search", "exclude:", "author:", "arch:", "type:", "source:", "tag:", "sha:", "status:", "access:", "downloaded:", "update:", "mature:", "media:", "favorite:", "favorite-creator:", "sort:"];
 const SEARCH_VALUE_SUGGESTIONS = {
     "favorite:": [
         ["favorite:true", "Favorite models"],
@@ -33,6 +33,14 @@ const SEARCH_VALUE_SUGGESTIONS = {
     "status:": [["status:new", "New models"], ["status:seen", "Seen models"], ["status:updated", "Updated in latest scan"]],
     "downloaded:": [["downloaded:true", "Previously downloaded"], ["downloaded:false", "Never downloaded"]],
     "update:": [["update:true", "Downloaded models with updates"], ["update:false", "No tracked update"]],
+    "sort:": [
+        ["sort:activity", "Latest Activity"],
+        ["sort:created", "Newest Created"],
+        ["sort:updated", "Newest Updated"],
+        ["sort:added", "Recently Added"],
+        ["sort:downloads", "Most Downloads"],
+        ["sort:likes", "Most Likes"]
+    ],
     "exclude:": [["exclude:gated", "Hide gated models"], ["exclude:unknown", "Hide unknown download status"], ["exclude:downloadable", "Hide downloadable models"]]
 };
 
@@ -61,7 +69,7 @@ function ensureSearchUI(){
         <div class="search-help-tooltip" role="tooltip">
             Type anything and press Enter to pin it as a filter.<br>
             Try <strong>search</strong> to find models or creators not currently in AbyssBeacon, or <strong>discover</strong> to find models by tags not currently in AbyssBeacon.<br>
-            Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>sha:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>downloaded:</strong> <strong>update:</strong> <strong>favorite:</strong>
+            Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>sha:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>downloaded:</strong> <strong>update:</strong> <strong>favorite:</strong> <strong>sort:</strong>
         </div>`;
 
     navbar.insertBefore(area, cluster);
@@ -444,7 +452,7 @@ function normalizeSearchValue(value){
 
 function parseModelSearch(raw){
     const tokens=[];
-    const tokenRegex=/(exclude|source|src|arch|architecture|type|status|access|downloaded|update|mature|nsfw|media|favorite-creator|favorite|fav|author|creator|tag|sha):(?:"([^"]+)"|(\S+))/gi;
+    const tokenRegex=/(exclude|source|src|arch|architecture|type|status|access|downloaded|update|mature|nsfw|media|favorite-creator|favorite|fav|author|creator|tag|sha|sort):(?:"([^"]+)"|(\S+))/gi;
     let match;
     while((match=tokenRegex.exec(raw || "")) !== null){
         const aliases={src:"source",architecture:"arch",creator:"author",nsfw:"mature",fav:"favorite"};
@@ -590,6 +598,34 @@ function applyStructuredSearchToOptions(rawTerm){
         const select=document.getElementById("creatorFavoriteFilter");
         if(select && ["true","yes","1"].includes(normalized)){ select.value="favorite"; changed=true; }
         else if(select && ["false","no","0"].includes(normalized)){ select.value="not_favorite"; changed=true; }
+    } else if(key === "sort"){
+        const normalized=normalizedOptionValue(value);
+        const sortAliases={
+            newest:"activity",
+            latest:"activity",
+            latestactivity:"activity",
+            newestcreated:"created",
+            newestupdated:"updated",
+            recent:"added",
+            recentlyadded:"added",
+            download:"downloads",
+            mostdownloaded:"downloads",
+            mostdownloads:"downloads",
+            like:"likes",
+            liked:"likes",
+            mostliked:"likes",
+            mostlikes:"likes"
+        };
+        const wanted=sortAliases[normalized] || normalized;
+        const option=Array.from(document.querySelectorAll('input[name="sortOption"]'))
+            .find(input => normalizedOptionValue(input.value) === wanted);
+        if(option){
+            option.checked=true;
+            const url=new URL(window.location.href);
+            url.searchParams.set("sort", option.value);
+            window.history.replaceState({}, "", url.toString());
+            changed=true;
+        }
     }
 
     if(changed){

@@ -21,7 +21,8 @@ DEFAULT_SEARCH_SETTINGS = {
     "civitai": {
         "search_days": 7,
         "max_results": 100,
-        "sort": "newest"
+        "sort": "newest",
+        "include_mature_media": False
     },
     "civitaired": {
         "search_days": 7,
@@ -208,6 +209,12 @@ def normalize_source_settings(source, values=None):
         defaults["max_results"],
         maximum=max_caps[source]
     )
+
+    if source == "civitai":
+        raw_include_mature = values.get("include_mature_media", defaults.get("include_mature_media", False))
+        if isinstance(raw_include_mature, str):
+            raw_include_mature = raw_include_mature.strip().lower() in {"1", "true", "yes", "on"}
+        result["include_mature_media"] = bool(raw_include_mature)
 
     if source == "tensorhub":
         raw_creator_enabled = values.get("creator_expansion_enabled", defaults.get("creator_expansion_enabled", False))

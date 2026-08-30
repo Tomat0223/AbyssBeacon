@@ -2076,6 +2076,21 @@ def _restricted_download_payload(model, source_name, source_url, detail=""):
 
 
 
+def _civitai_include_mature_media_enabled():
+    settings = load_settings()
+    search_settings = settings.get("search_settings", {}) if isinstance(settings.get("search_settings"), dict) else {}
+    civitai_settings = search_settings.get("civitai", {}) if isinstance(search_settings.get("civitai"), dict) else {}
+    return bool(civitai_settings.get("include_mature_media", False))
+
+def _civitai_media_limit():
+    settings = load_settings()
+    prefs = settings.get("preferences", {}) if isinstance(settings.get("preferences"), dict) else {}
+    try:
+        return max(0, int(prefs.get("media_per_model_limit", 100)))
+    except (TypeError, ValueError):
+        return 100
+
+
 def _queue_civit_refresh(item):
     """Refresh one queued CivitAI/Red model and persist the fresh source snapshot."""
     source_name = str(item.get("source") or "").strip().lower()
@@ -2095,7 +2110,12 @@ def _queue_civit_refresh(item):
         if not isinstance(details, dict) or not details:
             raise RuntimeError("CivitAI did not return fresh model details.")
         details["_force_page"] = True
-        refreshed = civitai_scanner._build_model(details, enrich=False)
+        refreshed = civitai_scanner._build_model(
+            details,
+            enrich=False,
+            include_mature_media=_civitai_include_mature_media_enabled(),
+            media_limit=_civitai_media_limit(),
+        )
     elif source_name == "civitaired":
         from scanners import civitaired as civitaired_scanner
         try:
@@ -2854,7 +2874,14 @@ def refresh_download_source(model_id, source, _batch=False):
             details["_force_version"] = True
             if selected_version_id:
                 details["_selected_version_id"] = selected_version_id
-            refreshed = civitai_scanner._build_model(details, enrich=False)
+
+
+            refreshed = civitai_scanner._build_model(
+                details,
+                enrich=False,
+                include_mature_media=_civitai_include_mature_media_enabled(),
+                media_limit=_civitai_media_limit(),
+            )
             snapshot = refreshed.as_dict()
             files = list(refreshed.files or [])
             gated = bool(refreshed.gated)
@@ -4592,12 +4619,94 @@ def _boolish(value):
     return bool(marker)
 
 
+def _media_row_sensitive(row):
+    """Classify one stored media item independently from its parent source."""
+    row = row if isinstance(row, dict) else dict(row or {})
+    metadata_value = row.get("metadata_obj", row.get("metadata"))
+    if isinstance(metadata_value, str):
+        try:
+            media_meta = json.loads(metadata_value or "{}")
+        except Exception:
+            media_meta = {}
+    elif isinstance(metadata_value, dict):
+        media_meta = metadata_value
+    else:
+        media_meta = {}
+
+    if "mature" in media_meta:
+        return _boolish(media_meta.get("mature"))
+    if "sensitive" in media_meta:
+        return _boolish(media_meta.get("sensitive"))
+
+    source_name = str(row.get("source") or "").strip().lower()
+
+    raw_browsing_level = media_meta.get("browsingLevel", media_meta.get("browsing_level"))
+    if raw_browsing_level not in (None, "") and source_name in {"civitai", "civitaired"}:
+        try:
+            browsing_level = int(raw_browsing_level)
+            return bool(browsing_level & (4 | 8 | 16 | 32))
+        except (TypeError, ValueError):
+            pass
+
+    raw_level = media_meta.get("nsfwLevel", media_meta.get("nsfw_level"))
+    if raw_level not in (None, ""):
+        try:
+            level = int(raw_level)
+            if source_name in {"civitai", "civitaired"}:
+                return bool(level & (4 | 8 | 16 | 32))
+            return level > 1
+        except (TypeError, ValueError):
+            marker = str(raw_level or "").strip().lower()
+            if marker in {"r", "x", "xxx", "blocked", "mature", "adult", "explicit", "nsfw"}:
+                return True
+            if marker in {"pg", "pg-13", "pg13", "safe", "sfw", "none"}:
+                return False
+
+    for key in ("maturity", "content_rating", "contentRating", "rating"):
+        marker = str(media_meta.get(key) or "").strip().lower()
+        if marker in {"r", "x", "xxx", "blocked", "mature", "adult", "explicit", "nsfw"}:
+            return True
+        if marker in {"pg", "pg-13", "pg13", "safe", "sfw", "none"}:
+            return False
+
+    raw_nsfw = media_meta.get("nsfw")
+    if isinstance(raw_nsfw, bool):
+        return raw_nsfw
+    if isinstance(raw_nsfw, str):
+        marker = raw_nsfw.strip().lower()
+        if marker in {"true", "1", "r", "x", "xxx", "mature", "adult", "explicit", "nsfw"}:
+            return True
+        if marker in {"false", "0", "pg", "pg-13", "pg13", "safe", "sfw", "none"}:
+            return False
+    return False
+
+
+def _media_visible_for_maturity(
+    row,
+    maturity_mode="hide",
+    include_civitai_mature_media=True,
+):
+    """Return whether one stored media row belongs in the active view.
+
+    Mature Content controls display globally. CivitAI's Include Mature Media
+    setting additionally controls whether previously fetched adult CivitAI
+    gallery rows are considered active at all. This makes turning Rich Media
+    OFF take effect immediately; the next scan/reload then prunes those rows
+    from storage as well.
+    """
+    row = row if isinstance(row, dict) else dict(row or {})
+    media_is_mature = _media_row_sensitive(row)
+    source_name = str(row.get("source") or "").strip().lower()
+
+    if source_name == "civitai" and media_is_mature and not include_civitai_mature_media:
+        return False
+
+    return _normalize_maturity_mode(maturity_mode) == "show" or not media_is_mature
+
+
 def _source_snapshot_sensitive(snapshot, canonical=None):
     """Classify one provider snapshot without letting sibling sources bleed in."""
     snapshot = snapshot if isinstance(snapshot, dict) else {}
-
-    if "sensitive" in snapshot and snapshot.get("sensitive") not in (None, ""):
-        return _boolish(snapshot.get("sensitive"))
 
     card_data = snapshot.get("card_data") or {}
     if isinstance(card_data, str):
@@ -4607,6 +4716,30 @@ def _source_snapshot_sensitive(snapshot, canonical=None):
             card_data = {}
     if not isinstance(card_data, dict):
         card_data = {}
+
+    source_name = str(snapshot.get("source") or "").strip().lower()
+
+    # CivitAI's top-level ``nsfw`` boolean is the provider's model-level
+    # maturity state. Its numeric ``nsfwLevel`` is a roll-up/bitmask of content
+    # levels represented by the model and can contain mature bits on an
+    # otherwise-safe model. Prefer this explicit boolean even over a stale
+    # snapshot.sensitive value left by older AbyssBeacon builds; this also
+    # repairs previously poisoned merged cards as soon as they are rendered.
+    if source_name == "civitai" and "nsfw" in card_data:
+        raw_model_nsfw = card_data.get("nsfw")
+        if isinstance(raw_model_nsfw, bool):
+            return raw_model_nsfw
+        if isinstance(raw_model_nsfw, (int, float)):
+            return raw_model_nsfw != 0
+        if isinstance(raw_model_nsfw, str):
+            marker = raw_model_nsfw.strip().lower()
+            if marker in {"true", "1", "yes", "on"}:
+                return True
+            if marker in {"false", "0", "no", "off", "", "none"}:
+                return False
+
+    if "sensitive" in snapshot and snapshot.get("sensitive") not in (None, ""):
+        return _boolish(snapshot.get("sensitive"))
 
     # Old CivitAI/CivitAI Red merged rows can synthesize a missing source from
     # its sibling solely so downloads still work.  That compatibility snapshot
@@ -4623,18 +4756,24 @@ def _source_snapshot_sensitive(snapshot, canonical=None):
         ))
 
     # Several providers expose a numeric maturity level rather than a boolean.
-    # CivitAI/Red use 0/1 for safe-ish content and values above 1 for mature.
-    for key in ("nsfw_level", "nsfwLevel", "maturity_level", "maturityLevel"):
-        raw = card_data.get(key)
-        if raw in (None, ""):
-            continue
-        try:
-            if int(raw) > 1:
-                return True
-        except Exception:
-            marker = str(raw or "").strip().lower()
-            if marker in {"mature", "adult", "explicit", "nsfw", "r", "x", "xxx"}:
-                return True
+    # Do not use CivitAI's aggregate nsfwLevel here; its explicit ``nsfw``
+    # boolean above is the source/model maturity signal.
+    if source_name != "civitai":
+        for key in ("nsfw_level", "nsfwLevel", "maturity_level", "maturityLevel"):
+            raw = card_data.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                level = int(raw)
+                if source_name == "civitaired":
+                    if level & (4 | 8 | 16 | 32):
+                        return True
+                elif level > 1:
+                    return True
+            except Exception:
+                marker = str(raw or "").strip().lower()
+                if marker in {"mature", "adult", "explicit", "nsfw", "r", "x", "xxx"}:
+                    return True
 
     for key in ("content_rating", "contentRating", "rating"):
         marker = str(card_data.get(key) or "").strip().lower()
@@ -5075,6 +5214,7 @@ def _prepare_feed_chunk_models(
     maturity_mode = _normalize_maturity_mode(
         maturity_mode if maturity_mode is not None else preferences.get("selected_sensitive", "hide")
     )
+    include_civitai_mature_media = _civitai_include_mature_media_enabled()
     selected_sources = [
         str(value or "").strip().lower()
         for value in (selected_sources or [])
@@ -5087,6 +5227,8 @@ def _prepare_feed_chunk_models(
     links_by_model = {}
     videos_by_model_source = {}
     images_by_model_source = {}
+    video_candidates_by_model_source = {}
+    image_candidates_by_model_source = {}
 
     if ids:
         placeholders = ",".join("?" for _ in ids)
@@ -5098,7 +5240,7 @@ def _prepare_feed_chunk_models(
 
         for row in conn.execute(
             f"""
-            SELECT model_id,source,url,thumbnail,position,id
+            SELECT model_id,source,url,thumbnail,position,id,metadata
             FROM model_media
             WHERE model_id IN ({placeholders}) AND lower(type)='video'
             ORDER BY model_id,source,position,id
@@ -5106,11 +5248,11 @@ def _prepare_feed_chunk_models(
             ids,
         ).fetchall():
             key = (int(row["model_id"]), str(row["source"] or "").strip().lower())
-            videos_by_model_source.setdefault(key, dict(row))
+            video_candidates_by_model_source.setdefault(key, []).append(dict(row))
 
         for row in conn.execute(
             f"""
-            SELECT model_id,source,url,thumbnail,position,id
+            SELECT model_id,source,url,thumbnail,position,id,metadata
             FROM model_media
             WHERE model_id IN ({placeholders}) AND lower(type)='image'
             ORDER BY model_id,source,position,id
@@ -5118,7 +5260,7 @@ def _prepare_feed_chunk_models(
             ids,
         ).fetchall():
             key = (int(row["model_id"]), str(row["source"] or "").strip().lower())
-            images_by_model_source.setdefault(key, dict(row))
+            image_candidates_by_model_source.setdefault(key, []).append(dict(row))
     conn.close()
 
     history = database.get_download_history_lookup() if preferences.get("track_downloads", True) is not False else {}
@@ -5154,18 +5296,45 @@ def _prepare_feed_chunk_models(
             snap["sensitive"] = bool(_source_snapshot_sensitive(snap, original))
             snapshots = [snap]
 
-        # Give older source snapshots a usable preview from their own saved
-        # gallery when the snapshot predates per-source image persistence.
+        # Choose preview media after applying the user's maturity preference.
+        # A safe source may store mature CivitAI images when Rich Media is on;
+        # those rows must never become a Hide-Mature feed preview.
         for snap in snapshots:
             snap_source = str(snap.get("source") or "").strip().lower()
-            first_image = images_by_model_source.get((mid, snap_source))
-            first_video = videos_by_model_source.get((mid, snap_source))
-            if not str(snap.get("image") or "").strip() and first_image:
+            key = (mid, snap_source)
+            image_candidates = image_candidates_by_model_source.get(key, [])
+            video_candidates = video_candidates_by_model_source.get(key, [])
+            visible_images = [
+                row for row in image_candidates
+                if _media_visible_for_maturity(
+                    row,
+                    maturity_mode,
+                    include_civitai_mature_media=include_civitai_mature_media,
+                )
+            ]
+            visible_videos = [
+                row for row in video_candidates
+                if _media_visible_for_maturity(
+                    row,
+                    maturity_mode,
+                    include_civitai_mature_media=include_civitai_mature_media,
+                )
+            ]
+            first_image = visible_images[0] if visible_images else None
+            first_video = visible_videos[0] if visible_videos else None
+
+            if first_image:
                 snap["image"] = str(first_image.get("url") or "").strip()
-            if first_image or first_video:
-                snap["has_media"] = 1
+                images_by_model_source[key] = first_image
+            elif image_candidates and maturity_mode != "show":
+                snap["image"] = ""
+
             if first_video:
-                snap["has_video"] = 1
+                videos_by_model_source[key] = first_video
+
+            snap["preview_count"] = len(visible_images)
+            snap["has_media"] = int(bool(first_image or first_video))
+            snap["has_video"] = int(bool(first_video))
 
         safe_snapshots = [snap for snap in snapshots if not snap.get("sensitive")]
         mature_snapshots = [snap for snap in snapshots if snap.get("sensitive")]
@@ -5183,7 +5352,9 @@ def _prepare_feed_chunk_models(
         presentation_source_name = str(presentation.get("source") or "").strip().lower()
         canonical_source_name = str(original.get("source") or "").strip().lower()
         if presentation_source_name == canonical_source_name and str(original.get("image") or "").strip():
-            presentation["image"] = original.get("image")
+            canonical_media_rows = image_candidates_by_model_source.get((mid, canonical_source_name), [])
+            if maturity_mode == "show" or not canonical_media_rows:
+                presentation["image"] = original.get("image")
 
         _apply_presentation_snapshot(model, presentation)
 
@@ -7981,6 +8152,7 @@ def model_details(id):
     model = dict(model)
     canonical_model = dict(model)
     maturity_mode = _normalize_maturity_mode(request.args.get("mature", "hide"))
+    include_civitai_mature_media = _civitai_include_mature_media_enabled()
 
     detail_settings = load_settings()
     detail_preferences = detail_settings.get("preferences", {}) if isinstance(detail_settings.get("preferences", {}), dict) else {}
@@ -7997,18 +8169,33 @@ def model_details(id):
         snapshot = _decode_source_snapshot(link, canonical_model)
         snapshot["sensitive"] = bool(_source_snapshot_sensitive(snapshot, canonical_model))
 
-        # Older source snapshots may not contain an image even though their own
-        # gallery does. Use only that provider's media as the fallback.
-        if not str(snapshot.get("image") or "").strip():
-            first_image = next((
-                row for row in raw_media_rows
-                if str(row.get("source") or "").strip().lower() == str(snapshot.get("source") or "").strip().lower()
-                and str(row.get("type") or "").strip().lower() == "image"
-                and str(row.get("url") or "").strip()
-            ), None)
-            if first_image:
-                snapshot["image"] = str(first_image.get("url") or "").strip()
-                snapshot["has_media"] = 1
+        # Choose this source's preview using the current maturity preference.
+        # This prevents a stored mature gallery item from becoming the visible
+        # preview of an otherwise-safe source when Mature Content is hidden.
+        source_name = str(snapshot.get("source") or "").strip().lower()
+        source_media_rows = [
+            row for row in raw_media_rows
+            if str(row.get("source") or "").strip().lower() == source_name
+        ]
+        visible_source_media = [
+            row for row in source_media_rows
+            if _media_visible_for_maturity(
+                row,
+                maturity_mode,
+                include_civitai_mature_media=include_civitai_mature_media,
+            )
+        ]
+        first_image = next((
+            row for row in visible_source_media
+            if str(row.get("type") or "").strip().lower() == "image"
+            and str(row.get("url") or "").strip()
+        ), None)
+        if first_image:
+            snapshot["image"] = str(first_image.get("url") or "").strip()
+            snapshot["has_media"] = 1
+        elif source_media_rows and maturity_mode != "show":
+            snapshot["image"] = ""
+            snapshot["has_media"] = int(bool(visible_source_media))
         source_snapshots.append(snapshot)
 
     if not source_snapshots:
@@ -8031,11 +8218,17 @@ def model_details(id):
         conn.close()
         return "Model hidden by Mature Content setting", 404
 
-    presentation = _choose_presentation_snapshot(eligible_snapshots, media_rows=raw_media_rows) or dict(eligible_snapshots[0])
+    presentation = _choose_presentation_snapshot(eligible_snapshots) or dict(eligible_snapshots[0])
     presentation_source = str(presentation.get("source") or "").strip().lower()
     canonical_source = str(canonical_model.get("source") or "").strip().lower()
     if presentation_source == canonical_source and str(canonical_model.get("image") or "").strip():
-        presentation["image"] = canonical_model.get("image")
+        canonical_media_rows = [
+            row for row in raw_media_rows
+            if str(row.get("source") or "").strip().lower() == canonical_source
+            and str(row.get("type") or "").strip().lower() == "image"
+        ]
+        if maturity_mode == "show" or not canonical_media_rows:
+            presentation["image"] = canonical_model.get("image")
     _apply_presentation_snapshot(model, presentation)
 
     # Only maturity-eligible source contexts are exposed to this detail view.
@@ -8665,6 +8858,12 @@ def model_details(id):
         item = dict(row)
         item_source = str(item.get("source") or "").strip().lower()
         if item_source and item_source not in eligible_source_names:
+            continue
+        if not _media_visible_for_maturity(
+            item,
+            maturity_mode,
+            include_civitai_mature_media=include_civitai_mature_media,
+        ):
             continue
         raw_metadata = item.get("metadata") or ""
         if isinstance(raw_metadata, str):

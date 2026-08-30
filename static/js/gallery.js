@@ -51,6 +51,18 @@ function initializeGallery(){
 
     function mediaIdentityKey(index){
         const data=dataFor(index);
+        const meta=(data.metadata && typeof data.metadata==="object") ? data.metadata : {};
+        const assetKey=String(meta.civitai_asset_key||meta.asset_key||"").trim().toLowerCase();
+        if(assetKey) return assetKey;
+
+        const sources=[data.url, data.thumbnail, meta.url, meta.thumbnail];
+        for(const source of sources){
+            const text=String(source||"").trim();
+            if(!text) continue;
+            const match=text.match(/image\.civitai\.com\/[^/]+\/([0-9a-f-]{20,})(?=(?:\/|$|[?#]))/i);
+            if(match) return `cdn:${match[1].toLowerCase()}`;
+        }
+
         const url=String(data.url||data.thumbnail||"").trim();
         if(!url) return `index:${index}`;
         return url.split("#",1)[0].split("?",1)[0].toLowerCase();

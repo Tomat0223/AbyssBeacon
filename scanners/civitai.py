@@ -33,6 +33,7 @@ from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff
 API = "https://civitai.com/api/v1/models"
 MODEL_DETAIL_API = "https://civitai.com/api/v1/models/{model_id}"
 MODEL_VERSION_API = "https://civitai.com/api/v1/model-versions/{version_id}"
+IMAGE_API = "https://civitai.com/api/v1/images"
 SEARCH_API = "https://search-new.civitai.com/multi-search"
 DEBUG_SCANNERS = False
 
@@ -496,16 +497,27 @@ def _file_record(file_data, version, model_id):
 
 # CivitAI's website browsing levels are bitwise flags:
 #   1 = PG, 2 = PG-13, 4 = R, 8 = X, 16 = XXX, 32 = Blocked.
-# Regular civitai.com discovery is intentionally PG/PG-13 only; mature media
-# belongs to the separate CivitAI Red source.  The public model/version REST
-# endpoints can still return higher-level images even without authentication,
-# so enforce the .com browsing boundary locally before media reaches SQLite.
+# Regular civitai.com discovery stays PG/PG-13 by default. The optional
+# Include Mature Media setting may retain higher-level images from the exact
+# selected version, while feed/detail visibility remains controlled separately.
 _CIVITAI_COM_MATURE_MEDIA_MASK = 4 | 8 | 16 | 32
 
 
-def _civitai_com_media_allowed(image):
+def _civitai_media_is_mature(image):
     if not isinstance(image, dict):
         return False
+
+    # CivitAI's images endpoint documents browsingLevel as the precise raw
+    # bitmask. Prefer it when present; nsfwLevel may be the human-readable
+    # string form (None/Soft/Mature/X).
+    raw_browsing_level = image.get("browsingLevel")
+    if raw_browsing_level not in (None, ""):
+        try:
+            browsing_level = int(raw_browsing_level)
+        except (TypeError, ValueError):
+            browsing_level = None
+        if browsing_level is not None:
+            return (browsing_level & _CIVITAI_COM_MATURE_MEDIA_MASK) != 0
 
     raw_level = image.get("nsfwLevel")
     if raw_level not in (None, ""):
@@ -513,38 +525,81 @@ def _civitai_com_media_allowed(image):
             level = int(raw_level)
         except (TypeError, ValueError):
             label = str(raw_level).strip().casefold().replace("-", "").replace("_", "")
-            if label in {"r", "mature", "x", "xxx", "blocked"}:
-                return False
-            if label in {"pg", "pg13", "soft", "none", "safe"}:
+            if label in {"r", "mature", "adult", "explicit", "x", "xxx", "blocked"}:
                 return True
+            if label in {"pg", "pg13", "soft", "none", "safe", "sfw"}:
+                return False
         else:
-            return (level & _CIVITAI_COM_MATURE_MEDIA_MASK) == 0
+            return (level & _CIVITAI_COM_MATURE_MEDIA_MASK) != 0
 
     # Compatibility with older CivitAI payloads that exposed only `nsfw`.
     raw_nsfw = image.get("nsfw")
     if raw_nsfw is True:
-        return False
+        return True
     if isinstance(raw_nsfw, str):
         label = raw_nsfw.strip().casefold().replace("-", "").replace("_", "")
-        if label in {"true", "1", "r", "mature", "x", "xxx", "blocked"}:
+        if label in {"true", "1", "r", "mature", "adult", "explicit", "x", "xxx", "blocked"}:
+            return True
+        if label in {"false", "0", "none", "safe", "sfw", "pg", "pg13"}:
             return False
 
-    # Do not throw away otherwise valid legacy media merely because CivitAI
-    # omitted a maturity field. Discovery itself is already .com-filtered.
-    return True
+    return False
 
 
-def _media_records(versions, model_sensitive=False):
+def _civitai_model_is_mature(item):
+    """Return CivitAI's explicit model-level maturity state.
+
+    CivitAI exposes two similarly named fields with different meanings:
+
+    * ``nsfw`` is the model-level boolean.
+    * ``nsfwLevel`` is a bitmask/roll-up of maturity levels represented by the
+      model/version content and may contain mature bits even when ``nsfw`` is
+      false.
+
+    Gallery maturity is classified separately by ``_civitai_media_is_mature``.
+    Never infer model maturity from the aggregate ``nsfwLevel`` value.
+    """
+    if not isinstance(item, dict):
+        return False
+
+    raw_nsfw = item.get("nsfw")
+    if isinstance(raw_nsfw, bool):
+        return raw_nsfw
+    if isinstance(raw_nsfw, (int, float)):
+        return raw_nsfw != 0
+    if isinstance(raw_nsfw, str):
+        marker = raw_nsfw.strip().casefold()
+        if marker in {"true", "1", "yes", "on"}:
+            return True
+        if marker in {"false", "0", "no", "off", "", "none"}:
+            return False
+
+    # Current /models and /models/{id} payloads expose ``nsfw``. If an older
+    # or partial response lacks it, staying non-mature is safer than treating
+    # the aggregate gallery bitmask as a model-level classification.
+    return False
+
+
+def _civitai_com_media_allowed(image):
+    return isinstance(image, dict) and not _civitai_media_is_mature(image)
+
+
+def _media_records(versions, model_sensitive=False, include_mature_media=False):
     media = []
     position = 0
     for version in versions:
+        # Keep the final safety dedupe scoped to one model version. The same
+        # preview can legitimately belong to multiple versions and must retain
+        # each version association for the gallery/version filters.
+        identity_index = {}
         version_name = str(version.get("name") or version.get("id") or "version")
         version_id = version.get("id")
         model_files = [f.get("name") for f in (version.get("files") or []) if isinstance(f, dict) and f.get("name")]
         for index, image in enumerate(version.get("images") or []):
             if not isinstance(image, dict) or not image.get("url"):
                 continue
-            if not _civitai_com_media_allowed(image):
+            media_is_mature = _civitai_media_is_mature(image)
+            if media_is_mature and not include_mature_media:
                 continue
             raw_type = str(image.get("type") or "image").lower()
             url = image.get("url") or ""
@@ -564,9 +619,30 @@ def _media_records(versions, model_sensitive=False):
                 meta.setdefault("width", image.get("width"))
             if image.get("height"):
                 meta.setdefault("height", image.get("height"))
-            if image.get("nsfw") not in (None, False, "None"):
-                meta.setdefault("maturity", image.get("nsfw"))
-            media.append({
+            if image.get("browsingLevel") not in (None, ""):
+                meta.setdefault("browsingLevel", image.get("browsingLevel"))
+            if image.get("nsfwLevel") not in (None, ""):
+                meta.setdefault("nsfwLevel", image.get("nsfwLevel"))
+            if image.get("nsfw") not in (None, "None"):
+                meta.setdefault("nsfw", image.get("nsfw"))
+                if image.get("nsfw") not in (False, 0, "0", "false", "False"):
+                    meta.setdefault("maturity", image.get("nsfw"))
+            meta["mature"] = bool(media_is_mature)
+
+            identity_keys = _civitai_image_identity_candidates(image)
+            if identity_keys:
+                meta.setdefault("civitai_asset_key", identity_keys[0])
+            existing = next((identity_index.get(key) for key in identity_keys if identity_index.get(key) is not None), None)
+            if existing is not None:
+                prior_meta = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}
+                existing["metadata"] = {**prior_meta, **meta}
+                if not existing.get("thumbnail") and media_type == "video":
+                    existing["thumbnail"] = image.get("url") or ""
+                for key in identity_keys:
+                    identity_index[key] = existing
+                continue
+
+            record = {
                 "type": media_type,
                 "url": url,
                 "thumbnail": image.get("url") if media_type == "video" else "",
@@ -574,7 +650,10 @@ def _media_records(versions, model_sensitive=False):
                 "path": path,
                 "metadata": meta,
                 "position": position,
-            })
+            }
+            media.append(record)
+            for key in identity_keys:
+                identity_index[key] = record
             position += 1
     return media
 
@@ -618,9 +697,9 @@ def _fetch_model_version(version_id):
     """Fetch one exact CivitAI model-version payload.
 
     Unlike the parent /models/{id} endpoint, this response represents exactly
-    one revision and CivitAI filters its images[] to the caller's browsing
-    level. That makes it the authoritative source for a selected version's
-    gallery.
+    one revision. CivitAI may return media above the normal website browsing
+    level here, so the caller decides whether to keep only safe media or retain
+    the richer gallery.
     """
     if not version_id:
         return {}
@@ -641,6 +720,155 @@ def _fetch_model_version(version_id):
     except Exception as exc:
         debug_print("CivitAI model version failed:", exc)
     return {}
+
+
+def _civitai_normalize_media_url(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text.split("#", 1)[0].split("?", 1)[0].casefold()
+
+
+def _civitai_cdn_token(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"image\.civitai\.com/[^/]+/([0-9a-fA-F-]{20,})(?=(?:/|$|[?#]))",
+        text,
+        flags=re.I,
+    )
+    return match.group(1).casefold() if match else ""
+
+
+def _civitai_image_identity_candidates(image):
+    if not isinstance(image, dict):
+        return []
+
+    keys = []
+
+    def add(value):
+        value = str(value or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+
+    for field in ("url", "thumbnail", "originalUrl", "original_url", "src"):
+        token = _civitai_cdn_token(image.get(field))
+        if token:
+            add(f"cdn:{token}")
+
+    for field in ("id", "imageId", "image_id", "uuid"):
+        value = str(image.get(field) or "").strip()
+        if value:
+            add(f"id:{value.casefold()}")
+
+    for field in ("url", "thumbnail", "originalUrl", "original_url", "src"):
+        normalized = _civitai_normalize_media_url(image.get(field))
+        if normalized:
+            add(f"url:{normalized}")
+
+    return keys
+
+
+def _civitai_image_identity(image):
+    candidates = _civitai_image_identity_candidates(image)
+    return candidates[0] if candidates else ""
+
+
+def _merge_image_lists(*groups):
+    """Union CivitAI image lists without duplicating resized/CDN variants."""
+    out = []
+    index = {}
+    for group in groups:
+        for raw in group or []:
+            if not isinstance(raw, dict):
+                continue
+            image = dict(raw)
+            if image.get("nsfwLevel") in (None, "") and image.get("browsingLevel") not in (None, ""):
+                image["nsfwLevel"] = image.get("browsingLevel")
+            keys = _civitai_image_identity_candidates(image)
+            existing = next((index.get(key) for key in keys if index.get(key) is not None), None)
+            if existing is None:
+                out.append(image)
+                existing = image
+            else:
+                # Later sources (the version-gallery endpoint) usually carry richer
+                # maturity/generation metadata. Fill or replace only meaningful fields.
+                for field, value in image.items():
+                    if value in (None, "", [], {}):
+                        continue
+                    if field in {"meta", "metadata"} and isinstance(value, dict):
+                        prior = existing.get(field) if isinstance(existing.get(field), dict) else {}
+                        existing[field] = {**prior, **value}
+                    else:
+                        existing[field] = value
+            for key in keys:
+                index[key] = existing
+    return out
+
+
+def _fetch_version_gallery(version_id, max_items=100):
+    """Fetch the version-scoped CivitAI gallery, including mature media when allowed.
+
+    CivitAI's /model-versions/{id} images[] follows the caller's current browsing
+    level and can therefore remain SFW-only even when AbyssBeacon's opt-in is on.
+    /api/v1/images is the documented gallery endpoint and accepts browsingLevel.
+    """
+    if not version_id:
+        return []
+    try:
+        requested = int(max_items)
+    except (TypeError, ValueError):
+        requested = 100
+    # 0 means unlimited in AbyssBeacon settings; retain a generous safety ceiling
+    # for one model so an unusually popular gallery cannot explode a scan.
+    target = requested if requested > 0 else 1000
+    target = max(1, min(target, 1000))
+
+    items = []
+    cursor = None
+    while len(items) < target:
+        page_limit = min(200, target - len(items))
+        params = {
+            "modelVersionId": version_id,
+            "limit": page_limit,
+            "sort": "Newest",
+            "withMeta": "true",
+            # 1|2|4|8|16 = PG through XXX. Blocked (32) is intentionally omitted.
+            "browsingLevel": 31,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            response = get_with_backoff(
+                session,
+                IMAGE_API,
+                provider="CivitAI",
+                label=f"version gallery {version_id}",
+                pace_key="CivitAI.com",
+                min_interval=1.25,
+                params=params,
+                timeout=30,
+                max_retries=0,
+            )
+        except Exception:
+            break
+        if response.status_code != 200:
+            break
+        try:
+            payload = response.json()
+        except Exception:
+            break
+        page_items = payload.get("items") if isinstance(payload, dict) else []
+        page_items = [dict(x) for x in (page_items or []) if isinstance(x, dict)]
+        if not page_items:
+            break
+        items.extend(page_items)
+        metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+        cursor = str((metadata or {}).get("nextCursor") or "").strip()
+        if not cursor:
+            break
+    return items[:target]
 
 
 def _find_model_record(value, model_id):
@@ -1011,7 +1239,8 @@ def _tag_names(values):
     return out
 
 
-def _build_model(item, enrich=False):
+
+def _build_model(item, enrich=False, include_mature_media=False, media_limit=100):
     model_id = item.get("id")
     force_page = bool(item.get("_force_page"))
     force_version = bool(item.get("_force_version"))
@@ -1028,6 +1257,7 @@ def _build_model(item, enrich=False):
         or ""
     ).strip()
     versions = list(listing_versions)
+
 
     # Discovery responses are optimized for browsing and can expose only the
     # selected/latest version.  Hydrate the exact model before building the
@@ -1118,12 +1348,20 @@ def _build_model(item, enrich=False):
         versions = _merge_version_lists(versions, [exact_version])
         selected_version = _selected_version(versions)
         if isinstance(selected_version, dict):
-            # Exact-version images are authoritative, including an explicitly
-            # empty list. Do not additive-merge stale/hidden parent images.
+            # Exact-version images are authoritative in safe mode. Rich mode
+            # augments them below with CivitAI's version-scoped gallery API.
             selected_version["images"] = [
                 dict(image) for image in (exact_version.get("images") or [])
                 if isinstance(image, dict)
             ]
+
+    if include_mature_media and selected_version_id and isinstance(selected_version, dict):
+        rich_gallery = _fetch_version_gallery(selected_version_id, max_items=media_limit)
+        if rich_gallery:
+            selected_version["images"] = _merge_image_lists(
+                selected_version.get("images") or [],
+                rich_gallery,
+            )
 
     latest_version = selected_version if isinstance(selected_version, dict) else (versions[0] if versions else {})
 
@@ -1142,12 +1380,19 @@ def _build_model(item, enrich=False):
             if isinstance(file_data, dict):
                 files.append(_file_record(file_data, version, model_id))
 
-    sensitive = bool(item.get("nsfw"))
+    # Model/source maturity is independent from individual gallery images. A
+    # safe CivitAI model may legitimately contain mature media when the user
+    # opts into Rich Media; that must not hide the entire source/card.
+    sensitive = _civitai_model_is_mature(item)
     # One CivitAI card represents the selected/current revision. Keep files and
     # version metadata for every revision, but never concatenate old revision
     # galleries into the active card.
     gallery_versions = [latest_version] if latest_version else []
-    media = _media_records(gallery_versions, sensitive)
+    media = _media_records(
+        gallery_versions,
+        sensitive,
+        include_mature_media=bool(include_mature_media),
+    )
     preview = next((m["url"] for m in media if m.get("type") == "image"), "")
     has_video = any(m.get("type") == "video" for m in media)
 
@@ -1203,19 +1448,19 @@ def _build_model(item, enrich=False):
         for v in version_summaries
     )
     model.gated = bool(version_summaries) and not has_downloadable_version
-    model.sensitive = sensitive or any(
-        str((img.get("nsfw") if isinstance(img, dict) else "") or "").lower() not in {"", "none", "false", "0"}
-        for version in gallery_versions for img in (version.get("images") or [])
-    )
+    model.sensitive = bool(sensitive)
     model.card_data = {
         "civitai_id": model_id,
         "type": item.get("type"),
         "nsfw": item.get("nsfw"),
+        "nsfwLevel": item.get("nsfwLevel"),
         "mode": item.get("mode"),
         "version_id": latest_version.get("id"),
         "version_name": latest_version.get("name"),
         "base_model": base_model,
         "trained_words": latest_version.get("trainedWords") or [],
+        "include_mature_media": bool(include_mature_media),
+        "mature_media_count": sum(1 for m in media if bool((m.get("metadata") or {}).get("mature"))),
         "versions": version_summaries,
     }
     model.format = next((f.get("format") for f in files if f.get("format")), "")
@@ -1332,6 +1577,26 @@ def test_connection():
     return True, "Connected to CivitAI. API/download access and signed-in models_v9 discovery are ready."
 
 
+def _snapshot_include_mature_media(snapshot):
+    if not isinstance(snapshot, dict):
+        try:
+            snapshot = dict(snapshot)
+        except Exception:
+            return False
+    card = snapshot.get("card_data") or {}
+    if isinstance(card, str):
+        try:
+            card = json.loads(card or "{}")
+        except Exception:
+            card = {}
+    if not isinstance(card, dict):
+        card = {}
+    raw = card.get("include_mature_media", False)
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
 def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     global _DETAIL_ENRICHMENT_DISABLED
     _DETAIL_ENRICHMENT_DISABLED = False
@@ -1340,6 +1605,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     search_days = int(scan_settings.get("search_days", 7))
     max_results = max(1, int(scan_settings.get("max_results", 100)))
     sort_mode = scan_settings.get("sort", "newest")
+    include_mature_media = bool(scan_settings.get("include_mature_media", False))
     api_sort = {"newest": "Newest", "downloads": "Most Downloaded", "highest_rated": "Highest Rated"}.get(sort_mode, "Newest")
 
     if scan_seen_models is None:
@@ -1349,6 +1615,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
 
     print(f"CivitAI {'creator' if creator else 'search'}: {creator or term}")
     print(f"CivitAI maximum results: {'all available' if creator else max_results} (automatic pagination)")
+    print(f"CivitAI expanded media scan: {'enabled' if include_mature_media else 'standard'}")
 
     if creator:
         # Creator scans are exact-owner scans. Walk the catalog until the source
@@ -1488,18 +1755,24 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         existing_source = database.get_model_source_snapshot(NAME, str(model_id))
         source_updated = _source_activity(item)
         source_sha = _listing_version_id(item)
+        media_mode_requires_refresh = False
 
         if existing_source:
             db_updated = str(existing_source.get("updated") or "")
             db_sha = str(existing_source.get("sha") or "")
-            if (
-                source_sha
-                and db_sha == source_sha
-                and source_updated
-                and db_updated == source_updated
-            ) or (
-                source_updated
-                and db_updated == source_updated
+            media_mode_matches = _snapshot_include_mature_media(existing_source) == include_mature_media
+            media_mode_requires_refresh = not media_mode_matches
+            if media_mode_matches and (
+                (
+                    source_sha
+                    and db_sha == source_sha
+                    and source_updated
+                    and db_updated == source_updated
+                )
+                or (
+                    source_updated
+                    and db_updated == source_updated
+                )
             ):
                 duplicates += 1
                 if item.get("_models_v9_hit"):
@@ -1512,14 +1785,20 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
             if existing:
                 db_updated = str(existing["updated"] or "")
                 db_sha = str(existing["sha"] or "")
-                if (
-                    source_sha
-                    and db_sha == source_sha
-                    and source_updated
-                    and db_updated == source_updated
-                ) or (
-                    source_updated
-                    and db_updated == source_updated
+                existing_dict = dict(existing)
+                media_mode_matches = _snapshot_include_mature_media(existing_dict) == include_mature_media
+                media_mode_requires_refresh = not media_mode_matches
+                if media_mode_matches and (
+                    (
+                        source_sha
+                        and db_sha == source_sha
+                        and source_updated
+                        and db_updated == source_updated
+                    )
+                    or (
+                        source_updated
+                        and db_updated == source_updated
+                    )
                 ):
                     duplicates += 1
                     if item.get("_models_v9_hit"):
@@ -1542,7 +1821,12 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     "_selected_version_id": source_sha,
                 }
 
-        model = _build_model(item, enrich=bool(creator))
+        model = _build_model(
+            item,
+            enrich=bool(creator),
+            include_mature_media=include_mature_media,
+            media_limit=scan_settings.get("_media_limit", 100),
+        )
 
         # Creator scans are explicit requests for the creator's catalog, so
         # Search Days never trims them. Discovery scans use newest source
@@ -1554,7 +1838,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 continue
 
         existing = database.get_model(model.model_key, NAME)
-        if existing:
+        if existing and not media_mode_requires_refresh:
             db_updated = str(existing["updated"] or "")
             db_sha = str(existing["sha"] or "")
             if (model.sha and db_sha == model.sha and db_updated == model.updated) or (model.updated and db_updated == model.updated):

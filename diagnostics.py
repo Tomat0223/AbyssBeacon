@@ -421,6 +421,10 @@ def generate_diagnostic_report() -> str:
         f"Source sort modes: {_json_inline(source_sort)}",
     ]
 
+    civitai = search_settings.get("civitai", {}) if isinstance(search_settings.get("civitai"), dict) else {}
+    if civitai:
+        lines.append(f"CivitAI expanded media scan: {_yes_no(civitai.get('include_mature_media'))}")
+
     tensor = search_settings.get("tensorhub", {}) if isinstance(search_settings.get("tensorhub"), dict) else {}
     if tensor:
         lines.extend([

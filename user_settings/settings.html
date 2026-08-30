@@ -262,6 +262,17 @@
                 <option value="highest_rated" {% if civ.get('sort') == 'highest_rated' %}selected{% endif %}>Highest Rated</option>
             </select>
         </div>
+
+        <div class="setting">
+            <div>
+                <strong>Expanded Media Scan</strong>
+                <div class="help">Off uses CivitAI's standard selected-version media. On checks CivitAI's expanded gallery and stores additional images/videos when available, including mature media where provided. Your Mature Content setting still controls what AbyssBeacon displays. Expanded scans may retrieve substantially more media and can take longer. Applies to future scans and Reload Model.</div>
+            </div>
+            <label style="display:flex;align-items:center;justify-content:center;gap:10px;color:#dffaff;cursor:pointer;">
+                <input id="civIncludeMatureMedia" type="checkbox" style="width:20px;height:20px;accent-color:#00d9ff;" {% if civ.get('include_mature_media', False) %}checked{% endif %}>
+                <span>Enabled</span>
+            </label>
+        </div>
     </div>
 
     {% set red = search_settings.get('civitaired', {}) %}
@@ -450,7 +461,10 @@ saveButton.addEventListener("click", async () => {
         search_settings: {
             huggingface: {sort: document.getElementById("hfSort").value},
             modelscope: {sort: document.getElementById("msSort").value},
-            civitai: {sort: document.getElementById("civSort").value},
+            civitai: {
+                sort: document.getElementById("civSort").value,
+                include_mature_media: document.getElementById("civIncludeMatureMedia").checked
+            },
             civitaired: {sort: document.getElementById("redSort").value},
             tensorhub: {
                 sort: document.getElementById("thSort").value,
