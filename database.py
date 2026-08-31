@@ -10,12 +10,11 @@ from config import DATABASE
 _INITIALIZED = False
 
 
-# Built-in safety exclusions are intentionally code-defined rather than stored
-# in user settings. They are source-scoped so an unrelated creator using the
-# same display name on another provider is not affected.
-HARD_BLOCKED_CREATORS = {
-    # Built-in, non-removable safety exclusions. Keep these source-scoped so
-    # unrelated accounts on another provider are never affected.
+# Built-in discovery suppression is intentionally code-defined rather than
+# stored in user settings. These creators are omitted from passive discovery
+# but are not treated as hard bans; TensorHub can still return them for an
+# explicit exact creator/owner lookup.
+DISCOVERY_SUPPRESSED_CREATORS = {
     "tensorhub": {
         "e7g3",
         "kunjung",
@@ -23,50 +22,40 @@ HARD_BLOCKED_CREATORS = {
         "jigger boo snickerdoodle",
         "artificial-heart-ai",
         "浅夏",
+        "hotriplex554",
+        "lanatholen",
+        "doll_factory",
+        "sky_bai",
     },
 }
 
-# TensorHub display names are not stable/unique enough for every hard block.
-# Owner IDs let AbyssBeacon exclude the exact accounts even if a nickname changes
-# (and avoid globally blocking a generic nickname such as "R").
-HARD_BLOCKED_SOURCE_CREATOR_IDS = {
+# Stable TensorHub owner IDs keep suppression attached to the intended account
+# even if its display name changes. The one-letter `R` account is ID-only so
+# unrelated creators with the same nickname are never suppressed.
+DISCOVERY_SUPPRESSED_SOURCE_CREATOR_IDS = {
     "tensorhub": {
         "838872246360732333",   # Kunjung
-        "893963469739538903",   # R
+        "893963469739538903",   # R (ID-only; nickname is ambiguous)
         "829311455886071880",   # ShuTeye404
         "1028139481795973773",  # Jigger boo snickerdoodle
         "898710231087849791",   # Artificial-Heart-AI
         "883507418028311138",   # 浅夏
+        "854532027830022101",   # hotriplex554
+        "830855780097062662",   # Lanatholen
+        "857531978734417554",   # Doll_Factory
+        "714470940993453581",   # sky_bai
     },
 }
 
 
 def is_hard_blocked_creator(source, creator):
-    source = str(source or "").strip().lower()
-    creator = str(creator or "").strip().casefold()
-    if not source or not creator:
-        return False
-    if creator in HARD_BLOCKED_CREATORS.get(source, set()):
-        return True
+    """Compatibility hook for older UI/API code.
 
-    # For exact-ID hard blocks (notably TensorHub's ambiguous one-letter
-    # nickname), resolve the stored creator identity instead of blocking every
-    # account that happens to share the same display name.
-    creator_ids = HARD_BLOCKED_SOURCE_CREATOR_IDS.get(source, set())
-    if not creator_ids:
-        return False
-    try:
-        conn = connect()
-        marks = ",".join("?" for _ in creator_ids)
-        row = conn.execute(
-            f"SELECT 1 FROM creator_sources WHERE lower(source)=? AND lower(creator_name)=? "
-            f"AND source_creator_id IN ({marks}) LIMIT 1",
-            [source, creator, *creator_ids],
-        ).fetchone()
-        conn.close()
-        return row is not None
-    except sqlite3.OperationalError:
-        return False
+    AbyssBeacon currently has no built-in creator hard bans. Built-in TensorHub
+    moderation uses discovery suppression instead, while user-created blocks
+    remain strict and user-controlled.
+    """
+    return False
 
 
 def connect():
@@ -399,7 +388,7 @@ def initialize():
     conn.close()
 
     migrate()
-    purge_hard_blocked_creators()
+    purge_discovery_suppressed_creators()
     _INITIALIZED = True
 
 
@@ -3003,16 +2992,16 @@ def get_blocked_creator_set(source):
         str(row["creator"] or "").strip().casefold()
         for row in get_universal_blocked_creators()
     }
-    return user_blocked | universal_blocked | set(HARD_BLOCKED_CREATORS.get(source_key, set()))
+    return user_blocked | universal_blocked
 
 
-def purge_hard_blocked_creators():
-    """Remove built-in safety-blocked source creators from an existing library.
+def purge_discovery_suppressed_creators():
+    """Remove passively-discovered suppressed creators from the current library.
 
-    These exclusions are deliberately not written to blocked_creators, so they
-    never appear as a user-toggleable preference. Existing cards are purged on
-    startup and future scans receive the same exclusion through
-    get_blocked_creator_set().
+    The suppression list is intentionally not written to blocked_creators, so
+    it never appears as a user preference or implies a hard ban. Exact
+    TensorHub creator/owner lookups may import these accounts again on demand.
+    A later restart removes those passively from the default library view.
     """
     conn = connect()
     conn.row_factory = sqlite3.Row
@@ -3020,7 +3009,7 @@ def purge_hard_blocked_creators():
     try:
         # model_sources/source_data exists after migrate(). Canonical rows are
         # also checked because some older source links predate source snapshots.
-        for source, creators in HARD_BLOCKED_CREATORS.items():
+        for source, creators in DISCOVERY_SUPPRESSED_CREATORS.items():
             for creator_key in creators:
                 ids = {
                     int(row["id"])
@@ -3049,10 +3038,10 @@ def purge_hard_blocked_creators():
                 if ids:
                     marks = ",".join("?" for _ in ids)
                     params = list(ids)
-                    # Remove the complete card when it is known to originate
-                    # from a hard-blocked source creator. This prevents cached
-                    # previews or merged source metadata from keeping the card
-                    # visible after the source link itself is removed.
+                    # Remove the complete passively-discovered card so cached
+                    # previews or merged source metadata cannot keep it visible
+                    # in the default library. Creator identity/user block records
+                    # are intentionally retained for explicit lookup behavior.
                     for table in ("model_media", "model_sources", "model_file_hashes"):
                         try:
                             conn.execute(f"DELETE FROM {table} WHERE model_id IN ({marks})", params)
@@ -3068,25 +3057,10 @@ def purge_hard_blocked_creators():
                     cur = conn.execute(f"DELETE FROM models WHERE id IN ({marks})", params)
                     removed += max(0, int(cur.rowcount or 0))
 
-                try:
-                    conn.execute(
-                        "DELETE FROM blocked_creators WHERE lower(source)=? AND lower(creator)=?",
-                        (source, creator_key),
-                    )
-                except sqlite3.OperationalError:
-                    pass
-
-                try:
-                    conn.execute(
-                        "DELETE FROM creator_sources WHERE lower(source)=? AND lower(creator_name)=?",
-                        (source, creator_key),
-                    )
-                except sqlite3.OperationalError:
-                    pass
 
         # Some providers expose stable opaque creator IDs. Use those for exact
-        # hard blocks when a display name is ambiguous or can change.
-        for source, creator_ids in HARD_BLOCKED_SOURCE_CREATOR_IDS.items():
+        # discovery suppression when a display name is ambiguous or can change.
+        for source, creator_ids in DISCOVERY_SUPPRESSED_SOURCE_CREATOR_IDS.items():
             creator_ids = {str(value or "").strip() for value in creator_ids if str(value or "").strip()}
             if not creator_ids:
                 continue
@@ -3149,35 +3123,20 @@ def purge_hard_blocked_creators():
                 cur = conn.execute(f"DELETE FROM models WHERE id IN ({marks})", params)
                 removed += max(0, int(cur.rowcount or 0))
 
-            try:
-                marks = ",".join("?" for _ in creator_ids)
-                hard_names = [
-                    str(row["creator_name"] or "").strip()
-                    for row in conn.execute(
-                        f"SELECT creator_name FROM creator_sources WHERE lower(source)=? AND source_creator_id IN ({marks})",
-                        [source, *creator_ids],
-                    ).fetchall()
-                    if str(row["creator_name"] or "").strip()
-                ]
-                for hard_name in hard_names:
-                    conn.execute(
-                        "DELETE FROM blocked_creators WHERE lower(source)=? AND lower(creator)=lower(?)",
-                        (source, hard_name),
-                    )
-                conn.execute(
-                    f"DELETE FROM creator_sources WHERE lower(source)=? AND source_creator_id IN ({marks})",
-                    [source, *creator_ids],
-                )
-            except sqlite3.OperationalError:
-                pass
+
 
         conn.commit()
     finally:
         conn.close()
 
     if removed:
-        print(f"Built-in safety exclusions: removed {removed} blocked model(s)")
+        print(f"Built-in discovery suppression: removed {removed} model(s) from the default library view")
     return removed
+
+
+def purge_hard_blocked_creators():
+    """Backward-compatible alias for older callers/plugins."""
+    return purge_discovery_suppressed_creators()
 
 
 def is_creator_blocked(source, creator):
