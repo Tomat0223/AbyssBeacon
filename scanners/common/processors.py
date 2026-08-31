@@ -16,6 +16,7 @@ from utils.loader import (
 
 
 from scanners.common import metadata
+from scanners.common.repository_classifier import classify_repository, synthesize_collection_title, humanize_collection_family_name
 
 
 
@@ -204,6 +205,23 @@ def build_model(raw):
 
     model.model_type = classify_model_type(text)
 
+    repository_classification = classify_repository(raw)
+    if repository_classification:
+        classified_type = str(repository_classification.get("display_type") or "").strip()
+        if classified_type and classified_type != "Other":
+            model.model_type = classified_type
+        if repository_classification.get("container") == "collection":
+            if repository_classification.get("collection_shape") == "training_series":
+                family_name = str(repository_classification.get("single_family_name") or "").strip()
+                model.display_name = humanize_collection_family_name(family_name) or model.display_name
+            else:
+                model.display_name = synthesize_collection_title(
+                    model.author,
+                    model.architecture,
+                    repository_classification.get("primary_artifact_type"),
+                    repo_name,
+                )
+
     model.source = raw.get(
         "source",
         ""
@@ -233,6 +251,12 @@ def build_model(raw):
         details,
         files
     )
+    if repository_classification:
+        primary_artifact = str(repository_classification.get("primary_artifact_type") or "").strip()
+        if repository_classification.get("container") == "collection":
+            label = f"{primary_artifact} Collection" if primary_artifact else "Collection"
+            model.display_tags = [label] + [tag for tag in model.display_tags if str(tag).casefold() != label.casefold()]
+            model.display_tags = model.display_tags[:5]
 
     model.license = metadata.extract_license(details)
 
@@ -333,6 +357,11 @@ def build_model(raw):
         "card_data",
         {}
     )
+    if not isinstance(model.card_data, dict):
+        model.card_data = {}
+    if repository_classification:
+        model.card_data = dict(model.card_data)
+        model.card_data["repository_classification"] = repository_classification
 
     model.sensitive = raw.get(
         "sensitive",

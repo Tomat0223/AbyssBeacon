@@ -14,7 +14,7 @@ from pathlib import Path
 
 _missing_dependencies = []
 try:
-    from flask import Flask, render_template, request, redirect, Response
+    from flask import Flask, render_template, request, redirect, Response, url_for
 except ModuleNotFoundError:
     _missing_dependencies.append("Flask")
 try:
@@ -39,6 +39,7 @@ if _missing_dependencies:
     raise SystemExit(1)
 
 import database
+import library_updates
 import installer
 import active_downloads
 from scanners.common import metadata, processors
@@ -2634,6 +2635,65 @@ def refresh_download_source(model_id, source, _batch=False):
         files = []
         gated = False
         refreshed_card_data = {}
+        refreshed_media_items = None
+        refreshed_media_fallback = ""
+
+        def apply_repository_classification(source_key, details_payload, file_items, tags_value=None, library_value=None):
+            """Re-run HF/ModelScope repository classification during explicit reload."""
+            from scanners.common.repository_classifier import classify_repository, synthesize_collection_title, humanize_collection_family_name
+
+            classification = classify_repository({
+                "source": source_key,
+                "model_id": model_key,
+                "details": details_payload if isinstance(details_payload, dict) else {},
+                "files": file_items if isinstance(file_items, list) else [],
+                "tags": tags_value or [],
+                "library": library_value or "",
+            })
+            if not isinstance(classification, dict):
+                return
+
+            classified_type = str(classification.get("display_type") or "").strip()
+            if classified_type and classified_type != "Other":
+                snapshot["model_type"] = classified_type
+
+            card = snapshot.get("card_data")
+            if not isinstance(card, dict):
+                card = {}
+            card = dict(card)
+            card["repository_classification"] = classification
+            snapshot["card_data"] = card
+
+            display_tags = snapshot.get("display_tags")
+            if isinstance(display_tags, str):
+                try:
+                    display_tags = json.loads(display_tags or "[]")
+                except Exception:
+                    display_tags = []
+            if not isinstance(display_tags, list):
+                display_tags = []
+
+            # Remove stale collection labels before applying the fresh result.
+            display_tags = [
+                tag for tag in display_tags
+                if not str(tag or "").strip().casefold().endswith(" collection")
+                and str(tag or "").strip().casefold() != "collection"
+            ]
+            if classification.get("container") == "collection":
+                primary = str(classification.get("primary_artifact_type") or "").strip()
+                label = f"{primary} Collection" if primary else "Collection"
+                display_tags.insert(0, label)
+                if classification.get("collection_shape") == "training_series":
+                    family_name = str(classification.get("single_family_name") or "").strip()
+                    snapshot["display_name"] = humanize_collection_family_name(family_name) or snapshot.get("display_name")
+                else:
+                    snapshot["display_name"] = synthesize_collection_title(
+                        snapshot.get("author"),
+                        snapshot.get("architecture"),
+                        primary,
+                        model_key.rsplit("/", 1)[-1],
+                    )
+            snapshot["display_tags"] = display_tags[:5]
 
         if source_name == "modelscope":
             from scanners import modelscope as modelscope_scanner
@@ -2710,6 +2770,26 @@ def refresh_download_source(model_id, source, _batch=False):
             )
             if description:
                 snapshot["description"] = str(description)
+
+            apply_repository_classification(
+                "modelscope",
+                details,
+                files,
+                tags_value=(
+                    details.get("tags")
+                    or details.get("Tags")
+                    or details.get("tag")
+                    or []
+                ),
+                library_value=(
+                    details.get("library")
+                    or details.get("Library")
+                    or details.get("library_name")
+                    or details.get("libraryName")
+                    or ""
+                ),
+            )
+            refreshed_card_data = snapshot.get("card_data") or {}
 
             source_url = source_url or f"https://modelscope.cn/models/{model_key}"
 
@@ -2841,6 +2921,36 @@ def refresh_download_source(model_id, source, _batch=False):
             description = metadata.extract_description(details)
             if description:
                 snapshot["description"] = str(description)
+
+            apply_repository_classification(
+                "huggingface",
+                details,
+                files,
+                tags_value=details.get("tags") or [],
+                library_value=(
+                    details.get("library_name")
+                    or details.get("libraryName")
+                    or ""
+                ),
+            )
+            refreshed_card_data = snapshot.get("card_data") or {}
+
+            # Explicit HF reload should refresh repository media as well as
+            # files/classification. Collections often derive their entire
+            # preview gallery from image files in the repository, so leaving
+            # model_media stale can make the first Collection visit appear
+            # empty until another page/load path repopulates it.
+            try:
+                from scanners.common import media as common_media
+                media_data = common_media.extract_media(
+                    files,
+                    f"https://huggingface.co/{model_key}/resolve/main",
+                )
+                refreshed_media_items = list(media_data.get("media") or [])
+                refreshed_media_fallback = str(media_data.get("image") or "")
+            except Exception:
+                refreshed_media_items = None
+                refreshed_media_fallback = ""
 
         elif source_name == "civitai":
             from scanners import civitai as civitai_scanner
@@ -3131,6 +3241,17 @@ def refresh_download_source(model_id, source, _batch=False):
             snapshot,
             url=source_url,
         )
+
+        if source_name == "huggingface" and refreshed_media_items is not None:
+            try:
+                database.refresh_canonical_model_media(
+                    model_id,
+                    source_name,
+                    refreshed_media_items,
+                    fallback_image=refreshed_media_fallback,
+                )
+            except Exception as media_exc:
+                print(f"{label} media refresh skipped: {media_exc}")
 
         if source_name in {"civitai", "civitaired"}:
             try:
@@ -3424,6 +3545,29 @@ def refresh_download_sources(model_id):
         message = f"Reloaded {refreshed_count} of {len(sources)} source{'s' if len(sources) != 1 else ''}."
         if failed:
             message += " Some sources could not be refreshed."
+
+        # Return the freshly persisted card identity as part of Reload Model.
+        # The feed DOM may still contain the pre-reload type/name until a full
+        # browser refresh; exposing the new state lets modal.js immediately
+        # promote a reclassified repository into its Collection page.
+        refreshed_card = {}
+        conn = database.connect()
+        try:
+            current = conn.execute(
+                "SELECT model_type, display_name, name, image, has_media FROM models WHERE id=?",
+                (model_id,),
+            ).fetchone()
+            if current is not None:
+                refreshed_card = {
+                    "model_type": str(current["model_type"] or ""),
+                    "display_name": str(current["display_name"] or current["name"] or ""),
+                    "image": str(current["image"] or ""),
+                    "has_media": bool(current["has_media"]),
+                }
+        finally:
+            conn.close()
+
+        is_collection = str(refreshed_card.get("model_type") or "").strip().casefold() == "collection"
         return {
             "success": True,
             "partial": bool(failed),
@@ -3431,6 +3575,9 @@ def refresh_download_sources(model_id):
             "refreshed": refreshed_count,
             "total": len(sources),
             "results": results,
+            "card": refreshed_card,
+            "is_collection": is_collection,
+            "collection_url": url_for("collection_page", model_id=model_id) if is_collection else "",
         }
 
     return {
@@ -5114,10 +5261,11 @@ def _feed_window_base_query(
         conditions.append("has_media = 1")
 
     favorite = str(favorite or "all").strip().lower()
+    family_favorite_sql = "EXISTS (SELECT 1 FROM collection_families cf WHERE cf.model_id = models.id AND cf.favorite = 1)"
     if favorite == "favorite":
-        conditions.append("favorite = 1")
+        conditions.append(f"(COALESCE(favorite, 0) = 1 OR {family_favorite_sql})")
     elif favorite == "not_favorite":
-        conditions.append("COALESCE(favorite, 0) = 0")
+        conditions.append(f"(COALESCE(favorite, 0) = 0 AND NOT {family_favorite_sql})")
 
     creator_favorite = str(creator_favorite or "all").strip().lower()
     if creator_favorite == "favorite":
@@ -5229,6 +5377,7 @@ def _prepare_feed_chunk_models(
     images_by_model_source = {}
     video_candidates_by_model_source = {}
     image_candidates_by_model_source = {}
+    family_favorite_model_ids = set()
 
     if ids:
         placeholders = ",".join("?" for _ in ids)
@@ -5261,6 +5410,17 @@ def _prepare_feed_chunk_models(
         ).fetchall():
             key = (int(row["model_id"]), str(row["source"] or "").strip().lower())
             image_candidates_by_model_source.setdefault(key, []).append(dict(row))
+
+        try:
+            family_favorite_model_ids = {
+                int(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT model_id FROM collection_families WHERE favorite=1 AND model_id IN ({placeholders})",
+                    ids,
+                ).fetchall()
+            }
+        except sqlite3.OperationalError:
+            family_favorite_model_ids = set()
     conn.close()
 
     history = database.get_download_history_lookup() if preferences.get("track_downloads", True) is not False else {}
@@ -5357,6 +5517,44 @@ def _prepare_feed_chunk_models(
                 presentation["image"] = original.get("image")
 
         _apply_presentation_snapshot(model, presentation)
+
+        # Collection cards should always use the same synthesized title as the
+        # dedicated Collection page. Older/reclassified rows can retain a child
+        # filename in models.display_name, and browser/feed state can otherwise
+        # expose that stale name even though the source snapshot is classified
+        # correctly. Derive the presentation title directly from the winning
+        # source snapshot so the feed and Collection page cannot disagree.
+        try:
+            presentation_card = presentation.get("card_data") or {}
+            if isinstance(presentation_card, str):
+                presentation_card = json.loads(presentation_card or "{}")
+            repository_classification = (
+                presentation_card.get("repository_classification")
+                if isinstance(presentation_card, dict) else None
+            )
+            if isinstance(repository_classification, dict) and repository_classification.get("container") == "collection":
+                from scanners.common.repository_classifier import (
+                    synthesize_collection_title,
+                    humanize_collection_family_name,
+                )
+                primary = str(repository_classification.get("primary_artifact_type") or "").strip()
+                if repository_classification.get("collection_shape") == "training_series":
+                    family_name = str(repository_classification.get("single_family_name") or "").strip()
+                    collection_title = humanize_collection_family_name(family_name)
+                else:
+                    source_author = str(presentation.get("author") or model.get("author") or "").strip()
+                    source_architecture = str(presentation.get("architecture") or model.get("architecture") or "").strip()
+                    source_model_key = str(presentation.get("model_key") or model.get("model_key") or "").strip()
+                    collection_title = synthesize_collection_title(
+                        source_author,
+                        source_architecture,
+                        primary,
+                        source_model_key.rsplit("/", 1)[-1],
+                    )
+                if collection_title:
+                    model["display_name"] = collection_title
+        except Exception:
+            pass
 
         presentation_source = str(model.get("source") or "").strip().lower()
         presentation_video = videos_by_model_source.get((mid, presentation_source))
@@ -5504,6 +5702,12 @@ def _prepare_feed_chunk_models(
             active_snapshots,
         )
         model["source_color"] = source_themes.get(presentation_source, {}).get("color", default_color)
+
+        # A family favorite should make its parent Collection discoverable in
+        # the main Favorites filter without pretending the whole card itself
+        # was starred. Keep the model-star state and effective filter state separate.
+        model["has_family_favorite"] = mid in family_favorite_model_ids
+        model["effective_favorite"] = bool(model.get("favorite")) or model["has_family_favorite"]
 
     return models
 
@@ -5911,7 +6115,17 @@ def home():
     # Library summary for the Options panel.
     stats_conn = database.connect()
     library_model_count = stats_conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
-    favorite_model_count = stats_conn.execute("SELECT COUNT(*) FROM models WHERE favorite = 1").fetchone()[0]
+    favorite_model_count = stats_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM models m
+        WHERE COALESCE(m.favorite, 0) = 1
+           OR EXISTS (
+                SELECT 1 FROM collection_families cf
+                WHERE cf.model_id = m.id AND cf.favorite = 1
+           )
+        """
+    ).fetchone()[0]
     try:
         favorite_creator_rows = stats_conn.execute("SELECT name FROM creators WHERE favorite = 1 ORDER BY lower(name)").fetchall()
         favorite_creator_names = [row[0] for row in favorite_creator_rows]
@@ -6586,6 +6800,232 @@ def start_discovery_scan():
 
 
 
+@app.route("/collection/<int:model_id>")
+def collection_page(model_id):
+    """Render a repository Collection as grouped virtual child artifacts."""
+    from scanners.common.repository_classifier import (
+        build_collection_groups,
+        synthesize_collection_title,
+        humanize_collection_family_name,
+    )
+
+    conn = database.connect()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM models WHERE id=?", (int(model_id),)).fetchone()
+    conn.close()
+    if row is None:
+        return "Collection not found", 404
+
+    canonical = dict(row)
+    links = [dict(link) for link in database.get_model_sources(model_id)]
+    collection_snapshot = None
+    collection_classification = None
+
+    for link in links:
+        snapshot = _decode_source_snapshot(link, canonical)
+        card_data = snapshot.get("card_data") if isinstance(snapshot.get("card_data"), dict) else {}
+        classification = card_data.get("repository_classification") if isinstance(card_data, dict) else None
+        if isinstance(classification, dict) and classification.get("container") == "collection":
+            collection_snapshot = snapshot
+            collection_classification = classification
+            break
+
+    if collection_snapshot is None:
+        # Canonical rows may have classifier metadata before model_sources is
+        # fully repaired. Use the canonical snapshot as a safe fallback.
+        card_data = canonical.get("card_data")
+        if isinstance(card_data, str):
+            try:
+                card_data = json.loads(card_data or "{}")
+            except Exception:
+                card_data = {}
+        classification = card_data.get("repository_classification") if isinstance(card_data, dict) else None
+        if isinstance(classification, dict) and classification.get("container") == "collection":
+            collection_snapshot = dict(canonical)
+            collection_snapshot["card_data"] = card_data
+            try:
+                collection_snapshot["files"] = json.loads(canonical.get("files") or "[]") if isinstance(canonical.get("files"), str) else (canonical.get("files") or [])
+            except Exception:
+                collection_snapshot["files"] = []
+            collection_classification = classification
+
+    if collection_snapshot is None or not isinstance(collection_classification, dict):
+        return "This model is not classified as a Collection.", 404
+
+    source = str(collection_snapshot.get("source") or canonical.get("source") or "").strip().lower()
+    source_label = SOURCE_VIEW_LABELS.get(source, source or "Source")
+    files = collection_snapshot.get("files") or []
+    if isinstance(files, str):
+        try:
+            files = json.loads(files or "[]")
+        except Exception:
+            files = []
+    if not isinstance(files, list):
+        files = []
+
+    collection_type = str(collection_classification.get("primary_artifact_type") or "LoRA").strip() or "LoRA"
+    model_key = str(collection_snapshot.get("model_key") or canonical.get("model_key") or "").strip()
+    groups = build_collection_groups(
+        files, collection_type, source=source, model_key=model_key
+    )
+    favorite_family_ids = database.sync_collection_families(
+        model_id, source, model_key, groups
+    )
+    for group in groups:
+        group["favorite"] = str(group.get("family_id") or "") in favorite_family_ids
+        group["size_display"] = _format_download_size({"size_bytes": group.get("total_size_bytes", 0)}, source)
+        for file_data in group.get("files", []):
+            file_data["size_display"] = _format_download_size(file_data, source)
+            file_data["download_url"] = url_for(
+                "tracked_source_download",
+                model_id=model_id,
+                source=source,
+                file_index=int(file_data.get("_download_index", 0)),
+            )
+
+    author = str(collection_snapshot.get("author") or canonical.get("author") or "").strip()
+    architecture = str(collection_snapshot.get("architecture") or canonical.get("architecture") or "").strip()
+    repo_name = model_key.rsplit("/", 1)[-1]
+    if collection_classification.get("collection_shape") == "training_series":
+        family_name = str(collection_classification.get("single_family_name") or "").strip()
+        title = humanize_collection_family_name(family_name) or synthesize_collection_title(author, architecture, collection_type, repo_name)
+    else:
+        title = synthesize_collection_title(author, architecture, collection_type, repo_name)
+
+    source_url = str(collection_snapshot.get("url") or canonical.get("url") or "").strip()
+    source_settings = load_settings()
+    source_config = source_settings.get("sources", {}).get(source, {})
+    preferences = source_settings.get("preferences", {}) if isinstance(source_settings.get("preferences", {}), dict) else {}
+    card_colors = preferences.get("source_card_colors", {}) if isinstance(preferences.get("source_card_colors", {}), dict) else {}
+    source_color = card_colors.get(source, source_config.get("color", "#00eaff"))
+
+    media = []
+    seen_media_urls = set()
+    for media_row in database.get_media(model_id):
+        item = dict(media_row)
+        item_source = str(item.get("source") or "").strip().lower()
+        if item_source != source:
+            continue
+        if str(item.get("type") or "image").strip().lower() != "image":
+            continue
+
+        media_url = display_media_url(item.get("url"), source)
+        if not media_url or media_url in seen_media_urls:
+            continue
+
+        raw_metadata = item.get("metadata") or ""
+        if isinstance(raw_metadata, str):
+            try:
+                metadata_obj = json.loads(raw_metadata) if raw_metadata else {}
+            except Exception:
+                metadata_obj = {}
+        elif isinstance(raw_metadata, dict):
+            metadata_obj = dict(raw_metadata)
+        else:
+            metadata_obj = {}
+
+        path = str(item.get("path") or "").strip()
+        if not path:
+            parsed_path = unquote(urlparse(item.get("url") or "").path)
+            marker = "/resolve/"
+            if marker in parsed_path:
+                tail = parsed_path.split(marker, 1)[1]
+                parts = tail.split("/", 1)
+                path = parts[1] if len(parts) > 1 else parts[0]
+            else:
+                path = parsed_path.rsplit("/", 1)[-1]
+
+        filename = str(item.get("filename") or "").strip() or path.rsplit("/", 1)[-1] or "Preview"
+        thumbnail = display_media_url(item.get("thumbnail"), source) if item.get("thumbnail") else ""
+        seen_media_urls.add(media_url)
+        media.append({
+            "id": item.get("id"),
+            "source": item_source or source,
+            "type": "image",
+            "url": media_url,
+            "thumbnail": thumbnail,
+            "filename": filename,
+            "path": path,
+            "metadata": metadata_obj,
+            "metadata_obj": metadata_obj,
+        })
+
+    # Repository Collections can be created/reclassified before their model_media
+    # rows are refreshed. Supplement the gallery directly from repository image
+    # files so the first Collection visit has previews instead of requiring an
+    # extra browser refresh. Stored model_media remains the preferred source.
+    for file_data in files:
+        if not isinstance(file_data, dict):
+            continue
+        path = str(file_data.get("path") or file_data.get("name") or "").strip()
+        if not path or not path.casefold().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            continue
+        raw_url = str(file_data.get("media_url") or file_data.get("download_url") or "").strip()
+        if raw_url.endswith("?download=true"):
+            raw_url = raw_url[:-14]
+        if not raw_url:
+            encoded_path = quote(path, safe="/")
+            if source == "huggingface":
+                raw_url = f"https://huggingface.co/{model_key}/resolve/main/{encoded_path}"
+            elif source == "modelscope":
+                revision = str(file_data.get("revision") or "master").strip() or "master"
+                raw_url = f"https://modelscope.cn/models/{model_key}/resolve/{revision}/{encoded_path}"
+        media_url = display_media_url(raw_url, source) if raw_url else ""
+        if media_url and media_url not in seen_media_urls:
+            seen_media_urls.add(media_url)
+            filename = path.rsplit("/", 1)[-1] or "Preview"
+            media.append({
+                "id": None,
+                "source": source,
+                "type": "image",
+                "url": media_url,
+                "thumbnail": "",
+                "filename": filename,
+                "path": path,
+                "metadata": {
+                    "source": source_label,
+                    "repository": model_key,
+                },
+                "metadata_obj": {
+                    "source": source_label,
+                    "repository": model_key,
+                },
+            })
+        if len(media) >= 12:
+            break
+
+    database.mark_viewed(model_id)
+
+    return render_template(
+        "collection.html",
+        model_id=model_id,
+        title=title,
+        author=author,
+        architecture=architecture,
+        collection_type=collection_type,
+        source=source,
+        source_label=source_label,
+        source_url=source_url,
+        reload_url=url_for("refresh_download_sources", model_id=model_id),
+        source_color=source_color,
+        repository_file_count=len(files),
+        family_count=len(groups),
+        groups=groups,
+        media=media[:12],
+        classification=collection_classification,
+        hide_scan=True,
+    )
+
+
+@app.route("/collection/<int:model_id>/family/<family_id>/favorite", methods=["POST"])
+def collection_family_favorite(model_id, family_id):
+    payload = request.get_json(silent=True) or {}
+    favorite = bool(payload.get("favorite"))
+    if not database.set_collection_family_favorite(model_id, family_id, favorite):
+        return {"success": False, "error": "Collection family not found"}, 404
+    return {"success": True, "favorite": favorite, "family_id": family_id}
+
+
 @app.route("/creator/<path:author>")
 def creator_page(author):
     author = unquote(author).strip()
@@ -6956,7 +7396,15 @@ def creator_page(author):
         "SELECT COUNT(*) FROM models"
     ).fetchone()[0]
     favorite_model_count = stats_conn.execute(
-        "SELECT COUNT(*) FROM models WHERE favorite = 1"
+        """
+        SELECT COUNT(*)
+        FROM models m
+        WHERE COALESCE(m.favorite, 0) = 1
+           OR EXISTS (
+                SELECT 1 FROM collection_families cf
+                WHERE cf.model_id = m.id AND cf.favorite = 1
+           )
+        """
     ).fetchone()[0]
     try:
         favorite_creator_rows = stats_conn.execute(
@@ -7320,6 +7768,7 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
     except sqlite3.OperationalError:
         favorite_creators = set()
     conn.close()
+    favorite_family_model_ids = database.favorite_collection_model_ids()
 
     old = []
     unknown = []
@@ -7370,6 +7819,8 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
         if str(row["author"] or "").lower() in favorite_creators:
             favorite_creator_model_count += 1
             protected_ids.add(row["id"])
+        if row["id"] in favorite_family_model_ids:
+            protected_ids.add(row["id"])
         if row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys:
             protected_ids.add(row["id"])
 
@@ -7389,6 +7840,9 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
                 unknown_protected.append(model_id)
             if str(row["author"] or "").lower() in favorite_creators:
                 favorite_creator_model_count += 1
+                protected_ids.add(model_id)
+                unknown_protected.append(model_id)
+            if model_id in favorite_family_model_ids:
                 protected_ids.add(model_id)
                 unknown_protected.append(model_id)
             if model_id in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys:
@@ -7436,6 +7890,7 @@ def _delete_library_models(ids):
             placeholders = ",".join("?" for _ in chunk)
             conn.execute(f"DELETE FROM model_media WHERE model_id IN ({placeholders})", chunk)
             conn.execute(f"DELETE FROM model_sources WHERE model_id IN ({placeholders})", chunk)
+            conn.execute(f"DELETE FROM collection_families WHERE model_id IN ({placeholders})", chunk)
             conn.execute(f"DELETE FROM models WHERE id IN ({placeholders})", chunk)
         conn.commit()
     except Exception:
@@ -7529,6 +7984,29 @@ def _run_automatic_library_cleanup():
 
 
 
+@app.route("/api/library/update-status")
+def library_update_status_api():
+    return library_updates.get_update_status()
+
+
+@app.route("/api/library/update", methods=["POST"])
+def library_update_start_api():
+    started, job = library_updates.start_update()
+    if not started:
+        return {
+            "success": True,
+            "started": False,
+            "message": "Library update is already running.",
+            "job": job,
+        }, 202
+    return {
+        "success": True,
+        "started": True,
+        "message": "Library update started.",
+        "job": job,
+    }, 202
+
+
 @app.route("/api/library/bulk-preview")
 def library_bulk_preview():
     sources = [s.strip().lower() for s in request.args.getlist("source") if s.strip()]
@@ -7542,6 +8020,7 @@ def library_bulk_preview():
     # when the user explicitly checks the protected-model override.
     downloaded_keys = database.downloaded_model_keys()
     downloaded_ids = database.downloaded_model_ids()
+    favorite_family_model_ids = database.favorite_collection_model_ids()
     matched=[]; protected=[]
     for row in rows:
         if sources and str(row["source"] or "").lower() not in sources: continue
@@ -7550,7 +8029,7 @@ def library_bulk_preview():
         if mode == "keep_selected": selected = not selected
         if not selected: continue
         matched.append(row["id"])
-        if int(row["favorite"] or 0) or str(row["author"] or "").casefold() in favorite_creators or row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys: protected.append(row["id"])
+        if int(row["favorite"] or 0) or str(row["author"] or "").casefold() in favorite_creators or row["id"] in favorite_family_model_ids or row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys: protected.append(row["id"])
     return {"success":True,"matched":len(matched),"deletable":len(matched)-len(protected),"protected":len(protected),"sources":sources,"architectures":architectures,"mode":mode}
 
 @app.route("/api/library/bulk-delete", methods=["POST"])
@@ -7566,13 +8045,14 @@ def library_bulk_delete():
     favorite_creators={str(r[0]).casefold() for r in conn.execute("SELECT name FROM creators WHERE favorite=1").fetchall()}; conn.close()
     downloaded_keys=database.downloaded_model_keys()
     downloaded_ids=database.downloaded_model_ids()
+    favorite_family_model_ids=database.favorite_collection_model_ids()
     ids=[]
     for row in rows:
         if str(row["source"] or "").lower() not in sources: continue
         selected=str(row["architecture"] or "Other") in architectures
         if mode == "keep_selected": selected=not selected
         if not selected: continue
-        is_protected=int(row["favorite"] or 0) or str(row["author"] or "").casefold() in favorite_creators or row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys
+        is_protected=int(row["favorite"] or 0) or str(row["author"] or "").casefold() in favorite_creators or row["id"] in favorite_family_model_ids or row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys
         if is_protected and not include_protected: continue
         ids.append(row["id"])
     deleted=_delete_library_models(ids)
@@ -9068,6 +9548,8 @@ if __name__ == "__main__":
     print("Starting AbyssBeacon...")
     print(f"Open AbyssBeacon in your browser: {url}")
     print("Press Ctrl+C to stop AbyssBeacon.")
+
+    library_updates.print_startup_notice()
 
     # A threaded Werkzeug server keeps the UI/status endpoints responsive
     # while the scanner performs network and database work in its own thread.

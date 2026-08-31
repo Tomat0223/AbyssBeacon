@@ -638,6 +638,127 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+// Reusable library metadata updates. These reprocess saved source snapshots and
+// deliberately do not start a broad source scan.
+document.addEventListener("DOMContentLoaded",()=>{
+    const panel=document.getElementById("libraryUpdateSettings");
+    const statusEl=document.getElementById("libraryUpdateStatus");
+    const button=document.getElementById("updateLibraryNow");
+    if(!statusEl||!button) return;
+
+    let pollTimer=null;
+    let reloadAfterUpdate=false;
+    const sourceLabel=(name)=>name==="huggingface"?"Hugging Face":name==="modelscope"?"ModelScope":name;
+    const countsText=(sources={})=>Object.entries(sources)
+        .filter(([,count])=>Number(count||0)>0)
+        .map(([name,count])=>`${sourceLabel(name)} ${count}`)
+        .join(" · ");
+
+    const render=(data)=>{
+        const job=data?.job||{};
+        if(job.running){
+            const current=Number(job.current||0), total=Number(job.total||0);
+            const phaseCurrent=Number(job.phase_current||0), phaseTotal=Number(job.phase_total||0);
+            const where=job.model_key?` · ${sourceLabel(job.source)} · ${job.model_key}`:"";
+            if(job.phase==="source_refresh"){
+                const checked=Number(job.checked||0);
+                statusEl.textContent=phaseTotal
+                    ? `Checking missing repository metadata: ${phaseCurrent}/${phaseTotal}${where}${checked?` · ${checked} marked resolved`:""}`
+                    : "Checking missing repository metadata…";
+            }else{
+                statusEl.textContent=total
+                    ? `Updating saved library metadata: ${current}/${total}${where}`
+                    : "Preparing library update…";
+            }
+            button.disabled=true;
+            button.textContent="Updating Library…";
+            return true;
+        }
+
+        const pending=Number(data?.pending||0);
+        const sourceText=countsText(data?.sources||{});
+        const result=job.last_result||{};
+        if(!pending){
+            const refreshed=Number(result.source_refreshes||0);
+            const checkedNow=Number(result.checked||0);
+            const checkedSaved=Number(data?.checked_resolved||0);
+            if(result.updated||checkedNow){
+                let text=`Library is current. Updated ${Number(result.updated||0)} saved repository entr${Number(result.updated||0)===1?"y":"ies"}`;
+                if(refreshed) text+=` · checked ${refreshed} legacy repositor${refreshed===1?"y":"ies"}`;
+                if(checkedNow) text+=` · ${checkedNow} unavailable entr${checkedNow===1?"y was":"ies were"} marked checked for this metadata version`;
+                statusEl.textContent=text+".";
+            }else if(checkedSaved){
+                statusEl.textContent=`Library is current. ${checkedSaved} unavailable legacy repositor${checkedSaved===1?"y is":"ies are"} already marked checked for this metadata version.`;
+            }else{
+                statusEl.textContent="Library is current. No saved repository metadata needs an update.";
+            }
+            button.disabled=true;
+            button.textContent="Library Up to Date";
+            panel?.removeAttribute("data-update-needed");
+            return false;
+        }
+
+        let text=`${pending} saved repository entr${pending===1?"y":"ies"} need the current metadata rules`;
+        if(sourceText) text+=` (${sourceText})`;
+        text+=". AbyssBeacon uses saved data first and only refreshes individual repositories when legacy file metadata is missing; it does not run a broad source scan.";
+        if(Number(result.deferred||0)>0){
+            text+=` ${Number(result.deferred)} entr${Number(result.deferred)===1?"y could":"ies could"} not be refreshed from its source. Check the terminal for the exact repositor${Number(result.deferred)===1?"y":"ies"} and reason.`;
+        }
+        if(Number(result.failed||0)>0){
+            text+=` ${Number(result.failed)} entr${Number(result.failed)===1?"y could":"ies could"} not be updated; the terminal has the error details.`;
+        }
+        statusEl.textContent=text;
+        button.disabled=false;
+        button.textContent="Update Library Now";
+        panel?.setAttribute("data-update-needed","true");
+        if(panel) panel.open=true;
+        return false;
+    };
+
+    const loadStatus=async()=>{
+        try{
+            const response=await fetch("/api/library/update-status",{cache:"no-store"});
+            const data=await response.json();
+            if(!response.ok||!data.success) throw new Error(data.error||"Could not check library updates.");
+            const running=render(data);
+            if(running){
+                clearTimeout(pollTimer);
+                pollTimer=setTimeout(loadStatus,600);
+            }else if(reloadAfterUpdate&&Number(data?.job?.last_result?.updated||0)>0){
+                reloadAfterUpdate=false;
+                setTimeout(()=>window.location.reload(),900);
+            }
+            return data;
+        }catch(error){
+            statusEl.textContent=error.message||"Could not check library updates.";
+            button.disabled=false;
+            button.textContent="Update Library Now";
+            return null;
+        }
+    };
+
+    button.addEventListener("click",async()=>{
+        button.disabled=true;
+        button.textContent="Starting…";
+        statusEl.textContent="Starting library update…";
+        try{
+            const response=await fetch("/api/library/update",{method:"POST"});
+            const data=await response.json();
+            if(!response.ok||!data.success) throw new Error(data.error||"Could not start library update.");
+            reloadAfterUpdate=true;
+            clearTimeout(pollTimer);
+            pollTimer=setTimeout(loadStatus,250);
+        }catch(error){
+            statusEl.textContent=error.message||"Could not start library update.";
+            button.disabled=false;
+            button.textContent="Update Library Now";
+        }
+    });
+
+    loadStatus();
+});
+
+
 // Source/architecture library cleanup. This never touches downloaded model files.
 document.addEventListener("DOMContentLoaded",()=>{
  const overlay=document.getElementById("bulkLibraryCleanupOverlay"), summary=document.getElementById("bulkCleanupSummary"), confirm=document.getElementById("confirmBulkLibraryCleanup"); let preview=null;

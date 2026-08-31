@@ -4,6 +4,7 @@ DISPLAY = "Hugging Face"
 ENABLED = True
 import requests, time, database
 from scanners.common import metadata, media, processors
+from scanners.common.repository_classifier import needs_repository_classification_refresh
 
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -196,6 +197,10 @@ def scan(
 
         if existing_model:
 
+            classification_refresh = needs_repository_classification_refresh(
+                existing_model["card_data"]
+            )
+
             api_sha = item.get(
                 "sha",
                 ""
@@ -215,14 +220,14 @@ def scan(
             # SHA is the strongest indicator
             if api_sha and db_sha:
 
-                if api_sha == db_sha:
+                if api_sha == db_sha and not classification_refresh:
 
                     duplicates += 1
                     continue
 
 
             # fallback if SHA is unavailable
-            elif api_modified and api_modified == db_modified:
+            elif api_modified and api_modified == db_modified and not classification_refresh:
 
                 duplicates += 1
                 continue

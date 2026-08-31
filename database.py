@@ -363,6 +363,38 @@ def initialize():
     )
     """)
 
+    # Collection families are source/repository-scoped virtual artifacts. They
+    # are not top-level feed models, but retaining their stable IDs lets family
+    # favorites persist today and gives future update tracking a durable anchor.
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS collection_families (
+        family_id TEXT PRIMARY KEY,
+        model_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        model_key TEXT NOT NULL,
+        family_key TEXT NOT NULL,
+        display_name TEXT,
+        artifact_type TEXT,
+        favorite INTEGER DEFAULT 0,
+        file_count INTEGER DEFAULT 0,
+        variant_signature TEXT DEFAULT '',
+        first_seen TEXT,
+        last_seen TEXT,
+        FOREIGN KEY(model_id) REFERENCES models(id),
+        UNIQUE(source, model_key, family_key)
+    )
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_collection_families_model
+    ON collection_families(model_id, source, model_key)
+    """)
+
+    c.execute("""
+    CREATE INDEX IF NOT EXISTS idx_collection_families_favorite
+    ON collection_families(favorite, model_id)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -597,10 +629,26 @@ def refresh_model_source_snapshot(model_id, source, model_key, snapshot, url="")
         (int(model_id),),
     ).fetchone()
     if canonical and str(canonical["source"] or "").casefold() == source and str(canonical["model_key"] or "") == model_key:
+        model_type = str(snapshot.get("model_type") or "").strip()
+        display_tags_json = None
+        if "display_tags" in snapshot:
+            display_tags = snapshot.get("display_tags")
+            if isinstance(display_tags, str):
+                try:
+                    display_tags = json.loads(display_tags or "[]")
+                except Exception:
+                    display_tags = []
+            if not isinstance(display_tags, list):
+                display_tags = []
+            display_tags_json = json.dumps(display_tags, ensure_ascii=False)
+
         c.execute(
             """
             UPDATE models
             SET files=?, card_data=?, gated=?,
+                model_type=CASE WHEN ?<>'' THEN ? ELSE model_type END,
+                display_name=CASE WHEN lower(?)='collection' AND ?<>'' THEN ? ELSE display_name END,
+                display_tags=CASE WHEN ? IS NOT NULL THEN ? ELSE display_tags END,
                 description=CASE WHEN ?<>'' THEN ? ELSE description END,
                 updated=CASE WHEN ?<>'' THEN ? ELSE updated END
             WHERE id=?
@@ -609,6 +657,13 @@ def refresh_model_source_snapshot(model_id, source, model_key, snapshot, url="")
                 json.dumps(snapshot.get("files") or [], ensure_ascii=False),
                 json.dumps(snapshot.get("card_data") or {}, ensure_ascii=False),
                 int(bool(snapshot.get("gated", 0))),
+                model_type,
+                model_type,
+                model_type,
+                str(snapshot.get("display_name") or ""),
+                str(snapshot.get("display_name") or ""),
+                display_tags_json,
+                display_tags_json,
                 str(snapshot.get("description") or ""),
                 str(snapshot.get("description") or ""),
                 str(snapshot.get("updated") or ""),
@@ -2617,6 +2672,111 @@ def set_model_favorite(model_id, favorite):
     conn.commit()
     conn.close()
     return bool(changed)
+
+
+def sync_collection_families(model_id, source, model_key, groups):
+    """Persist stable Collection family identities without creating feed rows.
+
+    Existing favorite state is preserved across rescans/reloads. File/variant
+    signatures are retained as a future update-tracking foundation but are not
+    interpreted as update state yet.
+    """
+    model_id = int(model_id)
+    source = str(source or "").strip().lower()
+    model_key = str(model_key or "").strip()
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = connect()
+    cur = conn.cursor()
+    family_ids = []
+
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        family_id = str(group.get("family_id") or "").strip()
+        family_key = str(group.get("key") or "").strip()
+        if not family_id or not family_key:
+            continue
+        family_ids.append(family_id)
+        variants = [str(v) for v in (group.get("variants") or []) if str(v).strip()]
+        file_names = [
+            str(item.get("name") or item.get("path") or "")
+            for item in (group.get("files") or [])
+            if isinstance(item, dict)
+        ]
+        signature = json.dumps(
+            {"variants": variants, "files": file_names},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        )
+        cur.execute(
+            """
+            INSERT INTO collection_families
+                (family_id, model_id, source, model_key, family_key, display_name,
+                 artifact_type, favorite, file_count, variant_signature, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            ON CONFLICT(family_id) DO UPDATE SET
+                model_id=excluded.model_id,
+                source=excluded.source,
+                model_key=excluded.model_key,
+                family_key=excluded.family_key,
+                display_name=excluded.display_name,
+                artifact_type=excluded.artifact_type,
+                file_count=excluded.file_count,
+                variant_signature=excluded.variant_signature,
+                last_seen=excluded.last_seen
+            """,
+            (
+                family_id, model_id, source, model_key, family_key,
+                str(group.get("name") or family_key),
+                str(group.get("artifact_type") or ""),
+                int(group.get("file_count") or 0),
+                signature, now, now,
+            ),
+        )
+
+    favorites = set()
+    if family_ids:
+        placeholders = ",".join("?" for _ in family_ids)
+        rows = cur.execute(
+            f"SELECT family_id FROM collection_families WHERE favorite=1 AND family_id IN ({placeholders})",
+            family_ids,
+        ).fetchall()
+        favorites = {str(row["family_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows}
+
+    conn.commit()
+    conn.close()
+    return favorites
+
+
+def set_collection_family_favorite(model_id, family_id, favorite):
+    model_id = int(model_id)
+    family_id = str(family_id or "").strip()
+    if not family_id:
+        return False
+    conn = connect()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE collection_families SET favorite=?, last_seen=? WHERE model_id=? AND family_id=?",
+        (1 if favorite else 0, datetime.now(timezone.utc).isoformat(), model_id, family_id),
+    )
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return bool(changed)
+
+
+def favorite_collection_model_ids():
+    """Collection parents protected because at least one child family is favorited."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT model_id FROM collection_families WHERE favorite=1"
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+    except sqlite3.OperationalError:
+        return set()
+    finally:
+        conn.close()
 
 
 def ensure_creator(name):

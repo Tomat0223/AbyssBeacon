@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} · AbyssBeacon</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/reset.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/collection.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/gallery.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components/fullscreen.css') }}">
+    <script src="{{ url_for('static', filename='js/gallery.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/fullscreen.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/collection.js') }}" defer></script>
+</head>
+<body class="collection-page" style="--collection-source-color: {{ source_color }}">
+    <main class="collection-shell">
+        <div class="collection-topbar">
+            <a class="collection-back" href="/">← Back to AbyssBeacon</a>
+            <div class="collection-topbar-actions">
+                <span id="collectionReloadStatus" class="collection-reload-status" aria-live="polite"></span>
+                <button
+                    type="button"
+                    id="collectionReloadButton"
+                    class="collection-reload-button"
+                    data-reload-url="{{ reload_url }}"
+                    title="Reload this Collection from its attached source(s)"
+                >↻ Reload Collection</button>
+                {% if source_url %}
+                <a class="collection-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">View on {{ source_label }}</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <section class="collection-hero">
+            <div class="collection-kicker">{{ collection_type }} Collection</div>
+            <h1>{{ title }}</h1>
+            <div class="collection-meta-row">
+                {% if author %}<a class="collection-author" href="/creator/{{ author|urlencode }}">{{ author }}</a>{% endif %}
+                {% if architecture %}<span>{{ architecture }}</span>{% endif %}
+                <span>{{ source_label }}</span>
+            </div>
+            <div class="collection-stats">
+                <div><strong>{{ family_count }}</strong><span>{{ collection_type }} families</span></div>
+                <div><strong>{{ repository_file_count }}</strong><span>repository files</span></div>
+                <div><strong>{{ media|length }}</strong><span>previews</span></div>
+            </div>
+        </section>
+
+        {% if media %}
+        <section class="collection-section">
+            <div class="collection-section-heading">
+                <div>
+                    <span class="collection-section-kicker">COLLECTION MEDIA</span>
+                    <h2>Repository previews</h2>
+                </div>
+                <span>{{ media|length }} shown</span>
+            </div>
+            <div class="collection-media-strip">
+                {% for item in media %}
+                <button
+                    type="button"
+                    class="collection-media-item"
+                    data-media-index="{{ loop.index0 }}"
+                    title="Open {{ item.filename }} in the AbyssBeacon media viewer"
+                    aria-label="Open {{ item.filename }} in the media viewer"
+                >
+                    <img src="{{ item.thumbnail or item.url }}" alt="{{ item.filename }}" loading="lazy" referrerpolicy="no-referrer">
+                    <span class="collection-media-open-hint">View media</span>
+                </button>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        <section class="collection-section collection-items-section">
+            <div class="collection-section-heading collection-family-heading">
+                <div>
+                    <span class="collection-section-kicker">MODELS IN THIS COLLECTION</span>
+                    <h2>{{ family_count }} {{ collection_type }} famil{{ 'y' if family_count == 1 else 'ies' }}</h2>
+                </div>
+                <span>Grouped from repository files</span>
+            </div>
+
+            {% if groups %}
+            <div class="collection-family-tools">
+                <label class="collection-search-label" for="collectionFamilySearch">Search this collection</label>
+                <div class="collection-search-row">
+                    <input
+                        id="collectionFamilySearch"
+                        class="collection-search-input"
+                        type="search"
+                        placeholder="Search families, variants, or filenames..."
+                        autocomplete="off"
+                    >
+                    <span id="collectionSearchCount" class="collection-search-count">{{ family_count }} shown</span>
+                </div>
+            </div>
+
+            <div class="collection-grid" id="collectionFamilyGrid">
+                {% for group in groups %}
+                <details class="collection-child-card" data-family-search="{{ group.search_text|e }}">
+                    <summary>
+                        <div class="collection-child-main">
+                            <div class="collection-child-title">{{ group.name }}</div>
+                            <div class="collection-child-subtitle">
+                                <span>{{ group.artifact_type }}</span>
+                                <span>{{ group.file_count }} file{{ '' if group.file_count == 1 else 's' }}</span>
+                                {% if group.size_display %}<span>{{ group.size_display }}</span>{% endif %}
+                            </div>
+                            {% if group.variants %}
+                            <div class="collection-variant-preview">
+                                {% for variant in group.variants[:6] %}<span>{{ variant }}</span>{% endfor %}
+                                {% if group.variants|length > 6 %}<span>+{{ group.variants|length - 6 }} more</span>{% endif %}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="collection-child-actions">
+                            <button
+                                type="button"
+                                class="collection-family-favorite{% if group.favorite %} is-favorite{% endif %}"
+                                data-favorite-url="{{ url_for('collection_family_favorite', model_id=model_id, family_id=group.family_id) }}"
+                                aria-pressed="{{ 'true' if group.favorite else 'false' }}"
+                                title="{{ 'Remove family from favorites' if group.favorite else 'Favorite this family' }}"
+                            >{{ '★' if group.favorite else '☆' }}</button>
+                            <span class="collection-child-chevron" aria-hidden="true">⌄</span>
+                        </div>
+                    </summary>
+
+                    <div class="collection-file-list">
+                        {% for file in group.files %}
+                        <div class="collection-file-row">
+                            <div class="collection-file-info">
+                                <strong>{{ file.name or file.path }}</strong>
+                                <div>
+                                    {% if file.variant_label %}<span>{{ file.variant_label }}</span>{% endif %}
+                                    {% if file.size_display %}<span>{{ file.size_display }}</span>{% endif %}
+                                </div>
+                            </div>
+                            <a class="collection-download" href="{{ file.download_url }}" title="Download {{ file.name or file.path }}" aria-label="Download {{ file.name or file.path }}">↓</a>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </details>
+                {% endfor %}
+            </div>
+            <div id="collectionSearchEmpty" class="collection-empty" hidden>No families match this search.</div>
+            {% else %}
+            <div class="collection-empty">No downloadable model families could be grouped from this repository yet.</div>
+            {% endif %}
+        </section>
+    </main>
+
+    {% if media %}
+    <!-- Reuse the exact normal-card media viewer instead of opening raw image
+         URLs in a browser tab. gallery.js owns navigation, metadata, expanded
+         view, fullscreen zoom/pan, and keyboard controls for both surfaces. -->
+    <div id="collectionMediaOverlay" class="collection-media-overlay" aria-hidden="true">
+        <div class="model-panel collection-media-panel">
+            <button id="collectionMediaClose" class="collection-media-close" type="button" aria-label="Close media viewer">×</button>
+
+            <div class="model-detail collection-media-detail" data-model-id="{{ model_id }}" data-source="{{ source }}">
+                <div class="media-filebar">
+                    <div class="media-file-info">
+                        <span class="media-filename"></span>
+                        <span class="media-path"></span>
+                    </div>
+                    <div class="media-file-actions">
+                        <button type="button" class="media-expand-btn" title="Expand the model viewer">Expand Viewer</button>
+                    </div>
+                </div>
+
+                <div class="media-viewer">
+                    <button class="media-prev" type="button" aria-label="Previous preview">◀</button>
+                    <div class="media-container">
+                        <div class="media-virtual-stage" aria-live="polite"></div>
+                    </div>
+                    <button class="media-next" type="button" aria-label="Next preview">▶</button>
+
+                    <div class="media-metadata-card collapsed">
+                        <div class="media-metadata-head">
+                            <strong>Metadata</strong>
+                            <div class="media-metadata-controls">
+                                <button type="button" class="media-metadata-toggle">More</button>
+                                <button type="button" class="media-metadata-hide" title="Hide metadata">×</button>
+                            </div>
+                        </div>
+                        <div class="media-metadata-body"></div>
+                    </div>
+                    <button type="button" class="media-metadata-restore" title="Show metadata" aria-label="Show metadata">ⓘ</button>
+                </div>
+
+                <div class="media-toolbar">
+                    <div class="media-counter"></div>
+                </div>
+
+                <script type="application/json" class="media-data-json">{{ media | tojson }}</script>
+                <script type="application/json" class="model-files-json">[]</script>
+                <script type="application/json" class="download-sources-json">[]</script>
+                <script type="application/json" class="source-contexts-json">{}</script>
+            </div>
+        </div>
+    </div>
+
+    <div id="imageOverlay" class="image-overlay">
+        <button id="closeImage" class="close-image" type="button" aria-label="Close fullscreen image">×</button>
+        <button id="fullscreenPrev" class="fullscreen-nav fullscreen-prev" type="button" aria-label="Previous image">‹</button>
+        <div class="fullscreen-wrapper"><img id="fullscreenImage" alt="Fullscreen preview"></div>
+        <button id="fullscreenNext" class="fullscreen-nav fullscreen-next" type="button" aria-label="Next image">›</button>
+    </div>
+    {% endif %}
+</body>
+</html>

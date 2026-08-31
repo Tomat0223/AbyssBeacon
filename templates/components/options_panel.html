@@ -147,7 +147,22 @@
                     </div>
                 </details>
                 <div class="options-divider"></div>
-
+                <details id="automaticRetentionSettings" class="library-appearance-settings library-action-settings">
+                    <summary>
+                        <span><strong>Automatic Retention</strong><small>Shared scan and cleanup time window</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <label class="option-toggle-row"><input id="autoCleanupEnabled" type="checkbox" {% if preferences.get('auto_cleanup_enabled', False) %}checked{% endif %}><span><strong>Automatically clean old models</strong><small>Runs only after a completed normal scan. Favorites, favorite creators, and downloaded models are always protected.</small></span></label>
+                        <div id="autoCleanupSettings" {% if not preferences.get('auto_cleanup_enabled', False) %}hidden{% endif %}>
+                            <div class="library-cleanup-row"><label for="autoCleanupDays">Keep models for</label><div class="library-cleanup-input"><input id="autoCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('auto_cleanup_days', 7) }}"><span>days</span></div></div>
+                            <div class="options-note"><strong>Normal source scans use this same number of days.</strong> AbyssBeacon will not intentionally discover older models just to delete them during retention cleanup.</div>
+                            <div class="library-cleanup-row"><label for="creatorCleanupDays">Keep Creator / Discovery Scan models for</label><div class="library-cleanup-input"><input id="creatorCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('creator_cleanup_days', 30) }}"><span>days</span></div></div>
+                            <div class="options-note">Creator and Discovery Scan models use the date they were first imported by AbyssBeacon and can have a longer retention window than normal discovery.</div>
+                        </div>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
                 <details class="library-appearance-settings library-download-settings">
                     <summary>
                         <span><strong>Local Installer</strong><small>Send models directly into your ComfyUI library</small></span>
@@ -172,7 +187,6 @@
                     </div>
                 </details>
                 <div class="options-divider"></div>
-
                 <details class="library-appearance-settings library-download-settings">
                     <summary>
                         <span><strong>Download Tracking</strong><small>History, card status, and cleanup protection</small></span>
@@ -190,24 +204,6 @@
                     </div>
                 </details>
                 <div class="options-divider"></div>
-
-                <details id="automaticRetentionSettings" class="library-appearance-settings library-action-settings">
-                    <summary>
-                        <span><strong>Automatic Retention</strong><small>Shared scan and cleanup time window</small></span>
-                        <span class="appearance-chevron" aria-hidden="true">▾</span>
-                    </summary>
-                    <div class="library-appearance-body">
-                        <label class="option-toggle-row"><input id="autoCleanupEnabled" type="checkbox" {% if preferences.get('auto_cleanup_enabled', False) %}checked{% endif %}><span><strong>Automatically clean old models</strong><small>Runs only after a completed normal scan. Favorites, favorite creators, and downloaded models are always protected.</small></span></label>
-                        <div id="autoCleanupSettings" {% if not preferences.get('auto_cleanup_enabled', False) %}hidden{% endif %}>
-                            <div class="library-cleanup-row"><label for="autoCleanupDays">Keep models for</label><div class="library-cleanup-input"><input id="autoCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('auto_cleanup_days', 7) }}"><span>days</span></div></div>
-                            <div class="options-note"><strong>Normal source scans use this same number of days.</strong> AbyssBeacon will not intentionally discover older models just to delete them during retention cleanup.</div>
-                            <div class="library-cleanup-row"><label for="creatorCleanupDays">Keep Creator / Discovery Scan models for</label><div class="library-cleanup-input"><input id="creatorCleanupDays" type="number" min="0" max="36500" value="{{ preferences.get('creator_cleanup_days', 30) }}"><span>days</span></div></div>
-                            <div class="options-note">Creator and Discovery Scan models use the date they were first imported by AbyssBeacon and can have a longer retention window than normal discovery.</div>
-                        </div>
-                    </div>
-                </details>
-                <div class="options-divider"></div>
-
                 <details class="library-appearance-settings library-action-settings">
                     <summary>
                         <span><strong>Delete by Source / Architecture</strong><small>Remove selected library entries</small></span>
@@ -219,7 +215,18 @@
                     </div>
                 </details>
                 <div class="options-divider"></div>
-
+                <details id="libraryUpdateSettings" class="library-appearance-settings library-action-settings">
+                    <summary>
+                        <span><strong>Update Library</strong><small>Apply newer AbyssBeacon metadata rules to existing cards</small></span>
+                        <span class="appearance-chevron" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="library-appearance-body">
+                        <div class="options-note">When AbyssBeacon learns how to interpret existing source data differently, this updates saved library entries without running a broad source scan. Most entries use data already stored locally; older entries missing repository metadata are refreshed individually from their source. Future library metadata upgrades can use this same tool.</div>
+                        <div id="libraryUpdateStatus" class="options-note" role="status" aria-live="polite">Checking library metadata…</div>
+                        <button id="updateLibraryNow" class="options-secondary" type="button" disabled>Check for Library Updates</button>
+                    </div>
+                </details>
+                <div class="options-divider"></div>
                 <details class="library-appearance-settings library-action-settings">
                     <summary>
                         <span><strong>Preview Cache</strong><small>Remove orphaned local thumbnails</small></span>

@@ -1,5 +1,5 @@
-function initializeGallery(){
-    const detail = document.querySelector(".model-detail");
+function initializeGallery(detailRoot=null){
+    const detail = detailRoot || document.querySelector(".model-detail");
     if(!detail) return;
 
     // Every model card gets its own gallery lifecycle. The modal reuses the
@@ -624,6 +624,14 @@ function initializeGallery(){
     detail.addEventListener("modelradar:source", event=>{
         applySourceFilter(event.detail?.source||"combined");
     });
+
+    // Collection pages reuse this exact viewer. A thumbnail can ask the
+    // initialized gallery to jump to a specific media item without duplicating
+    // gallery, metadata, fullscreen, zoom, or keyboard-navigation logic.
+    detail.addEventListener("modelradar:gallery-show", event=>{
+        const requested=Number.parseInt(event.detail?.index,10);
+        if(Number.isFinite(requested)) showImage(requested);
+    }, {signal:lifecycleSignal});
 
     if(prev)prev.onclick=()=>showImage(current-1); if(next)next.onclick=()=>showImage(current+1);
     if(folderBtn)folderBtn.onclick=()=>renderFiles(actualIndex(),false); if(downloadModelBtn)downloadModelBtn.onclick=()=>renderFiles(actualIndex(),true); if(filesClose)filesClose.onclick=()=>filesPanel.classList.remove("open");

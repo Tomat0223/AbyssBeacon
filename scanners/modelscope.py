@@ -23,6 +23,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from scanners.common import processors
+from scanners.common.repository_classifier import needs_repository_classification_refresh
 
 import scan_control
 import scan_status
@@ -1284,11 +1285,25 @@ def scan(
                         not has_stored_files
                         and not download_metadata_checked
                     )
+                    classification_card = (
+                        existing_source.get("card_data")
+                        if existing_source
+                        else existing_model["card_data"]
+                    )
+                    needs_repository_classification = needs_repository_classification_refresh(
+                        classification_card
+                    )
 
-                    if not needs_download_metadata and not gate_changed:
+                    if not needs_download_metadata and not gate_changed and not needs_repository_classification:
                         duplicates += 1
                         debug_print("ModelScope unchanged:", model_id)
                         continue
+
+                    if needs_repository_classification:
+                        debug_print(
+                            "ModelScope repository classification upgrade; forcing one detail/file refresh:",
+                            model_id
+                        )
 
                     if needs_download_metadata:
                         debug_print(

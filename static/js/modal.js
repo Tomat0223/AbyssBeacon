@@ -360,7 +360,10 @@ function initializeModal(){
                 const id =
                     card.dataset.id;
 
-
+                if (String(card.dataset.type || "").trim().toLowerCase() === "collection") {
+                    window.location.assign(`/collection/${encodeURIComponent(id)}`);
+                    return;
+                }
 
                 cleanupActiveGallery();
                 stopDetailMedia();
@@ -1069,9 +1072,38 @@ function initializeModal(){
                                     showModelRadarToast(data.message || "Model reloaded");
                                     window.modelRadarShowWatchNotifications?.();
 
-                                    // Re-open this exact model so the Download drawer is rebuilt
-                                    // from the newly stored source snapshot without refreshing the
-                                    // whole feed.
+                                    // Reload can change repository classification (for example a
+                                    // Hugging Face LoRA becoming a Collection). Keep the live feed
+                                    // card in sync immediately so the user never has to close the
+                                    // modal, hard-refresh the browser, and click the card again.
+                                    const liveCard=document.querySelector(`.model-card[data-id="${modelId}"]`);
+                                    const refreshedCard=(data.card && typeof data.card==="object")?data.card:{};
+                                    const refreshedType=String(refreshedCard.model_type||"").trim();
+                                    const refreshedName=String(refreshedCard.display_name||"").trim();
+                                    if(liveCard){
+                                        if(refreshedType){
+                                            liveCard.dataset.type=refreshedType.toLowerCase();
+                                            const typeBadge=liveCard.querySelector(".badge.type");
+                                            if(typeBadge) typeBadge.textContent=refreshedType;
+                                        }
+                                        if(refreshedName){
+                                            liveCard.dataset.name=refreshedName.toLowerCase();
+                                            const title=liveCard.querySelector(".card-title h2");
+                                            if(title){ title.textContent=refreshedName; title.title=refreshedName; }
+                                        }
+                                        if(refreshedCard.has_media!==undefined){
+                                            liveCard.dataset.hasMedia=refreshedCard.has_media?"true":"false";
+                                        }
+                                    }
+
+                                    if(data.is_collection && data.collection_url){
+                                        closeModelOverlay();
+                                        setTimeout(()=>window.location.assign(data.collection_url),120);
+                                        return;
+                                    }
+
+                                    // Normal models keep the existing behavior: re-open the exact
+                                    // model so the Download drawer is rebuilt from the new snapshot.
                                     closeModelOverlay();
                                     setTimeout(()=>{
                                         window.modelRadarOpenModel?.(modelId,{downloads:true});

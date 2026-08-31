@@ -14,6 +14,10 @@
             "loha"
         ]
     },
+    "Collection": {
+        "enabled": true,
+        "keywords": []
+    },
     "Workflow": {
         "enabled": true,
         "keywords": [
