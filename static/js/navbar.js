@@ -73,6 +73,57 @@ function initializeNavbar(){
     const scanProgress = document.getElementById("scanProgress");
     const navbar = document.querySelector(".navbar");
     const settingsModal = settingsOverlay?.querySelector(".settings-modal");
+    const settingsHeader = settingsOverlay?.querySelector(".settings-modal-header");
+
+    let scanSettingsHeaderActions = settingsHeader?.querySelector(".scan-settings-header-actions") || null;
+    let scanSettingsHeaderStatus = settingsHeader?.querySelector(".scan-settings-header-status") || null;
+    let scanSettingsHeaderSave = settingsHeader?.querySelector(".scan-settings-header-save") || null;
+    if(settingsHeader && closeSettings && !scanSettingsHeaderActions){
+        scanSettingsHeaderActions=document.createElement("div");
+        scanSettingsHeaderActions.className="scan-settings-header-actions";
+        scanSettingsHeaderActions.hidden=true;
+
+        scanSettingsHeaderStatus=document.createElement("span");
+        scanSettingsHeaderStatus.className="scan-settings-header-status";
+        scanSettingsHeaderStatus.setAttribute("aria-live","polite");
+
+        scanSettingsHeaderSave=document.createElement("button");
+        scanSettingsHeaderSave.type="button";
+        scanSettingsHeaderSave.className="scan-settings-header-save";
+        scanSettingsHeaderSave.textContent="Save";
+
+        scanSettingsHeaderActions.append(scanSettingsHeaderStatus,scanSettingsHeaderSave);
+        settingsHeader.insertBefore(scanSettingsHeaderActions,closeSettings);
+    }
+
+    const scanSettingsPaths=new Set(["/settings","/settings/sources","/settings/architectures"]);
+
+    function setScanSettingsHeaderState(message="", state=""){
+        if(!scanSettingsHeaderStatus) return;
+        scanSettingsHeaderStatus.textContent=message;
+        scanSettingsHeaderStatus.classList.toggle("unsaved",state==="unsaved");
+        scanSettingsHeaderStatus.classList.toggle("error",state==="error");
+    }
+
+    function syncScanSettingsHeader(url){
+        if(!scanSettingsHeaderActions) return;
+        let path="";
+        try{ path=new URL(url || settingsFrame?.getAttribute("src") || "",window.location.origin).pathname; }
+        catch(error){ path=String(url || "").split("?",1)[0]; }
+        const visible=scanSettingsPaths.has(path);
+        scanSettingsHeaderActions.hidden=!visible;
+        if(visible){
+            setScanSettingsHeaderState("");
+            if(scanSettingsHeaderSave) scanSettingsHeaderSave.disabled=false;
+        }
+    }
+
+    scanSettingsHeaderSave?.addEventListener("click",()=>{
+        if(!settingsFrame?.contentWindow) return;
+        setScanSettingsHeaderState("Saving...");
+        scanSettingsHeaderSave.disabled=true;
+        settingsFrame.contentWindow.postMessage({type:"modelradar:save-scan-settings"},window.location.origin);
+    });
 
     const favoriteCreatorsOverlay = document.getElementById("favoriteCreatorsOverlay");
     const favoriteCreatorsContent = document.getElementById("favoriteCreatorsContent");
@@ -208,6 +259,7 @@ function initializeNavbar(){
         if(!settingsOverlay || !settingsFrame) return;
         settingsFrame.src = url;
         if(settingsTitle) settingsTitle.textContent = title || "Settings";
+        syncScanSettingsHeader(url);
         settingsOverlay.classList.add("open");
         settingsOverlay.setAttribute("aria-hidden", "false");
         optionsPanel?.classList.remove("open");
@@ -228,6 +280,9 @@ function initializeNavbar(){
 
     function closeSettingsOverlay(){
         if(!settingsOverlay || !settingsFrame) return;
+        if(scanSettingsHeaderActions) scanSettingsHeaderActions.hidden=true;
+        setScanSettingsHeaderState("");
+        if(scanSettingsHeaderSave) scanSettingsHeaderSave.disabled=false;
         settingsOverlay.classList.remove("open");
         settingsOverlay.setAttribute("aria-hidden", "true");
         settingsFrame.src = "about:blank";
@@ -265,6 +320,17 @@ function initializeNavbar(){
         if(event.source !== settingsFrame?.contentWindow) return;
         if(event.data?.type === "modelradar:close-settings"){
             closeSettingsOverlay();
+            return;
+        }
+        if(event.data?.type === "modelradar:scan-settings-dirty"){
+            setScanSettingsHeaderState("Unsaved changes","unsaved");
+            if(scanSettingsHeaderSave) scanSettingsHeaderSave.disabled=false;
+            return;
+        }
+        if(event.data?.type === "modelradar:scan-settings-status"){
+            const state=String(event.data.state || "");
+            setScanSettingsHeaderState(String(event.data.message || ""),state);
+            if(scanSettingsHeaderSave) scanSettingsHeaderSave.disabled=state==="saving";
             return;
         }
         if(event.data?.type === "modelradar:open-scan-settings-page"){

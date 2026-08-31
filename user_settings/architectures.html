@@ -126,10 +126,6 @@ button.save{border:1px solid #00d9ff;border-radius:8px;padding:10px 18px;backgro
 {% endfor %}
 </div>
 
-<div class="actions">
-  <button id="save" class="save" type="button">Save Changes</button>
-  <span id="status" class="status"></span>
-</div>
     <div class="scan-footer">
         <div class="scan-nav-group">
             <a class="scan-nav" href="/settings" data-scan-nav data-settings-title="Scanner Search Settings">Scan Settings</a>
@@ -154,8 +150,16 @@ function setAllModels(checked){
   document.querySelectorAll('.arch-check').forEach(box=>box.checked=checked);
   document.querySelectorAll('.family').forEach(syncFamily);
 }
-document.getElementById('selectAllModels')?.addEventListener('click',()=>setAllModels(true));
-document.getElementById('clearAllModels')?.addEventListener('click',()=>setAllModels(false));
+function notifyParent(message,state=''){
+  if(window.parent===window) return;
+  window.parent.postMessage({type:'modelradar:scan-settings-status',message,state},window.location.origin);
+}
+function markUnsaved(){
+  notifyParent('Unsaved changes','unsaved');
+  if(window.parent!==window) window.parent.postMessage({type:'modelradar:scan-settings-dirty'},window.location.origin);
+}
+document.getElementById('selectAllModels')?.addEventListener('click',()=>{setAllModels(true);markUnsaved();});
+document.getElementById('clearAllModels')?.addEventListener('click',()=>{setAllModels(false);markUnsaved();});
 
 document.querySelectorAll('.family').forEach(family=>{
   syncFamily(family);
@@ -164,18 +168,22 @@ document.querySelectorAll('.family').forEach(family=>{
   parent?.addEventListener('change',()=>{
     children.forEach(x=>x.checked=parent.checked);
     syncFamily(family);
+    markUnsaved();
   });
-  children.forEach(child=>child.addEventListener('change',()=>syncFamily(family)));
+  children.forEach(child=>child.addEventListener('change',()=>{syncFamily(family);markUnsaved();}));
   family.querySelector('.family-toggle')?.addEventListener('click',event=>{
     const open=family.classList.toggle('open');
     event.currentTarget.setAttribute('aria-expanded',open?'true':'false');
     event.currentTarget.textContent=open?'Variants ▴':'Variants ▾';
   });
 });
-document.getElementById('save').addEventListener('click',async()=>{
+document.querySelectorAll('.model-row .arch-check').forEach(box=>box.addEventListener('change',markUnsaved));
+
+async function saveArchitectures(){
   const enabled=[...document.querySelectorAll('.arch-check:checked')].map(x=>x.value);
   const status=document.getElementById('status');
-  status.textContent='Saving…';
+  if(status) status.textContent='Saving…';
+  notifyParent('Saving...','saving');
   try{
     const response=await fetch('/settings/architectures',{
       method:'POST',
@@ -184,11 +192,20 @@ document.getElementById('save').addEventListener('click',async()=>{
     });
     const data=await response.json().catch(()=>({}));
     if(!response.ok||!data.success) throw new Error(data.error||'Save failed.');
-    status.textContent=`Saved · ${enabled.length} scan target${enabled.length===1?'':'s'} enabled.`;
+    const message=`Saved · ${enabled.length} scan target${enabled.length===1?'':'s'} enabled.`;
+    if(status) status.textContent=message;
+    notifyParent('Saved','saved');
     if(window.parent!==window){window.parent.postMessage({type:'modelradar:scan-definitions-saved',url:window.location.pathname,title:'Models to Scan'},window.location.origin);}
   }catch(error){
-    status.textContent=error.message||'Save failed.';
+    const message=error.message||'Save failed.';
+    if(status) status.textContent=message;
+    notifyParent(message,'error');
   }
+}
+
+window.addEventListener('message',event=>{
+  if(event.origin!==window.location.origin||event.source!==window.parent) return;
+  if(event.data?.type==='modelradar:save-scan-settings') saveArchitectures();
 });
 
 document.querySelectorAll('[data-scan-nav]').forEach(link => {

@@ -98,7 +98,14 @@
             text-decoration: none;
             font-size: 14px;
         }
-        #saveStatus { color: #80e6a8; font-size: 14px; }
+        .save-status { color: #80e6a8; font-size: 14px; }
+        .save-status.unsaved { color: #ffd166; }
+        .save-status.error { color: #ff8f8f; }
+        .scan-limit-actions {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid #202936;
+        }
         .links { margin-top: 22px; display: flex; gap: 12px; flex-wrap: wrap; }
 
         .scan-footer {
@@ -308,12 +315,6 @@
         <div class="setting"><div><strong>Search Order</strong><div class="help">SeaArt integration currently uses its verified New ordering.</div></div><select id="saSort"><option value="newest" selected>Newest</option></select></div>
     </div>
 
-    <div class="actions">
-        <button id="saveSearchSettings" type="button">Save Search Settings</button>
-        <span id="saveStatus"></span>
-    </div>
-
-
     <div class="scan-footer">
         <div class="scan-nav-group">
             <a class="scan-nav current" aria-current="page">Scan Settings</a>
@@ -451,11 +452,45 @@ function buildScanLimitsPayload() {
 globalLimitMode?.addEventListener("change", syncGlobalLimitMode);
 syncGlobalLimitMode();
 
-const saveButton = document.getElementById("saveSearchSettings");
-const saveStatus = document.getElementById("saveStatus");
+const saveButtons = Array.from(document.querySelectorAll("[data-save-scan-settings]"));
+const saveStatuses = Array.from(document.querySelectorAll("[data-save-status]"));
+let settingsRevision = 0;
 
-saveButton.addEventListener("click", async () => {
-    saveStatus.textContent = "Saving...";
+function notifyParentSaveStatus(message, state = "") {
+    if(window.parent === window) return;
+    window.parent.postMessage({
+        type: "modelradar:scan-settings-status",
+        message,
+        state
+    }, window.location.origin);
+}
+
+function setSaveStatus(message, state = "") {
+    saveStatuses.forEach(status => {
+        status.textContent = message;
+        status.classList.toggle("unsaved", state === "unsaved");
+        status.classList.toggle("error", state === "error");
+    });
+    notifyParentSaveStatus(message, state);
+}
+
+function markSettingsUnsaved() {
+    settingsRevision += 1;
+    setSaveStatus("Unsaved changes", "unsaved");
+    if(window.parent !== window){
+        window.parent.postMessage({type:"modelradar:scan-settings-dirty"}, window.location.origin);
+    }
+}
+
+document.querySelectorAll("input, select").forEach(control => {
+    control.addEventListener("input", markSettingsUnsaved);
+    control.addEventListener("change", markSettingsUnsaved);
+});
+
+async function saveScanSettings() {
+    const savingRevision = settingsRevision;
+    setSaveStatus("Saving...");
+    saveButtons.forEach(button => { button.disabled = true; });
 
     const payload = {
         search_settings: {
@@ -478,20 +513,39 @@ saveButton.addEventListener("click", async () => {
         scan_limits: buildScanLimitsPayload()
     };
 
-    const response = await fetch("/settings", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-    });
+    try {
+        const response = await fetch("/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
 
-    const result = await response.json();
+        const result = await response.json();
 
-    if (!response.ok || !result.success) {
-        saveStatus.textContent = result.error || "Could not save settings.";
-        return;
+        if (!response.ok || !result.success) {
+            setSaveStatus(result.error || "Could not save settings.", "error");
+            return;
+        }
+
+        if (settingsRevision === savingRevision) {
+            setSaveStatus("Saved");
+        } else {
+            setSaveStatus("Unsaved changes", "unsaved");
+        }
+    } catch (error) {
+        setSaveStatus("Could not save settings.", "error");
+    } finally {
+        saveButtons.forEach(button => { button.disabled = false; });
     }
+}
 
-    saveStatus.textContent = "Saved.";
+saveButtons.forEach(button => {
+    button.addEventListener("click", saveScanSettings);
+});
+
+window.addEventListener("message", event => {
+    if(event.origin !== window.location.origin || event.source !== window.parent) return;
+    if(event.data?.type === "modelradar:save-scan-settings") saveScanSettings();
 });
 </script>
 </body>

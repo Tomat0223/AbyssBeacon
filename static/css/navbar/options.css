@@ -515,6 +515,38 @@ OPTIONS SUB-PAGES
     font-size:14px;
     font-weight:600;
 }
+.scan-settings-header-actions {
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    min-width:0;
+}
+.scan-settings-header-actions[hidden] { display:none; }
+.scan-settings-header-status {
+    color:#80e6a8;
+    font-size:12px;
+    font-weight:500;
+    white-space:nowrap;
+}
+.scan-settings-header-status.unsaved { color:#ffd166; }
+.scan-settings-header-status.error { color:#ff8f8f; }
+.scan-settings-header-save {
+    appearance:none;
+    border:1px solid #00d9ff;
+    border-radius:7px;
+    padding:6px 13px;
+    background:#07151b;
+    color:#dffaff;
+    font:inherit;
+    font-size:12px;
+    cursor:pointer;
+}
+.scan-settings-header-save:hover:not(:disabled) { box-shadow:0 0 12px rgba(0,217,255,.18); }
+.scan-settings-header-save:disabled { opacity:.55; cursor:default; }
+.scan-settings-header-actions:not([hidden]) + .settings-modal-close {
+    margin-left:20px;
+}
 .settings-modal-close {
     appearance:none;
     border:none;

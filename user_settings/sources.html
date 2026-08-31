@@ -62,7 +62,6 @@
 <div class="source-row"><label class="choice"><input class="source-check" type="checkbox" value="{{ name }}" {% if name in enabled_sources %}checked{% endif %}><span>{{ source.display }}</span></label></div>
 {% endfor %}
 </div>
-<div class="actions"><button id="save" class="save" type="button">Save Changes</button><span id="status" class="status"></span></div>
     <div class="scan-footer">
         <div class="scan-nav-group">
             <a class="scan-nav" href="/settings" data-scan-nav data-settings-title="Scanner Search Settings">Scan Settings</a>
@@ -75,14 +74,49 @@
 </div>
 <script>
 
+function notifyParent(message,state=''){
+  if(window.parent===window) return;
+  window.parent.postMessage({type:'modelradar:scan-settings-status',message,state},window.location.origin);
+}
+function markUnsaved(){
+  notifyParent('Unsaved changes','unsaved');
+  if(window.parent!==window) window.parent.postMessage({type:'modelradar:scan-settings-dirty'},window.location.origin);
+}
+
 document.getElementById('selectAllSources')?.addEventListener('click',()=>{
   document.querySelectorAll('.source-check').forEach(box=>box.checked=true);
+  markUnsaved();
 });
 document.getElementById('clearAllSources')?.addEventListener('click',()=>{
   document.querySelectorAll('.source-check').forEach(box=>box.checked=false);
+  markUnsaved();
 });
+document.querySelectorAll('.source-check').forEach(box=>box.addEventListener('change',markUnsaved));
 
-document.getElementById('save').addEventListener('click',async()=>{const enabled=[...document.querySelectorAll('.source-check:checked')].map(x=>x.value);const status=document.getElementById('status');status.textContent='Saving…';try{const response=await fetch('/settings/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'Save failed.');status.textContent=`Saved · ${enabled.length} source${enabled.length===1?'':'s'} enabled.`;if(window.parent!==window){window.parent.postMessage({type:'modelradar:scan-definitions-saved',url:window.location.pathname,title:'Sources to Scan'},window.location.origin);}}catch(error){status.textContent=error.message||'Save failed.';}});
+async function saveSources(){
+  const enabled=[...document.querySelectorAll('.source-check:checked')].map(x=>x.value);
+  const status=document.getElementById('status');
+  if(status) status.textContent='Saving…';
+  notifyParent('Saving...','saving');
+  try{
+    const response=await fetch('/settings/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.success) throw new Error(data.error||'Save failed.');
+    const message=`Saved · ${enabled.length} source${enabled.length===1?'':'s'} enabled.`;
+    if(status) status.textContent=message;
+    notifyParent('Saved','saved');
+    if(window.parent!==window){window.parent.postMessage({type:'modelradar:scan-definitions-saved',url:window.location.pathname,title:'Sources to Scan'},window.location.origin);}
+  }catch(error){
+    const message=error.message||'Save failed.';
+    if(status) status.textContent=message;
+    notifyParent(message,'error');
+  }
+}
+
+window.addEventListener('message',event=>{
+  if(event.origin!==window.location.origin||event.source!==window.parent) return;
+  if(event.data?.type==='modelradar:save-scan-settings') saveSources();
+});
 
 document.querySelectorAll('[data-scan-nav]').forEach(link => {
     link.addEventListener('click', event => {
