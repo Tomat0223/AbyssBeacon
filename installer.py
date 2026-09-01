@@ -85,13 +85,32 @@ def comfy_category_for_model(model, filename="", file_data=None):
         or file_data.get("kind")
         or ""
     )
-    category = comfy_category(file_type, filename)
-    if category != UNKNOWN_CATEGORY:
-        return category
+
+    # CivitAI and CivitAI Red use the per-file type ``Model`` to mean
+    # "this is the downloadable model artifact".  It does *not* mean the
+    # artifact is a full checkpoint.  Treating that generic label as a
+    # checkpoint here caused LoRA cards whose primary file type is ``Model``
+    # to be installed under ComfyUI/models/checkpoints.
+    #
+    # For a generic model artifact, prefer the card's authoritative model type
+    # (LoRA, Checkpoint, VAE, UNet, etc.).  Keep the old checkpoint fallback
+    # for unknown/Other cards, and do not send a non-JSON attachment from a
+    # Workflow card into the workflows directory.
+    generic_model_file = str(file_type or "").strip().casefold() in {
+        "model", "full model"
+    }
+    if not generic_model_file:
+        category = comfy_category(file_type, filename)
+        if category != UNKNOWN_CATEGORY:
+            return category
 
     category = comfy_category(model.get("model_type"), filename)
     if category != UNKNOWN_CATEGORY:
-        return category
+        if category != "workflows" or str(filename or "").casefold().endswith(".json"):
+            return category
+
+    if generic_model_file:
+        return "checkpoints"
 
     path = str(file_data.get("path") or filename or "").replace("\\", "/").casefold()
     text = " ".join(
