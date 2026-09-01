@@ -7,8 +7,11 @@ user run them explicitly from Options -> Library.
 """
 
 import json
+import re
+import shutil
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 import database
@@ -23,6 +26,14 @@ from scanners.common.repository_classifier import (
 )
 
 _SUPPORTED_REPOSITORY_SOURCES = ("huggingface", "modelscope")
+_CIVITAI_COMPANION_NAMES = {"abyssbeacon info.txt", "modelradar info.txt"}
+_LEGACY_COMPANION_MEDIA_SUFFIXES = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif",
+    ".mp4", ".webm", ".mov",
+}
+_MODEL_WEIGHT_SUFFIXES = {
+    ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf",
+}
 _JOB_LOCK = threading.Lock()
 _JOB_STATE = {
     "running": False,
@@ -42,6 +53,168 @@ _JOB_STATE = {
     "phase_total": 0,
     "last_result": {},
 }
+
+
+def _normalized_source_name(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _is_civitai_companion_folder(source_dir, relative_path):
+    """Confirm a legacy folder belongs to CivitAI/Red without guessing."""
+    if any(
+        _normalized_source_name(part) in {"civitai", "civitaired"}
+        for part in relative_path.parts
+    ):
+        return True
+
+    # The Simple install layout does not include a source directory, so use
+    # AbyssBeacon's own info file as the source proof when it is available.
+    for info_name in ("AbyssBeacon Info.txt", "ModelRadar Info.txt"):
+        info_path = source_dir / info_name
+        if not info_path.is_file():
+            continue
+        try:
+            info_text = info_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in info_text.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            if key.strip().casefold() != "source":
+                continue
+            return _normalized_source_name(value) in {"civitai", "civitaired"}
+    return False
+
+
+def _looks_like_companion_name(filename):
+    """Return True for current sidecars or old per-weight companion names."""
+    lower_name = str(filename or "").casefold()
+    return (
+        lower_name in _CIVITAI_COMPANION_NAMES
+        or lower_name.startswith("preview.")
+        or lower_name.endswith("_instructions.txt")
+        or "_preview." in lower_name
+    )
+
+
+def _companion_matches_destination_weight(item, destination_weights):
+    """Require legacy companions to share a moved destination weight's stem."""
+    lower_name = item.name.casefold()
+    if lower_name in _CIVITAI_COMPANION_NAMES or lower_name.startswith("preview."):
+        return True
+
+    for weight in destination_weights:
+        weight_stem = weight.stem.casefold()
+        if lower_name == f"{weight_stem}_instructions.txt":
+            return True
+        if (
+            lower_name.startswith(f"{weight_stem}_preview.")
+            and item.suffix.casefold() in _LEGACY_COMPANION_MEDIA_SUFFIXES
+        ):
+            return True
+    return False
+
+
+def _repair_stranded_civitai_companions(checkpoint_root, lora_root):
+    """Move AbyssBeacon sidecars after their LoRA weight has already moved.
+
+    This intentionally does not classify or move model weights. A source folder
+    is eligible only when it has no weight remaining and the exact parallel
+    LoRA folder already contains a weight. Conflicts are never overwritten.
+    """
+    checkpoint_root = Path(checkpoint_root)
+    lora_root = Path(lora_root)
+    result = {"moved": 0, "folders_removed": 0, "conflicts": 0, "failed": 0}
+    if not checkpoint_root.is_dir() or not lora_root.is_dir():
+        return result
+
+    candidate_dirs = set()
+    try:
+        for item in checkpoint_root.rglob("*"):
+            if not item.is_file():
+                continue
+            if _looks_like_companion_name(item.name):
+                candidate_dirs.add(item.parent)
+    except OSError:
+        result["failed"] += 1
+        return result
+
+    for source_dir in sorted(candidate_dirs, key=lambda path: str(path).casefold()):
+        try:
+            relative_path = source_dir.relative_to(checkpoint_root)
+        except ValueError:
+            continue
+        if not _is_civitai_companion_folder(source_dir, relative_path):
+            continue
+
+        destination_dir = lora_root / relative_path
+        try:
+            source_weights = [
+                item for item in source_dir.iterdir()
+                if item.is_file() and item.suffix.casefold() in _MODEL_WEIGHT_SUFFIXES
+            ]
+            destination_weights = [
+                item for item in destination_dir.iterdir()
+                if item.is_file() and item.suffix.casefold() in _MODEL_WEIGHT_SUFFIXES
+            ] if destination_dir.is_dir() else []
+        except OSError:
+            result["failed"] += 1
+            continue
+
+        if source_weights or not destination_weights:
+            continue
+
+        for item in list(source_dir.iterdir()):
+            if not item.is_file():
+                continue
+            if not _companion_matches_destination_weight(item, destination_weights):
+                continue
+            target = destination_dir / item.name
+            if target.exists():
+                result["conflicts"] += 1
+                continue
+            try:
+                shutil.move(str(item), str(target))
+                result["moved"] += 1
+            except OSError:
+                result["failed"] += 1
+
+        try:
+            source_dir.rmdir()
+            result["folders_removed"] += 1
+        except OSError:
+            # The folder may contain an unrelated file or a conflict. Preserve
+            # it exactly as-is rather than broadening cleanup behavior.
+            pass
+
+    return result
+
+
+def repair_stranded_civitai_companions():
+    """Repair companions left behind by a manual/legacy LoRA relocation."""
+    try:
+        from installer import APP_NAMESPACE, category_base_directory, resolve_comfy_root
+        from settings_manager import load_settings
+
+        settings = load_settings() or {}
+        preferences = settings.get("preferences") if isinstance(settings, dict) else {}
+        preferences = preferences if isinstance(preferences, dict) else {}
+        configured_root = str(
+            preferences.get("local_comfy_root")
+            or preferences.get("local_models_root")
+            or ""
+        ).strip()
+        if not configured_root:
+            return {"moved": 0, "folders_removed": 0, "conflicts": 0, "failed": 0}
+
+        comfy_root = resolve_comfy_root(configured_root)
+        checkpoint_root = category_base_directory(comfy_root, "checkpoints") / APP_NAMESPACE
+        lora_root = category_base_directory(comfy_root, "loras") / APP_NAMESPACE
+        return _repair_stranded_civitai_companions(checkpoint_root, lora_root)
+    except Exception:
+        # Startup must never fail because a local library path is unavailable.
+        return {"moved": 0, "folders_removed": 0, "conflicts": 0, "failed": 1}
 
 
 def _json_object(value):
@@ -982,6 +1155,20 @@ def start_update():
 
 def print_startup_notice():
     """Print a persistent startup reminder until all applicable rows are current."""
+    companion_result = repair_stranded_civitai_companions()
+    moved = int(companion_result.get("moved") or 0)
+    folders_removed = int(companion_result.get("folders_removed") or 0)
+    conflicts = int(companion_result.get("conflicts") or 0)
+    failed = int(companion_result.get("failed") or 0)
+    if moved or folders_removed or conflicts or failed:
+        print("\nCIVITAI LORA COMPANION CLEANUP")
+        print(f"  Companion files moved : {moved}")
+        print(f"  Empty folders removed : {folders_removed}")
+        if conflicts:
+            print(f"  Existing-file conflicts: {conflicts} left untouched")
+        if failed:
+            print(f"  Filesystem errors       : {failed} item(s) left untouched")
+
     try:
         status = get_update_status()
     except Exception as exc:
