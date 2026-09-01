@@ -380,6 +380,9 @@ function initializeGallery(detailRoot=null){
         }
         if(counter) counter.textContent=`${current+1} / ${total}`;
         renderMetadata(actual); updatePreviewModelAction(actual); if(filesPanel)filesPanel.classList.remove("open");
+        detail.dispatchEvent(new CustomEvent("modelradar:gallery-change", {
+            detail: {index: actual, position: current, total},
+        }));
         if(currentNode && currentNode.tagName==="VIDEO") playCurrentVideo();
         if(prev) prev.style.display=total<=1?"none":"";
         if(next) next.style.display=total<=1?"none":"";

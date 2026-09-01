@@ -1291,7 +1291,8 @@ def scan(
                         else existing_model["card_data"]
                     )
                     needs_repository_classification = needs_repository_classification_refresh(
-                        classification_card
+                        classification_card,
+                        source="modelscope",
                     )
 
                     if not needs_download_metadata and not gate_changed and not needs_repository_classification:

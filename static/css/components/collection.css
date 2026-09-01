@@ -21,7 +21,8 @@
 }
 
 .collection-back,
-.collection-source-link {
+.collection-source-link,
+.collection-copy-link {
     display: inline-flex;
     align-items: center;
     min-height: 42px;
@@ -34,9 +35,21 @@
 }
 
 .collection-back:hover,
-.collection-source-link:hover {
+.collection-source-link:hover,
+.collection-copy-link:hover {
     border-color: var(--collection-source-color);
     box-shadow: 0 0 18px color-mix(in srgb, var(--collection-source-color) 20%, transparent);
+}
+
+
+.collection-copy-link {
+    justify-content: center;
+    font: inherit;
+    cursor: pointer;
+}
+.collection-copy-link.copied {
+    border-color: var(--collection-source-color);
+    color: var(--collection-source-color);
 }
 
 .collection-hero,
@@ -229,9 +242,9 @@
 .collection-file-info { min-width: 0; }
 .collection-file-info strong { overflow-wrap: anywhere; }
 .collection-download {
-    flex: 0 0 44px;
-    width: 44px;
-    height: 44px;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     display: inline-flex;
     align-items: center;
@@ -239,7 +252,7 @@
     color: #001214;
     background: #24d17e;
     text-decoration: none;
-    font-size: 21px;
+    font-size: 19px;
     font-weight: 900;
 }
 .collection-download:hover { transform: translateY(-1px); filter: brightness(1.08); }
@@ -255,7 +268,7 @@
 @media (max-width: 600px) {
     .collection-shell { width: min(100% - 20px, 1500px); padding-top: 14px; }
     .collection-topbar { align-items: stretch; flex-direction: column; }
-    .collection-back, .collection-source-link { justify-content: center; }
+    .collection-back, .collection-source-link, .collection-copy-link { justify-content: center; }
     .collection-hero, .collection-section { padding: 20px; border-radius: 17px; }
     .collection-hero h1 { font-size: 34px; }
 }
@@ -495,4 +508,541 @@ body.collection-media-open { overflow: hidden; }
     .collection-media-overlay { padding: 8px; }
     .collection-media-panel { width: 98vw; max-width: 98vw; max-height: 96vh; }
     .collection-media-detail { padding: 20px 10px 16px; }
+}
+
+/* ===== Collection media paging + file associations ===== */
+.collection-media-browser {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 52px;
+    align-items: center;
+    gap: 14px;
+}
+
+.collection-media-page-button {
+    width: 52px;
+    height: 52px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    border: 1px solid color-mix(in srgb, var(--collection-source-color) 55%, rgba(130,160,170,.24));
+    border-radius: 50%;
+    background: rgba(3, 9, 12, .86);
+    color: #edf8fb;
+    font-size: 34px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.collection-media-page-button:hover:not(:disabled) {
+    border-color: var(--collection-source-color);
+    color: var(--collection-source-color);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--collection-source-color) 18%, transparent);
+}
+
+.collection-media-page-button:disabled {
+    opacity: .25;
+    cursor: default;
+}
+
+.collection-media-strip {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.collection-media-card {
+    position: relative;
+    min-width: 0;
+}
+
+.collection-media-card .collection-media-item {
+    width: 100%;
+    height: 100%;
+}
+
+.collection-media-model-link {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    z-index: 4;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid color-mix(in srgb, var(--collection-source-color) 70%, rgba(255,255,255,.16));
+    border-radius: 999px;
+    background: rgba(3, 9, 12, .86);
+    color: #e8fbff;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.collection-media-model-link:hover,
+.collection-media-model-link:focus-visible {
+    border-color: var(--collection-source-color);
+    color: var(--collection-source-color);
+}
+
+.collection-file-main {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.collection-file-previews {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 7px;
+}
+
+.collection-file-preview {
+    width: 70px;
+    height: 70px;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid rgba(130,160,170,.26);
+    border-radius: 11px;
+    background: #05090b;
+    cursor: zoom-in;
+}
+
+.collection-file-preview:hover {
+    border-color: var(--collection-source-color);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--collection-source-color) 14%, transparent);
+}
+
+.collection-file-preview img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+.collection-file-row.is-focused {
+    background: color-mix(in srgb, var(--collection-source-color) 8%, rgba(255,255,255,.018));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--collection-source-color) 80%, transparent);
+}
+
+.collection-media-view-model {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0 14px;
+    border: 1px solid color-mix(in srgb, var(--collection-source-color) 58%, #27404a);
+    border-radius: 999px;
+    background: rgba(4,13,16,.92);
+    color: #dffcff;
+    font: inherit;
+    cursor: pointer;
+}
+
+.collection-media-view-model[hidden] { display: none !important; }
+.collection-media-view-model:hover {
+    border-color: var(--collection-source-color);
+    color: var(--collection-source-color);
+}
+
+@media (max-width: 1200px) {
+    .collection-media-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 800px) {
+    .collection-media-browser {
+        grid-template-columns: 42px minmax(0, 1fr) 42px;
+        gap: 8px;
+    }
+    .collection-media-page-button { width: 42px; height: 42px; font-size: 28px; }
+    .collection-media-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .collection-file-main { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 560px) {
+    .collection-media-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .collection-file-previews { max-width: 100%; overflow-x: auto; }
+    .collection-file-preview { width: 58px; height: 58px; }
+}
+
+/* ===== Collection media + repository file polish ===== */
+@media (min-width: 1201px) {
+    .collection-media-strip { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+/* Keep the viewer's View model action identical to the standard Expand Viewer
+   button. Base sizing comes from gallery.css .media-file-actions button. */
+.collection-media-view-model {
+    min-height: 0;
+    padding: 6px 10px;
+    border-radius: 16px;
+    background: rgba(8,11,12,.88);
+    color: #cbd4d6;
+    font-size: 11px;
+}
+
+.collection-file-row {
+    display: block;
+}
+.collection-file-topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+}
+.collection-file-preview-block {
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid rgba(130,160,170,.10);
+}
+.collection-file-preview-label {
+    display: block;
+    margin-bottom: 8px;
+    color: #8197a2;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+.collection-file-previews {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.collection-file-preview {
+    position: relative;
+    width: 76px;
+    height: 76px;
+}
+.collection-file-preview > span {
+    position: absolute;
+    left: 5px;
+    bottom: 5px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(3,9,12,.86);
+    color: #e8fbff;
+    font-size: 9px;
+    line-height: 1.3;
+    pointer-events: none;
+}
+
+.collection-repository-files-section {
+    padding: 0;
+    overflow: hidden;
+}
+.collection-repository-files > summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 22px 26px;
+    cursor: pointer;
+}
+.collection-repository-files > summary::-webkit-details-marker { display: none; }
+.collection-repository-files > summary > div {
+    display: grid;
+    gap: 4px;
+}
+.collection-repository-files > summary strong {
+    color: #edf8fb;
+    font-size: 20px;
+}
+.collection-repository-files > summary > div > span:last-child {
+    color: #8197a2;
+    font-size: 13px;
+}
+.collection-repository-files[open] > summary {
+    border-bottom: 1px solid rgba(130,160,170,.12);
+}
+.collection-repository-files[open] .collection-child-chevron { transform: rotate(180deg); }
+.collection-repository-file-list {
+    max-height: 620px;
+    overflow: auto;
+}
+.collection-repository-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 13px 20px 13px 26px;
+    border-bottom: 1px solid rgba(130,160,170,.10);
+}
+.collection-repository-file-row:last-child { border-bottom: 0; }
+.collection-repository-file-info {
+    min-width: 0;
+}
+.collection-repository-file-info strong {
+    display: block;
+    overflow-wrap: anywhere;
+    color: #dcecef;
+}
+.collection-repository-file-info > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 12px;
+    margin-top: 4px;
+    color: #8197a2;
+    font-size: 12px;
+}
+.collection-repository-file-info > div span + span::before {
+    content: "·";
+    margin-right: 12px;
+}
+.collection-repository-download {
+    flex: 0 0 38px;
+    width: 38px;
+    height: 38px;
+    border: 1px solid rgba(0,234,255,.34);
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(3,9,12,.78);
+    color: #00eaff;
+    text-decoration: none;
+    font-size: 18px;
+    font-weight: 800;
+}
+.collection-repository-download:hover {
+    border-color: #00eaff;
+    box-shadow: 0 0 14px rgba(0,234,255,.16);
+}
+
+@media (max-width: 800px) {
+    .collection-file-topline { align-items: flex-start; }
+    .collection-repository-file-row { align-items: flex-start; }
+}
+
+
+/* ===== Collection family expansion + model preview shelf ===== */
+.collection-family-heading-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    color: #8197a2;
+}
+
+.collection-expand-all {
+    min-height: 38px;
+    padding: 0 15px;
+    border: 1px solid color-mix(in srgb, var(--collection-source-color) 58%, rgba(130,160,170,.24));
+    border-radius: 999px;
+    background: rgba(3, 9, 12, .72);
+    color: #d8eef2;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.collection-expand-all:hover,
+.collection-expand-all:focus-visible,
+.collection-expand-all[aria-pressed="true"] {
+    border-color: var(--collection-source-color);
+    color: var(--collection-source-color);
+}
+
+/* Keep previews visually subordinate to the actual downloadable file row, but
+   large enough to judge the model without immediately opening the viewer. */
+.collection-file-preview-block {
+    margin-top: 14px;
+    padding: 14px 16px 16px;
+    border-top: 1px solid rgba(130,160,170,.10);
+    border-radius: 0 0 14px 14px;
+    background: rgba(255,255,255,.014);
+}
+.collection-file-preview-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.collection-file-preview-label {
+    margin: 0;
+}
+.collection-file-preview-help {
+    color: #6f858f;
+    font-size: 11px;
+}
+.collection-file-previews {
+    gap: 10px;
+}
+.collection-file-preview {
+    width: min(190px, 22vw);
+    height: 128px;
+    border-radius: 13px;
+    background: #05090b;
+}
+.collection-file-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #05090b;
+}
+.collection-file-preview > span { display: none; }
+
+@media (max-width: 800px) {
+    .collection-family-heading-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .collection-file-preview-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .collection-file-preview {
+        width: 150px;
+        height: 108px;
+    }
+}
+
+@media (max-width: 560px) {
+    .collection-family-heading-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+    .collection-expand-all { width: 100%; }
+    .collection-file-preview {
+        width: 132px;
+        height: 96px;
+        flex: 0 0 auto;
+    }
+}
+
+/* Gated Collection polish --------------------------------------------------
+   Access is informational only. Keep downloads active because a connected
+   Hugging Face account may already be approved for the repository. */
+.collection-access-pill {
+    color: #ffb86b !important;
+    border-color: rgba(255, 184, 107, .42) !important;
+    background: rgba(255, 184, 107, .07) !important;
+    font-weight: 750;
+}
+
+/* Treat favorite + disclosure as one compact control rail instead of two
+   unrelated controls floating across the right side of the family card. */
+.collection-child-actions {
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+}
+.collection-child-chevron {
+    line-height: .8;
+}
+
+.collection-download-stack {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+.collection-file-access-lock {
+    color: #ffb86b;
+    font-size: 19px;
+    line-height: 1;
+    filter: drop-shadow(0 0 6px rgba(255,184,107,.14));
+}
+
+/* A gated repository may expose the file inventory while refusing anonymous
+   image requests. Failed previews become deliberate placeholders rather than
+   broken-image icons / giant filename alt text. Working previews are untouched. */
+.collection-media-fallback,
+.collection-file-preview-fallback {
+    display: none;
+}
+.collection-media-item.is-unavailable {
+    cursor: default;
+}
+.collection-media-item.is-unavailable img,
+.collection-file-preview.is-unavailable img {
+    display: none;
+}
+.collection-media-item.is-unavailable .collection-media-open-hint {
+    display: none !important;
+}
+.collection-media-item.is-unavailable .collection-media-fallback {
+    display: flex;
+    position: absolute;
+    inset: 0;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    text-align: center;
+    color: #7f98a3;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.35;
+    background:
+        radial-gradient(circle at 50% 38%, rgba(0,234,255,.08), transparent 34%),
+        #05090b;
+}
+.collection-media-item.is-unavailable[data-restricted="true"] .collection-media-fallback {
+    color: #cba77d;
+}
+.collection-file-preview.is-unavailable {
+    cursor: default;
+}
+.collection-file-preview.is-unavailable .collection-file-preview-fallback {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    text-align: center;
+    color: #8299a3;
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.25;
+    background: #05090b;
+}
+.collection-file-preview.is-unavailable[data-restricted="true"] .collection-file-preview-fallback {
+    color: #cba77d;
+}
+.collection-media-item.is-unavailable,
+.collection-file-preview.is-unavailable {
+    position: relative;
+    opacity: 1;
+}
+
+/* Stable disclosure rail ---------------------------------------------------
+   Use a CSS chevron instead of rotating a font glyph. The text glyph's
+   baseline changes visually when rotated, which made the up/down state jump
+   relative to the favorite star and let the expanded arrow crowd it. */
+.collection-child-actions {
+    width: 40px;
+    min-width: 40px;
+    align-items: center;
+    gap: 10px;
+}
+.collection-child-chevron {
+    width: 40px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 24px;
+    font-size: 0;
+    line-height: 1;
+    transform: none !important;
+    transition: none;
+}
+.collection-child-chevron::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    box-sizing: border-box;
+    border-right: 3px solid currentColor;
+    border-bottom: 3px solid currentColor;
+    transform: rotate(45deg);
+    transform-origin: 50% 50%;
+    transition: transform .18s ease;
+}
+.collection-child-card[open] .collection-child-chevron::before,
+.collection-repository-files[open] .collection-child-chevron::before {
+    transform: rotate(225deg);
 }

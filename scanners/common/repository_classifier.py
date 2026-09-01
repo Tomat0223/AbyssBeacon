@@ -5,9 +5,22 @@ from collections import defaultdict
 _WEIGHT_EXTENSIONS = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf")
 _CONFIG_FILES = {"model_index.json", "config.json", "adapter_config.json", "adapter_model.safetensors"}
 
-# Increment this whenever stored repository classification needs to be rebuilt.
-# Update Library uses this value to detect older HF/ModelScope snapshots.
-REPOSITORY_CLASSIFIER_VERSION = 4
+# Global newest classifier revision plus per-source migration targets.
+# Hugging Face v6 adds nested archive and independent-safetensor Collection detection.
+# ModelScope stays on v4 until its training-series grouping gets its own follow-up
+# pass, avoiding an unnecessary ModelScope refresh for an HF-only rule change.
+REPOSITORY_CLASSIFIER_VERSION = 6
+REPOSITORY_CLASSIFIER_SOURCE_VERSIONS = {
+    "huggingface": 6,
+    "modelscope": 4,
+}
+
+
+def repository_classifier_target_version(source=None):
+    value = str(source or "").strip().casefold()
+    if value:
+        return int(REPOSITORY_CLASSIFIER_SOURCE_VERSIONS.get(value, REPOSITORY_CLASSIFIER_VERSION))
+    return int(REPOSITORY_CLASSIFIER_VERSION)
 
 
 def _text(value):
@@ -98,6 +111,211 @@ def _component_full_model_evidence(paths):
         "tokenizer": any("/tokenizer" in f"/{p}" or p.startswith("tokenizer") for p in lowered),
     }
     return sum(1 for value in components.values() if value), components
+
+
+def _archive_branch(path):
+    """Return the logical branch for repository-as-archive layouts.
+
+    CivitAI-style mirrors commonly use <model_id>/<version_id>/<file>.  Other
+    archive repositories may place models under a generic loras/models folder.
+    This only returns a branch for nested paths; ordinary root model files never
+    participate.
+    """
+    value = _file_path(path).replace("\\", "/").strip("/")
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return ""
+
+    generic_roots = {"models", "model", "loras", "lora", "adapters", "weights", "files", "archive", "backups"}
+    if parts[0].casefold() in generic_roots and len(parts) >= 3:
+        return "/".join(parts[:2])
+    return parts[0]
+
+
+def _detect_nested_archive_layout(files):
+    """Detect repositories that are really archives of many independent LoRAs.
+
+    This is intentionally structural rather than keyword based. Strong evidence
+    is either several CivitAI-style numeric model/version branches or several
+    nested branches that each contain a deployable safetensors plus their own
+    README/preview metadata. Standard Diffusers component folders do not match.
+    """
+    branches = defaultdict(lambda: {
+        "weights": [],
+        "small_weights": [],
+        "has_readme": False,
+        "has_media": False,
+        "numeric_version": False,
+    })
+
+    ignored_roots = {
+        "transformer", "unet", "vae", "text_encoder", "text_encoder_2",
+        "tokenizer", "tokenizer_2", "scheduler", "feature_extractor",
+    }
+
+    for item in files or []:
+        if not isinstance(item, dict):
+            continue
+        path = _file_path(item).replace("\\", "/").strip("/")
+        if not path or "/" not in path:
+            continue
+        parts = [part for part in path.split("/") if part]
+        if not parts or parts[0].casefold() in ignored_roots:
+            continue
+
+        branch = _archive_branch(path)
+        if not branch:
+            continue
+        lower = path.casefold()
+        name = parts[-1].casefold()
+        data = branches[branch]
+
+        if name in {"readme.md", "readme.txt"}:
+            data["has_readme"] = True
+        if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            data["has_media"] = True
+        if lower.endswith(".safetensors") and not any(marker in lower for marker in (
+            "/optimizer", "optimizer.", "training_state", "scheduler",
+            "/checkpoint-", "/checkpoints/", "global_step", "mp_rank", "zero_pp_rank"
+        )):
+            data["weights"].append(item)
+            if _file_size(item) == 0 or _file_size(item) < 1_500_000_000:
+                data["small_weights"].append(item)
+
+            # Very strong CivitAI mirror/archive shape: model-id/version-id/file.
+            if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                data["numeric_version"] = True
+
+    weight_branches = {key: value for key, value in branches.items() if value["weights"]}
+    numeric_branches = [key for key, value in weight_branches.items() if value["numeric_version"]]
+    manifested_small_branches = [
+        key for key, value in weight_branches.items()
+        if value["small_weights"] and (value["has_readme"] or value["has_media"])
+    ]
+    small_weight_branches = [key for key, value in weight_branches.items() if value["small_weights"]]
+
+    is_archive = False
+    reason = ""
+    if len(numeric_branches) >= 4:
+        is_archive = True
+        reason = f"{len(numeric_branches)} nested numeric model archive branches"
+    elif len(manifested_small_branches) >= 4 and len(small_weight_branches) >= 4:
+        is_archive = True
+        reason = f"{len(manifested_small_branches)} nested model branches with weights and per-model metadata"
+
+    return {
+        "is_archive": bool(is_archive),
+        "reason": reason,
+        "branch_count": len(weight_branches),
+        "branches": weight_branches,
+    }
+
+
+
+def _detect_independent_safetensor_bundle(files, has_model_index=False, component_count=0):
+    """Detect repositories containing many independently deployable safetensors.
+
+    This is the final structural Collection fallback for Hugging Face repositories
+    whose README/tags do not explain what the repository contains.  It deliberately
+    collapses shards, training snapshots, rank variants, and common quantization
+    variants before counting.  Standard Diffusers component folders are excluded.
+    """
+    ignored_component_roots = {
+        "transformer", "transformer_ref", "unet", "vae", "audio_vae",
+        "text_encoder", "text_encoder_2", "audio_text_encoder",
+        "tokenizer", "tokenizer_2", "scheduler", "audio_scheduler",
+        "processor", "feature_extractor",
+    }
+    ignored_training_markers = (
+        "/optimizer", "optimizer.", "training_state", "scheduler",
+        "/checkpoint-", "/checkpoints/", "global_step", "mp_rank", "zero_pp_rank",
+    )
+
+    grouped = defaultdict(list)
+    candidates = []
+
+    for item in files or []:
+        if not isinstance(item, dict):
+            continue
+        path = _file_path(item).replace("\\", "/").strip("/")
+        lower = path.casefold()
+        if not path or not lower.endswith(".safetensors"):
+            continue
+        if any(marker in lower for marker in ignored_training_markers):
+            continue
+
+        parts = [part for part in path.split("/") if part]
+        root = parts[0].casefold() if len(parts) > 1 else ""
+        # A normal Diffusers repository can contain many safetensor shards spread
+        # across component directories.  Those are one model, not a Collection.
+        if (has_model_index or component_count >= 2) and root in ignored_component_roots:
+            continue
+
+        name = parts[-1]
+        stem = re.sub(r"\.safetensors$", "", name, flags=re.I).strip()
+        # Collapse HF shard sets to a single logical artifact.
+        stem = re.sub(r"[-_.]?\d{4,6}-of-\d{4,6}$", "", stem, flags=re.I).strip("-_. ")
+
+        # Collapse explicit training/rank snapshots and common shorthand forms.
+        suffixes = (
+            r"(?:[-_. ](?:epoch|ep|step|steps|checkpoint|ckpt)[-_. ]?\d+)$",
+            r"(?:[-_. ](?:st)[-_. ]?\d+)$",
+            r"(?:[-_. ]r(?:ank)?[-_. ]?\d+)$",
+            r"(?:[-_. ](?:rank)[-_. ]?\d+)$",
+            r"(?:[-_. ]0\d{5,})$",
+        )
+        changed = True
+        while changed and stem:
+            changed = False
+            for pattern in suffixes:
+                updated = re.sub(pattern, "", stem, flags=re.I).strip("-_. ")
+                if updated != stem:
+                    stem = updated
+                    changed = True
+
+        # Collapse common precision/quantization packaging variants only when they
+        # are terminal decorations.  This prevents bf16/int8 copies of one model
+        # from manufacturing a Collection by themselves.
+        variant_suffixes = (
+            r"(?:[-_. ](?:fp32|fp16|bf16|fp8|fp4|int8|int4))$",
+            r"(?:[-_. ](?:q[248](?:[_-][a-z0-9]+)*))$",
+            r"(?:[-_. ](?:quant|quantized|convrot|simple|comfyui|comfy))$",
+        )
+        changed = True
+        while changed and stem:
+            changed = False
+            for pattern in variant_suffixes:
+                updated = re.sub(pattern, "", stem, flags=re.I).strip("-_. ")
+                if updated != stem:
+                    stem = updated
+                    changed = True
+
+        normalized = re.sub(r"[^a-z0-9]+", " ", stem.casefold()).strip()
+        if not normalized:
+            continue
+
+        # Preserve the first meaningful directory as identity for nested archives,
+        # except generic organizational folders where the filename is the model.
+        generic_roots = {
+            "models", "model", "loras", "lora", "adapters", "weights", "files",
+            "archive", "backups", "experimental", "depr", "deprecated", "embeddings",
+        }
+        branch = ""
+        if len(parts) > 1 and root not in generic_roots and root not in ignored_component_roots:
+            branch = re.sub(r"[^a-z0-9]+", " ", root).strip()
+
+        key = f"{branch}::{normalized}" if branch else normalized
+        grouped[key].append(path)
+        candidates.append(path)
+
+    families = list(grouped.keys())
+    return {
+        "is_collection": len(families) >= 5,
+        "family_count": len(families),
+        "families": families,
+        "candidate_count": len(candidates),
+        "groups": grouped,
+    }
 
 
 def classify_repository(raw):
@@ -198,6 +416,37 @@ def classify_repository(raw):
     if lora_named_weights:
         add("LoRA", min(70, 35 + len(lora_named_weights) * 5), "LoRA-named weight files present")
 
+    # Some backup/archive repositories intentionally omit Hugging Face YAML
+    # metadata and use human-readable model names that never contain "LoRA".
+    # If the repository README explicitly describes several LoRAs and the repo
+    # actually contains several deployable safetensors files, treat that prose
+    # as strong source evidence. Requiring plural/bundle language plus multiple
+    # weights keeps a checkpoint README that merely mentions LoRA compatibility
+    # from turning into a Collection.
+    metadata_light_safetensors = [
+        path for path in paths
+        if path.casefold().endswith(".safetensors")
+        and not any(marker in path.casefold().replace("\\", "/") for marker in (
+            "/optimizer", "optimizer.", "training_state", "scheduler",
+            "/checkpoint-", "/checkpoints/", "global_step", "mp_rank", "zero_pp_rank"
+        ))
+    ]
+    readme_describes_lora_bundle = bool(re.search(
+        r"\b(?:loras|lora\s+(?:files|models|collection|bundle|backup|archive))\b",
+        description,
+        flags=re.I,
+    ))
+    if len(metadata_light_safetensors) >= 4 and readme_describes_lora_bundle:
+        add("LoRA", 110, "README identifies a multi-LoRA repository")
+
+    # Some Hugging Face accounts use one repository as an archive of many
+    # independent LoRAs, commonly one nested folder per source model/version.
+    # These repositories may have no top-level model card at all, so detect the
+    # repeated nested artifact structure directly.
+    archive_layout = _detect_nested_archive_layout(files) if source == "huggingface" else {"is_archive": False}
+    if archive_layout.get("is_archive"):
+        add("LoRA", 145, archive_layout.get("reason") or "nested multi-model archive layout")
+
     # Full-model/checkpoint evidence should be structural. The word ckpt in a
     # training filename is deliberately only weak evidence below.
     component_count, components = _component_full_model_evidence(paths)
@@ -206,6 +455,10 @@ def classify_repository(raw):
     weight_files = [item for item in files if _file_path(item).casefold().endswith(_WEIGHT_EXTENSIONS)]
     large_weights = [item for item in weight_files if _file_size(item) >= 1_500_000_000]
     gguf_weights = [item for item in weight_files if _file_path(item).casefold().endswith(".gguf")]
+
+    independent_bundle = _detect_independent_safetensor_bundle(
+        files, has_model_index=has_model_index, component_count=component_count
+    ) if source == "huggingface" else {"is_collection": False, "family_count": 0, "families": []}
 
     if has_model_index and component_count >= 2:
         add("Checkpoint", 130, "model_index plus multi-component model structure")
@@ -217,6 +470,17 @@ def classify_repository(raw):
         add("Checkpoint", 80, "large primary weights plus config present")
     if large_weights and len(weight_files) <= 4 and not scores["LoRA"]:
         add("Checkpoint", 60, "small set of very large model weight files")
+
+    # Final structural fallback: after collapsing shards, steps, ranks, and
+    # quantization variants, five or more independent safetensor artifacts are
+    # enough to call the repository a Collection even when metadata is sparse or
+    # gated.  This does not guess that the artifacts are LoRAs unless stronger
+    # LoRA evidence already exists.
+    independent_bundle_collection = bool(independent_bundle.get("is_collection"))
+    if independent_bundle_collection:
+        reasons["Collection"].append(
+            f"{int(independent_bundle.get('family_count') or 0)} independent safetensor artifacts"
+        )
 
     # Weak naming hints. These can break ties, but can never overpower strong
     # source/file evidence. In particular ckpt500 must not turn a LoRA repo into
@@ -296,6 +560,10 @@ def classify_repository(raw):
     # from unrelated training snapshots must not overturn it.
     if scores["LoRA"] >= 100 and scores["LoRA"] >= scores["Checkpoint"] - 20:
         primary = "LoRA"
+    if archive_layout.get("is_archive"):
+        # Archive-layout evidence is stronger than incidental workflow JSON or
+        # root support files. The repository container represents many models.
+        primary = "LoRA"
 
     detected = [kind for kind, score in ranked if score >= 45]
     if primary not in detected and primary != "Other":
@@ -304,21 +572,36 @@ def classify_repository(raw):
     container = "single"
     collection_type = ""
     collection_shape = ""
-    if primary == "LoRA" and (len(families) > 1 or single_family_training_series):
+    if primary == "LoRA" and (len(families) > 1 or single_family_training_series or archive_layout.get("is_archive")):
         container = "collection"
         collection_type = "LoRA"
-        collection_shape = "training_series" if single_family_training_series and len(families) == 1 else "multi_family"
+        if archive_layout.get("is_archive"):
+            collection_shape = "archive_repository"
+        else:
+            collection_shape = "training_series" if single_family_training_series and len(families) == 1 else "multi_family"
+        display_type = "Collection"
+    elif independent_bundle_collection:
+        container = "collection"
+        # Sparse/gated repositories often expose their files but not enough card
+        # metadata to safely claim LoRA vs checkpoint.  Keep the UI truthful.
+        collection_type = "LoRA" if scores["LoRA"] >= 100 else "Model"
+        collection_shape = "independent_artifacts"
         display_type = "Collection"
     else:
         display_type = primary
 
     return {
-        "version": REPOSITORY_CLASSIFIER_VERSION,
+        "version": repository_classifier_target_version(source),
         "display_type": display_type,
         "primary_artifact_type": primary,
         "container": container,
         "collection_type": collection_type,
         "collection_shape": collection_shape,
+        "archive_repository": bool(archive_layout.get("is_archive")),
+        "archive_branch_count": int(archive_layout.get("branch_count") or 0),
+        "independent_safetensor_collection": bool(independent_bundle_collection),
+        "independent_safetensor_family_count": int(independent_bundle.get("family_count") or 0),
+        "independent_safetensor_families": list(independent_bundle.get("families") or [])[:40],
         "single_family_training_series": bool(single_family_training_series),
         "single_family_name": single_family_name,
         "detected_types": detected,
@@ -477,6 +760,7 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
     """
     collection_type = str(collection_type or "LoRA").strip() or "LoRA"
     grouped = {}
+    archive_layout = _detect_nested_archive_layout(files) if collection_type.casefold() == "lora" else {"is_archive": False}
 
     for index, item in enumerate(files or []):
         if not isinstance(item, dict):
@@ -492,8 +776,15 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
             continue
 
         if collection_type.casefold() == "lora":
-            key = _normalize_lora_family(path)
-            display = _display_lora_family(path)
+            archive_branch = _archive_branch(path) if archive_layout.get("is_archive") else ""
+            if archive_branch and archive_branch in (archive_layout.get("branches") or {}):
+                # Keep independent archived source models separate even when
+                # several branches use generic filenames such as model.safetensors.
+                key = f"archive {archive_branch.casefold()}"
+                display = _display_lora_family(path)
+            else:
+                key = _normalize_lora_family(path)
+                display = _display_lora_family(path)
         else:
             display = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
             key = re.sub(r"[^a-z0-9]+", " ", display.casefold()).strip()
@@ -546,10 +837,10 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
     groups.sort(key=lambda group: str(group.get("name") or "").casefold())
     return groups
 
-def needs_repository_classification_refresh(card_data, minimum_version=None):
-    """Return True when a stored HF/ModelScope snapshot predates this classifier."""
+def needs_repository_classification_refresh(card_data, minimum_version=None, source=None):
+    """Return True when a stored repository snapshot predates its source target."""
     if minimum_version is None:
-        minimum_version = REPOSITORY_CLASSIFIER_VERSION
+        minimum_version = repository_classifier_target_version(source)
 
     value = card_data
     if isinstance(value, str):

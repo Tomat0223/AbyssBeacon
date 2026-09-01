@@ -1089,8 +1089,14 @@ _IMAGE_DOWNLOAD_EXTENSIONS = (
 )
 
 
-def _download_file_sort_key(file_data):
-    """Put useful model artifacts first and repository support files last."""
+def _download_file_sort_key(file_data, workflow_mode=False):
+    """Put useful model artifacts first and repository support files last.
+
+    Workflow cards are the one intentional exception to the normal model-weight
+    ordering: their user-facing artifact is the ComfyUI/workflow JSON, so JSON
+    files sort ahead of weights when the surrounding model is classified as a
+    Workflow.
+    """
     if not isinstance(file_data, dict):
         return (999, "")
 
@@ -1101,6 +1107,8 @@ def _download_file_sort_key(file_data):
 
     if file_data.get("_download_directory"):
         priority = 900
+    elif workflow_mode and ext == ".json":
+        priority = -10
     elif ext == ".safetensors":
         priority = 0
     elif ext == ".gguf":
@@ -1292,6 +1300,7 @@ def _model_version_share_url(source, source_url, version):
 def _source_version_groups(src):
     """Group one source snapshot's flat file list back into model versions."""
     files = src.get("files") or []
+    workflow_mode = str(src.get("model_type") or "").strip().casefold() == "workflow"
     card = src.get("card_data") or {}
     versions_meta = card.get("versions") or [] if isinstance(card, dict) else []
     if not isinstance(versions_meta, list):
@@ -1374,12 +1383,33 @@ def _source_version_groups(src):
             ):
                 safetensors_files.append(file_data)
 
-        if safetensors_files:
+        workflow_json_files = []
+        if workflow_mode:
+            for file_data in group_files:
+                path = str(
+                    file_data.get("path")
+                    or file_data.get("name")
+                    or ""
+                ).replace("\\", "/")
+                if (
+                    Path(path.rsplit("/", 1)[-1]).suffix.casefold() == ".json"
+                    and not file_data.get("_download_directory")
+                ):
+                    workflow_json_files.append(file_data)
+
+        if workflow_json_files:
+            # A Workflow's JSON is the usable artifact. Keep model weights and
+            # support data available behind Show additional files, but make the
+            # workflow itself the compact/default download choice on every source.
+            workflow_ids = {id(file_data) for file_data in workflow_json_files}
+            for file_data in group_files:
+                file_data["_download_primary"] = id(file_data) in workflow_ids
+        elif safetensors_files:
             safetensors_ids = {id(file_data) for file_data in safetensors_files}
             for file_data in group_files:
                 file_data["_download_primary"] = id(file_data) in safetensors_ids
 
-        group["files"].sort(key=_download_file_sort_key)
+        group["files"].sort(key=lambda item: _download_file_sort_key(item, workflow_mode=workflow_mode))
         group["access_status"] = _version_access_state(
             group,
             src.get("access_status"),
@@ -2642,10 +2672,20 @@ def refresh_download_source(model_id, source, _batch=False):
             """Re-run HF/ModelScope repository classification during explicit reload."""
             from scanners.common.repository_classifier import classify_repository, synthesize_collection_title, humanize_collection_family_name
 
+            classification_details = dict(details_payload) if isinstance(details_payload, dict) else {}
+            # Explicit source reloads normally receive API JSON but not README
+            # text. Preserve the model-card prose AbyssBeacon already has so
+            # metadata-light repositories can still be classified correctly.
+            if snapshot.get("description") and not any(
+                classification_details.get(key)
+                for key in ("readme", "README", "Readme", "description", "Description", "ModelDescription", "model_description")
+            ):
+                classification_details["description"] = snapshot.get("description")
+
             classification = classify_repository({
                 "source": source_key,
                 "model_id": model_key,
-                "details": details_payload if isinstance(details_payload, dict) else {},
+                "details": classification_details,
                 "files": file_items if isinstance(file_items, list) else [],
                 "tags": tags_value or [],
                 "library": library_value or "",
@@ -2681,7 +2721,8 @@ def refresh_download_source(model_id, source, _batch=False):
             ]
             if classification.get("container") == "collection":
                 primary = str(classification.get("primary_artifact_type") or "").strip()
-                label = f"{primary} Collection" if primary else "Collection"
+                collection_kind = str(classification.get("collection_type") or primary or "").strip()
+                label = f"{collection_kind} Collection" if collection_kind else "Collection"
                 display_tags.insert(0, label)
                 if classification.get("collection_shape") == "training_series":
                     family_name = str(classification.get("single_family_name") or "").strip()
@@ -2690,7 +2731,7 @@ def refresh_download_source(model_id, source, _batch=False):
                     snapshot["display_name"] = synthesize_collection_title(
                         snapshot.get("author"),
                         snapshot.get("architecture"),
-                        primary,
+                        collection_kind,
                         model_key.rsplit("/", 1)[-1],
                     )
             snapshot["display_tags"] = display_tags[:5]
@@ -2833,40 +2874,31 @@ def refresh_download_source(model_id, source, _batch=False):
                 details = {}
 
             gated = bool(details.get("gated"))
+            previous_card_data = snapshot.get("card_data") or {}
             card_data = details.get("cardData", {}) or {}
             if not isinstance(card_data, dict):
                 card_data = {}
             card_data["gated"] = gated
+            cached_readme_media = huggingface_scanner.stored_readme_media(previous_card_data)
 
-            files = []
-            for sibling in details.get("siblings", []) or []:
-                if not isinstance(sibling, dict):
-                    continue
-                filename = str(sibling.get("rfilename") or "").strip()
-                if not filename:
-                    continue
-
-                lower_name = filename.lower()
-                lfs = sibling.get("lfs", {}) or {}
-                size = sibling.get("size", 0) or lfs.get("size", 0) or 0
-                primary = lower_name.endswith((
-                    ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"
-                ))
-                encoded_path = quote(filename, safe="/")
-                resolve_url = f"https://huggingface.co/{model_key}/resolve/main/{encoded_path}"
-
-                files.append({
-                    "name": filename.split("/")[-1],
-                    "path": filename,
-                    "size": size,
-                    "size_bytes": size,
-                    "sha256": lfs.get("sha256", ""),
-                    "is_lfs": bool(lfs),
-                    "revision": details.get("sha", "") or "main",
-                    "download_url": f"{resolve_url}?download=true",
-                    "media_url": resolve_url,
-                    "primary": primary,
-                })
+            # Reload Model/Collection is an explicit refresh, so always rebuild
+            # the complete recursive repository inventory. This guarantees that
+            # mixed repositories with valid root files plus deeply nested models
+            # cannot keep an accidentally shallow snapshot.
+            files, hf_inventory_complete, hf_inventory_method = (
+                huggingface_scanner.repository_files_with_status(
+                    model_key,
+                    details,
+                    force_recursive=True,
+                )
+            )
+            card_data = huggingface_scanner.repository_inventory_marker(
+                card_data,
+                complete=hf_inventory_complete,
+                revision=str(details.get("sha") or ""),
+                method=hf_inventory_method,
+                file_count=len(files),
+            )
 
             hf_access_granted = False
             hf_access_checked = False
@@ -2918,9 +2950,42 @@ def refresh_download_source(model_id, source, _batch=False):
                 snapshot["sha"] = str(details.get("sha"))
             if details.get("lastModified"):
                 snapshot["updated"] = str(details.get("lastModified"))
+
+            # A manual reload is authoritative for the model card too. Fetch the
+            # raw README every time so description/classification and README-only
+            # image/video embeds refresh together. If Hugging Face temporarily
+            # refuses the README, preserve the previously cached embedded media.
+            readme_text = ""
+            readme_loaded = False
+            try:
+                readme_response = huggingface_scanner.get_with_backoff(
+                    huggingface_scanner.session,
+                    f"https://huggingface.co/{model_key}/raw/main/README.md",
+                    provider="Hugging Face",
+                    label=f"reload README {model_key}",
+                    timeout=10,
+                )
+                if readme_response.status_code == 200:
+                    readme_text = str(readme_response.text or "")
+                    details["readme"] = readme_text
+                    readme_loaded = True
+            except Exception:
+                readme_text = ""
+
+            if not readme_loaded and str(snapshot.get("description") or "").strip():
+                details["readme"] = str(snapshot.get("description") or "")
+
             description = metadata.extract_description(details)
             if description:
                 snapshot["description"] = str(description)
+
+            readme_media_items = (
+                huggingface_scanner.extract_readme_media(readme_text, model_key)
+                if readme_loaded
+                else cached_readme_media
+            )
+            card_data = huggingface_scanner.readme_media_marker(card_data, readme_media_items)
+            snapshot["card_data"] = card_data
 
             apply_repository_classification(
                 "huggingface",
@@ -2942,12 +3007,16 @@ def refresh_download_source(model_id, source, _batch=False):
             # empty until another page/load path repopulates it.
             try:
                 from scanners.common import media as common_media
-                media_data = common_media.extract_media(
+                repository_media_data = common_media.extract_media(
                     files,
                     f"https://huggingface.co/{model_key}/resolve/main",
                 )
-                refreshed_media_items = list(media_data.get("media") or [])
-                refreshed_media_fallback = str(media_data.get("image") or "")
+                refreshed_media_items = huggingface_scanner.merge_media_items(
+                    repository_media_data.get("media") or [],
+                    readme_media_items,
+                )
+                refreshed_media_summary = huggingface_scanner.media_summary(refreshed_media_items)
+                refreshed_media_fallback = str(refreshed_media_summary.get("image") or "")
             except Exception:
                 refreshed_media_items = None
                 refreshed_media_fallback = ""
@@ -3671,11 +3740,18 @@ def tracked_source_download(model_id, source, file_index):
         if not target.startswith(("https://", "http://")):
             return "Direct download is unavailable for this source/file.", 502
         prefs = _download_sidecar_preferences(load_settings().get("preferences", {}))
+        # Collection pages expose ancillary repository assets (images, JSON,
+        # README files, etc.) as source-file downloads too. Those should open
+        # through the browser even when Local Installer is the user's default;
+        # they are not model weights and must not be routed into ComfyUI.
+        force_browser_download = str(request.args.get("browser") or "").strip().lower() in {"1", "true", "yes", "on"}
+        suppress_download_tracking = str(request.args.get("track") or "").strip().lower() in {"0", "false", "no", "off"}
+        track_this_download = prefs.get("track_downloads", True) is not False and not suppress_download_tracking
         fingerprint = _download_file_fingerprint(model, file_data)
         source_file_id = file_data.get("model_file_id") or file_data.get("id") or file_data.get("file_id") or ""
 
         download_job_id = None
-        if str(prefs.get("download_behavior") or "browser").lower() == "local":
+        if not force_browser_download and str(prefs.get("download_behavior") or "browser").lower() == "local":
             _job_filename = str(file_data.get("name") or file_data.get("path") or "Model file").split("/")[-1]
             _job_model_name = str(model.get("display_name") or model.get("name") or _job_filename or "Model")
             try:
@@ -3767,7 +3843,7 @@ def tracked_source_download(model_id, source, file_index):
                 )
                 raise
             active_downloads.complete(download_job_id)
-            if prefs.get("track_downloads", True) is not False:
+            if track_this_download:
                 database.record_download(model_id, source_name, model.get("model_key"), source_file_id, _download_file_key(file_data), result.get("filename") or file_data.get("name") or file_data.get("path") or "", _download_record_sha(model, file_data), model.get("updated") or "", fingerprint, file_data.get("version_id") or "", file_data.get("version") or "")
             database.record_installed_file(
                 model_id, source_name, model.get("model_key"), source_file_id,
@@ -3776,7 +3852,7 @@ def tracked_source_download(model_id, source, file_index):
             )
             return {"success": True, "installed": True, **result}
 
-        if prefs.get("track_downloads", True) is not False:
+        if track_this_download:
             database.record_download(model_id, source_name, model.get("model_key"), source_file_id, _download_file_key(file_data), file_data.get("name") or file_data.get("path") or "", _download_record_sha(model, file_data), model.get("updated") or "", fingerprint, file_data.get("version_id") or "", file_data.get("version") or "")
         return redirect(target, code=302)
     except PermissionError as exc:
@@ -5538,6 +5614,7 @@ def _prepare_feed_chunk_models(
                     humanize_collection_family_name,
                 )
                 primary = str(repository_classification.get("primary_artifact_type") or "").strip()
+                collection_kind = str(repository_classification.get("collection_type") or primary or "").strip()
                 if repository_classification.get("collection_shape") == "training_series":
                     family_name = str(repository_classification.get("single_family_name") or "").strip()
                     collection_title = humanize_collection_family_name(family_name)
@@ -5548,7 +5625,7 @@ def _prepare_feed_chunk_models(
                     collection_title = synthesize_collection_title(
                         source_author,
                         source_architecture,
-                        primary,
+                        collection_kind,
                         source_model_key.rsplit("/", 1)[-1],
                     )
                 if collection_title:
@@ -6800,6 +6877,180 @@ def start_discovery_scan():
 
 
 
+def _collection_asset_stem(path):
+    """Return a normalized repository-relative stem for preview/file matching."""
+    value = str(path or "").strip().replace("\\", "/")
+    if not value:
+        return ""
+    value = value.split("?", 1)[0].split("#", 1)[0]
+    value = re.sub(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf|png|jpe?g|webp)$", "", value, flags=re.I)
+    return re.sub(r"/+", "/", value).strip("/").casefold()
+
+
+def _link_collection_media_to_files(groups, media):
+    """Attach previews to model files only when repository names match safely.
+
+    Exact same-stem matches are preferred (foo.png -> foo.safetensors). A
+    basename-only match is accepted only when that basename identifies one
+    model file in the whole Collection. We also support a conservative numbered
+    preview suffix (foo 1.png -> foo.safetensors), which is common in HF backup
+    repositories. Nothing fuzzy is guessed beyond those cases.
+    """
+    from collections import defaultdict
+
+    exact = defaultdict(list)
+    basenames = defaultdict(list)
+    refs = []
+
+    for group in groups or []:
+        family_id = str(group.get("family_id") or "")
+        group_dom_id = f"collection-family-{family_id}" if family_id else ""
+        group["dom_id"] = group_dom_id
+        for file_data in group.get("files", []):
+            try:
+                file_index = int(file_data.get("_download_index", 0))
+            except (TypeError, ValueError):
+                file_index = 0
+            file_dom_id = f"collection-file-{file_index}"
+            file_data["dom_id"] = file_dom_id
+            file_data["preview_refs"] = []
+            path = str(file_data.get("path") or file_data.get("name") or "").strip()
+            stem = _collection_asset_stem(path)
+            if not stem:
+                continue
+            ref = {
+                "group": group,
+                "file": file_data,
+                "family_id": family_id,
+                "family_dom_id": group_dom_id,
+                "file_dom_id": file_dom_id,
+                "file_name": str(file_data.get("name") or path.rsplit("/", 1)[-1]),
+                "stem": stem,
+                "basename": stem.rsplit("/", 1)[-1],
+            }
+            refs.append(ref)
+            exact[stem].append(ref)
+            basenames[ref["basename"]].append(ref)
+
+    def unique_ref(candidates):
+        return candidates[0] if len(candidates) == 1 else None
+
+    for media_index, item in enumerate(media or []):
+        item["media_index"] = media_index
+        media_path = str(item.get("path") or item.get("filename") or "").strip()
+        stem = _collection_asset_stem(media_path)
+        if not stem:
+            continue
+
+        match = unique_ref(exact.get(stem, []))
+        if match is None:
+            match = unique_ref(basenames.get(stem.rsplit("/", 1)[-1], []))
+
+        # Some repositories keep a second preview as "model 1.png" beside
+        # "model.safetensors". Only strip a trailing standalone number and only
+        # accept the result when it resolves to exactly one file.
+        if match is None:
+            numbered = re.sub(r"(?:[-_. ]+)\d+$", "", stem).strip("-_. ")
+            if numbered and numbered != stem:
+                match = unique_ref(exact.get(numbered, []))
+                if match is None:
+                    match = unique_ref(basenames.get(numbered.rsplit("/", 1)[-1], []))
+
+        if match is None:
+            continue
+
+        item["_collection_family_id"] = match["family_id"]
+        item["_collection_family_dom_id"] = match["family_dom_id"]
+        item["_collection_file_dom_id"] = match["file_dom_id"]
+        item["_collection_file_name"] = match["file_name"]
+        match["file"]["preview_refs"].append({
+            "media_index": media_index,
+            "thumbnail": item.get("thumbnail") or item.get("url") or "",
+            "filename": item.get("filename") or "Preview",
+        })
+
+
+
+@app.route("/collection/<int:model_id>/hf-preview/<path:media_path>")
+def collection_hf_preview_proxy(model_id, media_path):
+    """Proxy one Hugging Face Collection preview through AbyssBeacon auth.
+
+    Gated HF repositories can expose their file inventory while requiring the
+    configured token for the image bytes themselves. The normal browser <img>
+    request cannot attach AbyssBeacon's token, so gated Collection previews use
+    this narrow same-origin proxy instead. Public Collection media is left on
+    its normal direct URL path.
+    """
+    raw_path = str(media_path or "").replace("\\", "/").strip("/")
+    if not raw_path or any(part in {"", ".", ".."} for part in raw_path.split("/")):
+        return Response(status=404)
+
+    conn = database.connect()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM models WHERE id=?", (int(model_id),)).fetchone()
+    conn.close()
+    if row is None:
+        return Response(status=404)
+
+    canonical = dict(row)
+    model_key = ""
+    source_url = ""
+
+    for link in database.get_model_sources(model_id):
+        snapshot = _decode_source_snapshot(dict(link), canonical)
+        if str(snapshot.get("source") or "").strip().lower() != "huggingface":
+            continue
+        model_key = str(snapshot.get("model_key") or "").strip()
+        source_url = str(snapshot.get("url") or "").strip()
+        if model_key:
+            break
+
+    if not model_key and str(canonical.get("source") or "").strip().lower() == "huggingface":
+        model_key = str(canonical.get("model_key") or "").strip()
+        source_url = str(canonical.get("url") or "").strip()
+
+    if not model_key:
+        return Response(status=404)
+
+    encoded_path = quote(raw_path, safe="/")
+    upstream_url = f"https://huggingface.co/{model_key}/resolve/main/{encoded_path}"
+    headers = _local_download_headers("huggingface", source_url)
+    headers.setdefault("User-Agent", "AbyssBeacon/1.0")
+    headers.setdefault("Accept", "image/*,*/*;q=0.8")
+
+    upstream = None
+    try:
+        upstream = requests.get(
+            upstream_url,
+            headers=headers,
+            stream=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        if upstream.status_code not in (200, 206):
+            status = upstream.status_code
+            upstream.close()
+            return Response(status=status)
+
+        response = Response(
+            upstream.iter_content(chunk_size=64 * 1024),
+            status=upstream.status_code,
+            content_type=upstream.headers.get("Content-Type") or "application/octet-stream",
+        )
+        response.headers["Cache-Control"] = "private, max-age=300"
+        if upstream.headers.get("ETag"):
+            response.headers["ETag"] = upstream.headers["ETag"]
+        response.call_on_close(upstream.close)
+        return response
+    except requests.RequestException:
+        if upstream is not None:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+        return Response(status=502)
+
+
 @app.route("/collection/<int:model_id>")
 def collection_page(model_id):
     """Render a repository Collection as grouped virtual child artifacts."""
@@ -6863,7 +7114,11 @@ def collection_page(model_id):
     if not isinstance(files, list):
         files = []
 
-    collection_type = str(collection_classification.get("primary_artifact_type") or "LoRA").strip() or "LoRA"
+    collection_type = str(
+        collection_classification.get("collection_type")
+        or collection_classification.get("primary_artifact_type")
+        or "Model"
+    ).strip() or "Model"
     model_key = str(collection_snapshot.get("model_key") or canonical.get("model_key") or "").strip()
     groups = build_collection_groups(
         files, collection_type, source=source, model_key=model_key
@@ -6883,6 +7138,39 @@ def collection_page(model_id):
                 file_index=int(file_data.get("_download_index", 0)),
             )
 
+    # Preserve access to the complete repository, not just the model weights
+    # promoted into Collection families. This restores preview/config/README
+    # and miscellaneous source files without cluttering the family cards.
+    grouped_file_indexes = {
+        int(file_data.get("_download_index", -1))
+        for group in groups
+        for file_data in group.get("files", [])
+        if int(file_data.get("_download_index", -1)) >= 0
+    }
+    repository_files = []
+    for file_index, file_data in enumerate(files):
+        if file_index in grouped_file_indexes or not isinstance(file_data, dict):
+            continue
+        path = str(file_data.get("path") or file_data.get("name") or "").strip()
+        if not path:
+            continue
+        item = dict(file_data)
+        item["_download_index"] = file_index
+        item["path"] = path
+        item["display_name"] = str(file_data.get("name") or path.rsplit("/", 1)[-1] or path)
+        item["size_display"] = _format_download_size(file_data, source)
+        suffix = path.rsplit("/", 1)[-1].rsplit(".", 1)
+        item["file_type"] = suffix[-1].upper() if len(suffix) > 1 else "FILE"
+        item["download_url"] = url_for(
+            "tracked_source_download",
+            model_id=model_id,
+            source=source,
+            file_index=file_index,
+            browser=1,
+            track=0,
+        )
+        repository_files.append(item)
+
     author = str(collection_snapshot.get("author") or canonical.get("author") or "").strip()
     architecture = str(collection_snapshot.get("architecture") or canonical.get("architecture") or "").strip()
     repo_name = model_key.rsplit("/", 1)[-1]
@@ -6898,6 +7186,34 @@ def collection_page(model_id):
     preferences = source_settings.get("preferences", {}) if isinstance(source_settings.get("preferences", {}), dict) else {}
     card_colors = preferences.get("source_card_colors", {}) if isinstance(preferences.get("source_card_colors", {}), dict) else {}
     source_color = card_colors.get(source, source_config.get("color", "#00eaff"))
+
+    # Collections use the same source-level access state as normal model cards.
+    # Keep download links active for gated Hugging Face repositories because an
+    # authenticated local account may still have access; this status is only
+    # presentation/context for the Collection page.
+    collection_card_data = collection_snapshot.get("card_data")
+    if isinstance(collection_card_data, str):
+        try:
+            collection_card_data = json.loads(collection_card_data or "{}")
+        except Exception:
+            collection_card_data = {}
+    if not isinstance(collection_card_data, dict):
+        collection_card_data = {}
+
+    collection_access_status = _source_access_status(
+        source,
+        gated=bool(collection_snapshot.get("gated") or canonical.get("gated")),
+        card_data=collection_card_data,
+    )
+
+    # HF's API-level gated flag remains true even after an approved token gains
+    # access. In that state downloads work through AbyssBeacon, but direct <img>
+    # requests still cannot attach the configured token. Route only those gated
+    # repository previews through the authenticated local proxy.
+    proxy_hf_collection_media = bool(
+        source == "huggingface"
+        and (collection_card_data.get("gated") or collection_access_status == "gated")
+    )
 
     media = []
     seen_media_urls = set()
@@ -6991,8 +7307,21 @@ def collection_page(model_id):
                     "repository": model_key,
                 },
             })
-        if len(media) >= 12:
-            break
+
+    if proxy_hf_collection_media:
+        for item in media:
+            preview_path = str(item.get("path") or item.get("filename") or "").strip().replace("\\", "/")
+            if not preview_path:
+                continue
+            proxy_url = url_for(
+                "collection_hf_preview_proxy",
+                model_id=model_id,
+                media_path=preview_path,
+            )
+            item["url"] = proxy_url
+            item["thumbnail"] = proxy_url
+
+    _link_collection_media_to_files(groups, media)
 
     database.mark_viewed(model_id)
 
@@ -7008,10 +7337,17 @@ def collection_page(model_id):
         source_url=source_url,
         reload_url=url_for("refresh_download_sources", model_id=model_id),
         source_color=source_color,
+        collection_access_status=collection_access_status,
         repository_file_count=len(files),
         family_count=len(groups),
         groups=groups,
-        media=media[:12],
+        repository_files=repository_files,
+        repository_extra_file_count=len(repository_files),
+        media=media,
+        media_page=media[:10],
+        media_page_size=10,
+        media_page_count=max(1, (len(media) + 9) // 10),
+        media_count=len(media),
         classification=collection_classification,
         hide_scan=True,
     )

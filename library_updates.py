@@ -12,9 +12,12 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 import database
+from scanners.common import metadata as source_metadata
 from scanners.common.repository_classifier import (
     REPOSITORY_CLASSIFIER_VERSION,
+    REPOSITORY_CLASSIFIER_SOURCE_VERSIONS,
     classify_repository,
+    repository_classifier_target_version,
     humanize_collection_family_name,
     synthesize_collection_title,
 )
@@ -105,12 +108,59 @@ def _repository_metadata_version(snapshot):
     return max(_classification_version(snapshot), _checked_resolution_version(snapshot))
 
 
+def _huggingface_library_refresh_version(snapshot):
+    card = _json_object(snapshot.get("card_data"))
+    marker = card.get("hf_library_refresh")
+    if not isinstance(marker, dict):
+        return 0
+    try:
+        version = int(marker.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+    status = str(marker.get("status") or "").strip().casefold()
+    if status not in {"complete", "checked", "source_unavailable"}:
+        return 0
+    return version
+
+
+def _huggingface_library_refresh_target():
+    # Kept source-specific so media/inventory maintenance does not force a fake
+    # repository-classifier version bump. The scanner owns the canonical value.
+    try:
+        from scanners import huggingface as huggingface_scanner
+        return int(huggingface_scanner.HF_LIBRARY_REFRESH_VERSION)
+    except Exception:
+        return 1
+
+
+def _repository_update_current(snapshot, source):
+    source = str(source or "").strip().casefold()
+    if _repository_metadata_version(snapshot) < repository_classifier_target_version(source):
+        return False
+    if source == "huggingface":
+        return _huggingface_library_refresh_version(snapshot) >= _huggingface_library_refresh_target()
+    return True
+
+
+def _mark_huggingface_library_refresh(snapshot, *, status="complete", reason="", inventory_complete=True, readme_checked=True):
+    card = _json_object(snapshot.get("card_data"))
+    card["hf_library_refresh"] = {
+        "version": int(_huggingface_library_refresh_target()),
+        "status": str(status or "checked"),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "inventory_complete": bool(inventory_complete),
+        "readme_checked": bool(readme_checked),
+        "reason": str(reason or ""),
+    }
+    snapshot["card_data"] = card
+
+
 def _mark_checked_resolution(snapshot, source, model_key, reason, *, status="source_unavailable"):
     card = _json_object(snapshot.get("card_data"))
     checks = card.get("library_update_checks")
     checks = dict(checks) if isinstance(checks, dict) else {}
     checks["repository_classifier"] = {
-        "version": int(REPOSITORY_CLASSIFIER_VERSION),
+        "version": int(repository_classifier_target_version(source)),
         "status": str(status or "checked"),
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "source": str(source or ""),
@@ -207,11 +257,12 @@ def _compute_update_status():
     for row in rows:
         snapshot = _effective_snapshot(row)
         source = str(row["source"] or "").strip().lower()
-        if _repository_metadata_version(snapshot) >= REPOSITORY_CLASSIFIER_VERSION:
+        target_version = repository_classifier_target_version(source)
+        if _repository_update_current(snapshot, source):
             current += 1
             if (
-                _classification_version(snapshot) < REPOSITORY_CLASSIFIER_VERSION
-                and _checked_resolution_version(snapshot) >= REPOSITORY_CLASSIFIER_VERSION
+                _classification_version(snapshot) < target_version
+                and _checked_resolution_version(snapshot) >= target_version
             ):
                 checked_resolved += 1
                 if source in checked_counts:
@@ -231,6 +282,7 @@ def _compute_update_status():
         "current": current,
         "total_repository_snapshots": len(rows),
         "classifier_version": REPOSITORY_CLASSIFIER_VERSION,
+        "source_versions": dict(REPOSITORY_CLASSIFIER_SOURCE_VERSIONS),
         "sources": source_counts,
         "checked_resolved": checked_resolved,
         "checked_sources": checked_counts,
@@ -254,12 +306,60 @@ def get_update_status():
             "current": 0,
             "total_repository_snapshots": total,
             "classifier_version": REPOSITORY_CLASSIFIER_VERSION,
+            "source_versions": dict(REPOSITORY_CLASSIFIER_SOURCE_VERSIONS),
             "sources": {},
             "checked_resolved": 0,
             "checked_sources": {},
             "job": job,
         }
     return _compute_update_status()
+
+
+def _needs_huggingface_source_refresh(snapshot, source, classification, details_override=None):
+    """Return True when v5 needs one exact-repository HF metadata refresh.
+
+    Most repository upgrades can be completed entirely from saved files/tags.
+    Metadata-light Hugging Face archives are the exception: several independent
+    safetensors can look like an ordinary/unknown repository until README prose
+    identifies them as a LoRA bundle. Refresh only those ambiguous multi-weight
+    repositories, never the whole source.
+    """
+    if isinstance(details_override, dict) and details_override.get("_library_source_metadata_checked"):
+        return False
+    if str(source or "").strip().casefold() != "huggingface":
+        return False
+    if not isinstance(classification, dict) or classification.get("container") == "collection":
+        return False
+
+    files = _json_list(snapshot.get("files"))
+    deployable = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip().casefold().replace("\\", "/")
+        if not path.endswith(".safetensors"):
+            continue
+        if any(marker in path for marker in (
+            "/optimizer", "optimizer.", "training_state", "scheduler",
+            "/checkpoint-", "/checkpoints/", "global_step", "mp_rank", "zero_pp_rank",
+        )):
+            continue
+        deployable.append(path)
+    if len(deployable) < 4:
+        return False
+
+    primary = str(classification.get("primary_artifact_type") or "").strip().casefold()
+    existing_type = str(snapshot.get("model_type") or "").strip().casefold()
+    components = classification.get("component_evidence")
+    has_structural_full_model = isinstance(components, dict) and any(bool(value) for value in components.values())
+
+    # Unknown/misleading legacy rows are the main v5 target. Existing LoRA rows
+    # also get one source check when they contain many weights but failed to
+    # resolve into a Collection from saved metadata. Strong multi-component full
+    # models are left alone.
+    if has_structural_full_model:
+        return False
+    return primary == "other" or existing_type == "lora"
 
 
 def _apply_classification(snapshot, source, model_key, *, details_override=None, files_verified=False):
@@ -308,6 +408,9 @@ def _apply_classification(snapshot, source, model_key, *, details_override=None,
     })
     if not isinstance(classification, dict):
         return None, "repository classifier did not return a result"
+
+    if _needs_huggingface_source_refresh(snapshot, source, classification, details_override):
+        return None, "Hugging Face repository needs source metadata/README verification"
 
     classified_type = str(classification.get("display_type") or "").strip()
     if classified_type and classified_type != "Other":
@@ -367,7 +470,7 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
             huggingface_scanner.session,
             f"https://huggingface.co/api/models/{model_key}",
             provider="Hugging Face",
-            label=f"library update {model_key}",
+            label=f"library refresh {model_key}",
             params={"blobs": "true"},
             timeout=15,
         )
@@ -378,34 +481,14 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
         if not isinstance(details, dict):
             return None, False, "Hugging Face returned invalid repository metadata"
 
-        files = []
-        for sibling in details.get("siblings", []) or []:
-            if not isinstance(sibling, dict):
-                continue
-            filename = str(sibling.get("rfilename") or "").strip()
-            if not filename:
-                continue
-            lower_name = filename.casefold()
-            lfs = sibling.get("lfs", {}) or {}
-            size = sibling.get("size", 0) or lfs.get("size", 0) or 0
-            primary = lower_name.endswith((
-                ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"
-            ))
-            encoded_path = quote(filename, safe="/")
-            resolve_url = f"https://huggingface.co/{model_key}/resolve/main/{encoded_path}"
-            files.append({
-                "name": filename.split("/")[-1],
-                "path": filename,
-                "size": size,
-                "size_bytes": size,
-                "sha256": lfs.get("sha256", ""),
-                "is_lfs": bool(lfs),
-                "revision": details.get("sha", "") or "main",
-                "download_url": f"{resolve_url}?download=true",
-                "media_url": resolve_url,
-                "primary": primary,
-            })
-
+        revision = str(details.get("sha") or "main").strip() or "main"
+        files, inventory_complete, inventory_method = huggingface_scanner.repository_files_with_status(
+            model_key,
+            details,
+            force_recursive=True,
+        )
+        if not isinstance(files, list):
+            files = []
         snapshot["files"] = files
         snapshot["gated"] = int(bool(details.get("gated")))
         if details.get("sha"):
@@ -413,18 +496,84 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
         if details.get("lastModified"):
             snapshot["updated"] = str(details.get("lastModified"))
 
-        # Merge source card metadata without discarding AbyssBeacon-owned keys.
+        card = _json_object(snapshot.get("card_data"))
         source_card = details.get("cardData") or {}
         if isinstance(source_card, dict):
-            card = _json_object(snapshot.get("card_data"))
             for key, value in source_card.items():
                 if key not in card or card.get(key) in (None, "", [], {}):
                     card[key] = value
-            card["gated"] = bool(details.get("gated"))
-            snapshot["card_data"] = card
+        card["gated"] = bool(details.get("gated"))
+        card = huggingface_scanner.repository_inventory_marker(
+            card,
+            complete=inventory_complete,
+            revision=revision,
+            method=inventory_method,
+            file_count=len(files),
+        )
 
-        # A successful source response verifies the inventory even when the repo
-        # currently contains zero files, so it is safe to stamp classification.
+        readme_text = ""
+        readme_checked = False
+        readme_reason = ""
+        try:
+            readme_response = huggingface_scanner.get_with_backoff(
+                huggingface_scanner.session,
+                f"https://huggingface.co/{model_key}/raw/main/README.md",
+                provider="Hugging Face",
+                label=f"library refresh README {model_key}",
+                timeout=10,
+            )
+            readme_checked = True
+            if readme_response.status_code == 200:
+                readme_text = str(readme_response.text or "")
+                details["readme"] = readme_text
+            else:
+                readme_reason = f"README HTTP {readme_response.status_code}"
+        except Exception as exc:
+            readme_reason = f"README check failed: {type(exc).__name__}: {exc}"
+
+        description = source_metadata.extract_description(details)
+        if description:
+            snapshot["description"] = str(description)
+
+        repository_media_data = huggingface_scanner.media.extract_media(
+            files,
+            f"https://huggingface.co/{model_key}/resolve/main",
+        )
+        readme_media = (
+            huggingface_scanner.extract_readme_media(readme_text, model_key)
+            if readme_text
+            else []
+        )
+        card = huggingface_scanner.readme_media_marker(card, readme_media)
+        model_media = huggingface_scanner.merge_media_items(
+            repository_media_data.get("media") or [],
+            readme_media,
+        )
+        media_data = huggingface_scanner.media_summary(model_media)
+        snapshot["media"] = model_media
+        snapshot["image"] = media_data.get("image") or ""
+        snapshot["preview_count"] = int(media_data.get("preview_count") or 0)
+        snapshot["has_media"] = int(bool(media_data.get("has_media")))
+        snapshot["has_video"] = int(bool(media_data.get("has_video")))
+
+        refresh_status = "complete" if inventory_complete and readme_checked else "checked"
+        refresh_reason_parts = []
+        if not inventory_complete:
+            refresh_reason_parts.append("recursive inventory incomplete")
+        if readme_reason:
+            refresh_reason_parts.append(readme_reason)
+        card = huggingface_scanner.library_refresh_marker(
+            card,
+            status=refresh_status,
+            reason="; ".join(refresh_reason_parts),
+            inventory_complete=inventory_complete,
+            readme_checked=readme_checked,
+        )
+        snapshot["card_data"] = card
+        details["_library_source_metadata_checked"] = True
+        details["_library_inventory_complete"] = bool(inventory_complete)
+        details["_library_readme_checked"] = bool(readme_checked)
+
         return details, True, ""
 
     if source == "modelscope":
@@ -501,7 +650,11 @@ def _persist_snapshot_update(conn, row, snapshot):
             files=?,
             model_type=CASE WHEN ?<>'' THEN ? ELSE model_type END,
             display_name=CASE WHEN ? AND ?<>'' THEN ? ELSE display_name END,
-            display_tags=?
+            display_tags=?,
+            gated=?,
+            description=CASE WHEN ?<>'' THEN ? ELSE description END,
+            updated=CASE WHEN ?<>'' THEN ? ELSE updated END,
+            sha=CASE WHEN ?<>'' THEN ? ELSE sha END
         WHERE id=?
         """,
         (
@@ -513,9 +666,32 @@ def _persist_snapshot_update(conn, row, snapshot):
             display_name,
             display_name,
             display_tags,
+            int(bool(snapshot.get("gated", 0))),
+            str(snapshot.get("description") or ""),
+            str(snapshot.get("description") or ""),
+            str(snapshot.get("updated") or ""),
+            str(snapshot.get("updated") or ""),
+            str(snapshot.get("sha") or ""),
+            str(snapshot.get("sha") or ""),
             int(row["model_id"]),
         ),
     )
+
+
+def _refresh_huggingface_media(row, snapshot, model_key=""):
+    try:
+        media_items = _json_list(snapshot.get("media"))
+        database.refresh_canonical_model_media(
+            int(row["model_id"]),
+            "huggingface",
+            media_items,
+            fallback_image=str(snapshot.get("image") or ""),
+        )
+        return True
+    except Exception as media_exc:
+        print(f"  Hugging Face media refresh skipped [{model_key}]: {media_exc}")
+        return False
+
 
 def _set_job(**values):
     with _JOB_LOCK:
@@ -534,7 +710,8 @@ def _run_repository_update():
         pending_rows = []
         for row in rows:
             snapshot = _effective_snapshot(row)
-            if _repository_metadata_version(snapshot) < REPOSITORY_CLASSIFIER_VERSION:
+            source = str(row["source"] or "").strip().lower()
+            if not _repository_update_current(snapshot, source):
                 pending_rows.append((row, snapshot))
 
         _set_job(
@@ -542,7 +719,12 @@ def _run_repository_update():
             phase="saved_data", phase_current=0, phase_total=len(pending_rows),
         )
         print("\nLIBRARY UPDATE")
-        print(f"  Repository classifier target: v{REPOSITORY_CLASSIFIER_VERSION}")
+        print(
+            "  Repository metadata targets: "
+            f"Hugging Face v{repository_classifier_target_version('huggingface')} · "
+            f"ModelScope v{repository_classifier_target_version('modelscope')}"
+        )
+        print(f"  Hugging Face library inventory/media refresh: v{_huggingface_library_refresh_target()}")
         print(f"  Repository snapshots pending: {len(pending_rows)}")
 
         needs_source_refresh = []
@@ -555,9 +737,19 @@ def _run_repository_update():
             )
 
             try:
+                if (
+                    source == "huggingface"
+                    and _huggingface_library_refresh_version(snapshot) < _huggingface_library_refresh_target()
+                ):
+                    needs_source_refresh.append((row, snapshot))
+                    continue
+
                 classification, reason = _apply_classification(snapshot, source, model_key)
                 if classification is None:
-                    if reason == "missing stored repository file metadata":
+                    if reason in {
+                        "missing stored repository file metadata",
+                        "Hugging Face repository needs source metadata/README verification",
+                    }:
                         needs_source_refresh.append((row, snapshot))
                     else:
                         _mark_checked_resolution(
@@ -594,8 +786,8 @@ def _run_repository_update():
         if needs_source_refresh:
             legacy_count = len(needs_source_refresh)
             print(
-                f"  {legacy_count} legacy repositor{'y is' if legacy_count == 1 else 'ies are'} "
-                "missing file metadata; refreshing only those saved repositories..."
+                f"  {legacy_count} repositor{'y needs' if legacy_count == 1 else 'ies need'} "
+                "targeted source refresh; checking only repositories already saved in the library..."
             )
             _set_job(
                 phase="source_refresh", phase_current=0,
@@ -616,6 +808,14 @@ def _run_repository_update():
                             snapshot, source, model_key, reason,
                             status="source_unavailable",
                         )
+                        if source == "huggingface":
+                            _mark_huggingface_library_refresh(
+                                snapshot,
+                                status="source_unavailable",
+                                reason=reason,
+                                inventory_complete=False,
+                                readme_checked=False,
+                            )
                         _persist_snapshot_update(conn, row, snapshot)
                         conn.commit()
                         checked += 1
@@ -632,18 +832,34 @@ def _run_repository_update():
                             )
                             _persist_snapshot_update(conn, row, snapshot)
                             conn.commit()
+                            if source == "huggingface":
+                                _refresh_huggingface_media(row, snapshot, model_key)
                             checked += 1
                             _set_job(checked=checked, error=reason)
                         else:
+                            if source == "huggingface":
+                                # _hydrate_repository_snapshot records the full refresh
+                                # marker in card_data. Keep a defensive marker here for
+                                # older/custom scanner paths that still return verified.
+                                if _huggingface_library_refresh_version(snapshot) < _huggingface_library_refresh_target():
+                                    _mark_huggingface_library_refresh(
+                                        snapshot,
+                                        status="checked",
+                                        reason="Targeted Hugging Face library refresh completed",
+                                        inventory_complete=bool(details.get("_library_inventory_complete")),
+                                        readme_checked=bool(details.get("_library_readme_checked")),
+                                    )
                             _persist_snapshot_update(conn, row, snapshot)
                             conn.commit()
+                            if source == "huggingface":
+                                _refresh_huggingface_media(row, snapshot, model_key)
                             updated += 1
                             _set_job(updated=updated)
 
                     if refresh_index % 10 == 0 or refresh_index == len(needs_source_refresh):
                         print(
                             f"  Checked {refresh_index}/{len(needs_source_refresh)} "
-                            "legacy repository inventories..."
+                            "repository metadata checks..."
                         )
                 except Exception as exc:
                     reason = f"{type(exc).__name__}: {exc}"
@@ -652,6 +868,14 @@ def _run_repository_update():
                             snapshot, source, model_key, reason,
                             status="refresh_error",
                         )
+                        if source == "huggingface":
+                            _mark_huggingface_library_refresh(
+                                snapshot,
+                                status="source_unavailable",
+                                reason=reason,
+                                inventory_complete=False,
+                                readme_checked=False,
+                            )
                         _persist_snapshot_update(conn, row, snapshot)
                         conn.commit()
                         checked += 1
@@ -679,13 +903,13 @@ def _run_repository_update():
         )
         if source_refreshes:
             print(
-                f"  Targeted repository refreshes used: {source_refreshes} "
-                "(no broad source scan)."
+                f"  Targeted library repository refreshes used: {source_refreshes} "
+                "(only repositories already saved in the library; no discovery scan)."
             )
         if checked:
             print(
                 f"  {checked} repositor{'y was' if checked == 1 else 'ies were'} checked but could not "
-                f"supply usable metadata and {'was' if checked == 1 else 'were'} marked resolved for v{REPOSITORY_CLASSIFIER_VERSION}."
+                f"supply usable metadata and {'was' if checked == 1 else 'were'} marked resolved for the current source metadata version."
             )
             print("  They will be eligible for another check after a future metadata-version change.")
         if result["remaining"]:
@@ -772,9 +996,11 @@ def print_startup_notice():
     ms = int(sources.get("modelscope") or 0)
     print("\nLIBRARY UPDATE AVAILABLE")
     if hf:
-        print(f"  Hugging Face repository metadata is out of date: {hf} repository entr{'y' if hf == 1 else 'ies'}")
+        print(f"  Hugging Face library metadata/inventory needs refresh: {hf} repository entr{'y' if hf == 1 else 'ies'}")
     if ms:
         print(f"  ModelScope repository metadata is out of date: {ms} repository entr{'y' if ms == 1 else 'ies'}")
     print("  Open Options > Library > Update Library to apply the current repository metadata rules.")
+    if hf:
+        print("  Hugging Face entries will be checked only from the saved library: full repository tree + README media.")
     print("  Legacy entries missing file metadata will be refreshed individually from their source.")
     print("  This notice will remain until all applicable library entries are current.")

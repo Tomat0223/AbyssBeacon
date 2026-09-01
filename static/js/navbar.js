@@ -1510,3 +1510,15 @@ document.addEventListener("DOMContentLoaded",()=>{
     poll();
     timer=setInterval(poll,700);
 });
+
+
+// Creator pages use the same explicit feed-position restoration as Collections.
+// The home page still starts at the top after a deliberate browser refresh.
+document.addEventListener("DOMContentLoaded", () => {
+    const creatorBack = document.querySelector(".nav-creator-return-button");
+    creatorBack?.addEventListener("click", event => {
+        event.preventDefault();
+        try{ sessionStorage.setItem("abyss_feed_restore_pending_v1","1"); }catch(_){ }
+        window.location.assign("/");
+    });
+});

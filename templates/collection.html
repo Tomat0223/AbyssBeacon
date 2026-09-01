@@ -15,7 +15,7 @@
     <script src="{{ url_for('static', filename='js/fullscreen.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/collection.js') }}" defer></script>
 </head>
-<body class="collection-page" style="--collection-source-color: {{ source_color }}">
+<body class="collection-page" data-access-status="{{ collection_access_status }}" style="--collection-source-color: {{ source_color }}">
     <main class="collection-shell">
         <div class="collection-topbar">
             <a class="collection-back" href="/">← Back to AbyssBeacon</a>
@@ -29,6 +29,13 @@
                     title="Reload this Collection from its attached source(s)"
                 >↻ Reload Collection</button>
                 {% if source_url %}
+                <button
+                    type="button"
+                    id="collectionCopyLinkButton"
+                    class="collection-copy-link"
+                    data-copy-url="{{ source_url }}"
+                    title="Copy this Collection's source URL"
+                >Copy Link</button>
                 <a class="collection-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">View on {{ source_label }}</a>
                 {% endif %}
             </div>
@@ -41,11 +48,12 @@
                 {% if author %}<a class="collection-author" href="/creator/{{ author|urlencode }}">{{ author }}</a>{% endif %}
                 {% if architecture %}<span>{{ architecture }}</span>{% endif %}
                 <span>{{ source_label }}</span>
+                {% if collection_access_status == 'gated' %}<span class="collection-access-pill" title="Restricted on {{ source_label }}. Downloads remain available if your connected account has access.">🔒 Restricted</span>{% endif %}
             </div>
             <div class="collection-stats">
                 <div><strong>{{ family_count }}</strong><span>{{ collection_type }} families</span></div>
                 <div><strong>{{ repository_file_count }}</strong><span>repository files</span></div>
-                <div><strong>{{ media|length }}</strong><span>previews</span></div>
+                <div><strong>{{ media_count }}</strong><span>previews</span></div>
             </div>
         </section>
 
@@ -56,21 +64,31 @@
                     <span class="collection-section-kicker">COLLECTION MEDIA</span>
                     <h2>Repository previews</h2>
                 </div>
-                <span>{{ media|length }} shown</span>
+                <span id="collectionMediaPageStatus">Page 1 of {{ media_page_count }} · {{ media_count }} previews</span>
             </div>
-            <div class="collection-media-strip">
-                {% for item in media %}
-                <button
-                    type="button"
-                    class="collection-media-item"
-                    data-media-index="{{ loop.index0 }}"
-                    title="Open {{ item.filename }} in the AbyssBeacon media viewer"
-                    aria-label="Open {{ item.filename }} in the media viewer"
-                >
-                    <img src="{{ item.thumbnail or item.url }}" alt="{{ item.filename }}" loading="lazy" referrerpolicy="no-referrer">
-                    <span class="collection-media-open-hint">View media</span>
-                </button>
-                {% endfor %}
+            <div class="collection-media-browser">
+                <button id="collectionMediaPagePrev" class="collection-media-page-button" type="button" aria-label="Previous preview page" title="Previous previews">‹</button>
+                <div class="collection-media-strip" id="collectionMediaStrip">
+                    {% for item in media_page %}
+                    <div class="collection-media-card" data-media-index="{{ item.media_index }}">
+                        <button
+                            type="button"
+                            class="collection-media-item"
+                            data-media-index="{{ item.media_index }}"
+                            title="Open {{ item.filename }} in the AbyssBeacon media viewer"
+                            aria-label="Open {{ item.filename }} in the media viewer"
+                        >
+                            <img src="{{ item.thumbnail or item.url }}" alt="{{ item.filename }}" loading="lazy" referrerpolicy="no-referrer">
+                            <span class="collection-media-fallback" aria-hidden="true"></span>
+                            <span class="collection-media-open-hint">View media</span>
+                        </button>
+                        {% if item.get("_collection_file_dom_id") %}
+                        <button type="button" class="collection-media-model-link" data-media-index="{{ item.media_index }}" title="Open the matching model file">View model</button>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                <button id="collectionMediaPageNext" class="collection-media-page-button" type="button" aria-label="Next preview page" title="Next previews">›</button>
             </div>
         </section>
         {% endif %}
@@ -81,7 +99,12 @@
                     <span class="collection-section-kicker">MODELS IN THIS COLLECTION</span>
                     <h2>{{ family_count }} {{ collection_type }} famil{{ 'y' if family_count == 1 else 'ies' }}</h2>
                 </div>
-                <span>Grouped from repository files</span>
+                <div class="collection-family-heading-actions">
+                    <span>Grouped from repository files</span>
+                    {% if groups %}
+                    <button type="button" id="collectionExpandAll" class="collection-expand-all" aria-pressed="false">Expand all</button>
+                    {% endif %}
+                </div>
             </div>
 
             {% if groups %}
@@ -101,7 +124,7 @@
 
             <div class="collection-grid" id="collectionFamilyGrid">
                 {% for group in groups %}
-                <details class="collection-child-card" data-family-search="{{ group.search_text|e }}">
+                <details id="{{ group.dom_id }}" class="collection-child-card" data-family-search="{{ group.search_text|e }}">
                     <summary>
                         <div class="collection-child-main">
                             <div class="collection-child-title">{{ group.name }}</div>
@@ -131,15 +154,38 @@
 
                     <div class="collection-file-list">
                         {% for file in group.files %}
-                        <div class="collection-file-row">
-                            <div class="collection-file-info">
-                                <strong>{{ file.name or file.path }}</strong>
-                                <div>
-                                    {% if file.variant_label %}<span>{{ file.variant_label }}</span>{% endif %}
-                                    {% if file.size_display %}<span>{{ file.size_display }}</span>{% endif %}
+                        <div id="{{ file.dom_id }}" class="collection-file-row">
+                            <div class="collection-file-topline">
+                                <div class="collection-file-info">
+                                    <strong>{{ file.name or file.path }}</strong>
+                                    <div>
+                                        {% if file.variant_label %}<span>{{ file.variant_label }}</span>{% endif %}
+                                        {% if file.size_display %}<span>{{ file.size_display }}</span>{% endif %}
+                                    </div>
+                                </div>
+                                <div class="collection-download-stack">
+                                    {% if collection_access_status == 'gated' %}
+                                    <span class="collection-file-access-lock" title="Restricted on {{ source_label }}. Download may still work if your connected account has access." aria-label="Restricted source">🔒</span>
+                                    {% endif %}
+                                    <a class="collection-download" href="{{ file.download_url }}" title="Download model file: {{ file.name or file.path }}" aria-label="Download model file {{ file.name or file.path }}">↓</a>
                                 </div>
                             </div>
-                            <a class="collection-download" href="{{ file.download_url }}" title="Download {{ file.name or file.path }}" aria-label="Download {{ file.name or file.path }}">↓</a>
+                            {% if file.preview_refs %}
+                            <div class="collection-file-preview-block">
+                                <div class="collection-file-preview-heading">
+                                    <span class="collection-file-preview-label">Model preview{{ '' if file.preview_refs|length == 1 else 's' }}</span>
+                                    <span class="collection-file-preview-help">Click a preview to view it full-size</span>
+                                </div>
+                                <div class="collection-file-previews" aria-label="Matched previews for this model file">
+                                    {% for preview in file.preview_refs[:4] %}
+                                    <button type="button" class="collection-file-preview" data-media-index="{{ preview.media_index }}" title="Open model preview: {{ preview.filename }}">
+                                        <img src="{{ preview.thumbnail }}" alt="{{ preview.filename }}" loading="lazy" referrerpolicy="no-referrer">
+                                        <span class="collection-file-preview-fallback" aria-hidden="true"></span>
+                                    </button>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
                         </div>
                         {% endfor %}
                     </div>
@@ -151,7 +197,39 @@
             <div class="collection-empty">No downloadable model families could be grouped from this repository yet.</div>
             {% endif %}
         </section>
+
+        {% if repository_files %}
+        <section class="collection-section collection-repository-files-section">
+            <details class="collection-repository-files">
+                <summary>
+                    <div>
+                        <span class="collection-section-kicker">REPOSITORY FILES</span>
+                        <strong>{{ repository_extra_file_count }} additional file{{ '' if repository_extra_file_count == 1 else 's' }}</strong>
+                        <span>Previews, configs, README files, and other source assets</span>
+                    </div>
+                    <span class="collection-child-chevron" aria-hidden="true">⌄</span>
+                </summary>
+                <div class="collection-repository-file-list">
+                    {% for file in repository_files %}
+                    <div class="collection-repository-file-row">
+                        <div class="collection-repository-file-info">
+                            <strong>{{ file.display_name }}</strong>
+                            <div>
+                                <span>{{ file.file_type }}</span>
+                                {% if file.size_display %}<span>{{ file.size_display }}</span>{% endif %}
+                                {% if file.path != file.display_name %}<span>{{ file.path }}</span>{% endif %}
+                            </div>
+                        </div>
+                        <a class="collection-repository-download" href="{{ file.download_url }}" title="Download {{ file.display_name }} in your browser" aria-label="Download repository file {{ file.display_name }}">↓</a>
+                    </div>
+                    {% endfor %}
+                </div>
+            </details>
+        </section>
+        {% endif %}
     </main>
+
+    <button id="collectionBackToTop" class="back-to-top" type="button" aria-label="Back to top" title="Back to top">↑ Top</button>
 
     {% if media %}
     <!-- Reuse the exact normal-card media viewer instead of opening raw image
@@ -168,6 +246,7 @@
                         <span class="media-path"></span>
                     </div>
                     <div class="media-file-actions">
+                        <button type="button" id="collectionMediaModelButton" class="collection-media-view-model" title="Open the model file matched to this preview" hidden>View model</button>
                         <button type="button" class="media-expand-btn" title="Expand the model viewer">Expand Viewer</button>
                     </div>
                 </div>

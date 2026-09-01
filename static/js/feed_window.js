@@ -13,6 +13,27 @@ function initializeFeedWindowing(){
 
     const chunkSize=80;
     const replaceSize=120;
+    const feedReturnScrollKey="abyss_feed_return_scroll_v1";
+    const feedRestorePendingKey="abyss_feed_restore_pending_v1";
+    let scrollSaveQueued=false;
+
+    function saveFeedReturnPosition(){
+        try{
+            sessionStorage.setItem(feedReturnScrollKey,String(Math.max(0,Math.round(window.scrollY || 0))));
+        }catch(_){ }
+    }
+
+    function queueFeedReturnPositionSave(){
+        if(scrollSaveQueued) return;
+        scrollSaveQueued=true;
+        requestAnimationFrame(()=>{
+            scrollSaveQueued=false;
+            saveFeedReturnPosition();
+        });
+    }
+
+    window.addEventListener("scroll",queueFeedReturnPositionSave,{passive:true});
+    window.addEventListener("pagehide",saveFeedReturnPosition);
 
     function mountedCards(){
         return Array.from(grid.querySelectorAll(":scope > .model-card"));
@@ -93,7 +114,7 @@ function initializeFeedWindowing(){
         return template.content;
     }
 
-    async function fetchChunk(offset,{mode="append",limit=chunkSize}={}){
+    async function fetchChunk(offset,{mode="append",limit=chunkSize,preserveScroll=false}={}){
         const replace=mode === "replace";
         if(loading && !replace) return null;
 
@@ -126,7 +147,12 @@ function initializeFeedWindowing(){
 
             total=Number(data.total || 0);
 
+            let preservedScrollY=null;
             if(mode === "replace"){
+                // Initial persisted-filter hydration can finish a few seconds after
+                // page load. If the user has already started scrolling, replacing
+                // the server-rendered grid must not yank them back to the top.
+                preservedScrollY=preserveScroll ? Math.max(0,window.scrollY || 0) : null;
                 grid.replaceChildren();
                 windowStart=Number(data.offset || 0);
                 if(data.html) grid.appendChild(htmlToFragment(data.html));
@@ -153,6 +179,17 @@ function initializeFeedWindowing(){
             syncFeedState();
             initializeCardVideoPreviews();
             if(typeof window.modelRadarFilterCards === "function") window.modelRadarFilterCards();
+            if(preservedScrollY !== null){
+                const restorePreservedScroll=()=>window.scrollTo(
+                    0,
+                    Math.min(
+                        preservedScrollY,
+                        Math.max(0,document.documentElement.scrollHeight-window.innerHeight)
+                    )
+                );
+                restorePreservedScroll();
+                requestAnimationFrame(restorePreservedScroll);
+            }
             return data;
         }catch(error){
             if(error?.name === "AbortError") return null;
@@ -174,10 +211,10 @@ function initializeFeedWindowing(){
         return fetchChunk(windowEnd(),{mode:"append",limit:chunkSize});
     }
 
-    async function resetFeedWindow(){
+    async function resetFeedWindow({preserveScroll=false}={}){
         bottomSentinel.classList.remove("complete","error");
         topSentinel?.classList.remove("error");
-        const data=await fetchChunk(0,{mode:"replace",limit:replaceSize});
+        const data=await fetchChunk(0,{mode:"replace",limit:replaceSize,preserveScroll});
         syncFeedState();
         return data;
     }
@@ -220,6 +257,7 @@ function initializeFeedWindowing(){
     try{
         const navigation=performance.getEntriesByType?.("navigation")?.[0];
         if(navigation?.type === "reload"){
+            try{ sessionStorage.removeItem(feedRestorePendingKey); }catch(_){ }
             if("scrollRestoration" in history) history.scrollRestoration="manual";
             const forceReloadTop=()=>window.scrollTo(0,0);
             forceReloadTop();
@@ -241,5 +279,48 @@ function initializeFeedWindowing(){
         initialState.media ||
         Boolean(initialState.sort) ||
         (initialState.allSourceCount && initialState.sources.length !== initialState.allSourceCount);
-    if(needsFilteredWindow) resetFeedWindow();
+    const initialWindowReady = needsFilteredWindow
+        ? resetFeedWindow({preserveScroll:true})
+        : Promise.resolve(null);
+
+    async function restoreFeedReturnPosition(){
+        let shouldRestore=false;
+        let target=0;
+        try{
+            shouldRestore=sessionStorage.getItem(feedRestorePendingKey)==="1";
+            target=Math.max(0,Number.parseInt(sessionStorage.getItem(feedReturnScrollKey)||"0",10)||0);
+            if(shouldRestore) sessionStorage.removeItem(feedRestorePendingKey);
+        }catch(_){ }
+        if(!shouldRestore) return;
+
+        if("scrollRestoration" in history) history.scrollRestoration="manual";
+        try{ await initialWindowReady; }catch(_){ }
+
+        // A fallback navigation from a full-page Creator/Collection can rebuild
+        // the home feed from its first chunk. Rehydrate enough lazy chunks to
+        // reach the saved position before scrolling there. BFCache returns are
+        // already tall enough and skip this loop.
+        let attempts=0;
+        const wantedHeight=target + window.innerHeight + 240;
+        while(
+            document.documentElement.scrollHeight < wantedHeight
+            && windowEnd() < total
+            && attempts < 100
+        ){
+            attempts += 1;
+            const loaded=await loadNextChunk();
+            if(!loaded) break;
+        }
+
+        const restore=()=>window.scrollTo(0,Math.min(target,Math.max(0,document.documentElement.scrollHeight-window.innerHeight)));
+        restore();
+        requestAnimationFrame(()=>{
+            restore();
+            requestAnimationFrame(restore);
+        });
+        setTimeout(restore,120);
+        setTimeout(restore,350);
+    }
+
+    restoreFeedReturnPosition();
 }
