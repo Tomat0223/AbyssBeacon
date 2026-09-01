@@ -104,6 +104,33 @@ def comfy_category_for_model(model, filename="", file_data=None):
         if category != UNKNOWN_CATEGORY:
             return category
 
+    source_name = str(model.get("source") or "").strip().casefold()
+
+    # For CivitAI/Red, a generic per-file type of ``Model`` does not describe
+    # whether the artifact is a LoRA or checkpoint. Prefer the provider's
+    # explicit card-level type when available. This is stronger evidence than
+    # a stale merged-source snapshot.
+    if generic_model_file and source_name in {"civitai", "civitaired"}:
+        card = model.get("card_data") or {}
+        if isinstance(card, str):
+            try:
+                card = json.loads(card or "{}")
+            except Exception:
+                card = {}
+        if isinstance(card, dict):
+            category = comfy_category(card.get("type"), filename)
+            if category != UNKNOWN_CATEGORY:
+                if category != "workflows" or str(filename or "").casefold().endswith(".json"):
+                    return category
+
+        # The canonical AbyssBeacon card is the user-visible resolved type.
+        # Source snapshots can predate that classification, especially on
+        # merged CivitAI/CivitAI Red cards.
+        category = comfy_category(model.get("_canonical_model_type"), filename)
+        if category != UNKNOWN_CATEGORY:
+            if category != "workflows" or str(filename or "").casefold().endswith(".json"):
+                return category
+
     category = comfy_category(model.get("model_type"), filename)
     if category != UNKNOWN_CATEGORY:
         if category != "workflows" or str(filename or "").casefold().endswith(".json"):

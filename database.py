@@ -3129,8 +3129,6 @@ def purge_discovery_suppressed_creators():
     finally:
         conn.close()
 
-    if removed:
-        print(f"Built-in discovery suppression: removed {removed} model(s) from the default library view")
     return removed
 
 

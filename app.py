@@ -965,6 +965,15 @@ def _decode_source_snapshot(link, canonical=None):
             if snap.get(identity_key) in (None, "") and canonical.get(identity_key) not in (None, ""):
                 snap[identity_key] = canonical.get(identity_key)
 
+        # Keep the canonical card classification available to download/install
+        # routing even when a source-specific snapshot carries older or less
+        # specific metadata. This is intentionally transient; it is not written
+        # back into source_data. CivitAI/Red commonly label the downloadable
+        # artifact itself only as ``Model``, so the installer needs the card's
+        # resolved type (LoRA, Checkpoint, etc.) to choose the correct ComfyUI
+        # directory.
+        snap["_canonical_model_type"] = canonical.get("model_type") or ""
+
     files = snap.get("files") or []
     if isinstance(files, str):
         try: files = json.loads(files or "[]")
