@@ -448,6 +448,48 @@
     margin-top: 12px;
 }
 
+.collection-alpha-filter[hidden] { display: none; }
+
+.collection-repository-tags {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.collection-repository-tags-label {
+    flex: 0 0 auto;
+    padding-top: 7px;
+    color: #8197a2;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+}
+
+.collection-repository-tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.collection-repository-tag-list span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    padding: 5px 12px;
+    border: 1px solid color-mix(in srgb, var(--collection-source-color) 52%, rgba(130,160,170,.28));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--collection-source-color) 8%, rgba(3, 9, 12, .78));
+    color: #d8edf2;
+    font-size: 13px;
+}
+
+@media (max-width: 600px) {
+    .collection-repository-tags { flex-direction: column; gap: 7px; }
+    .collection-repository-tags-label { padding-top: 0; }
+}
+
 .collection-alpha-button {
     min-width: 36px;
     height: 36px;
@@ -1179,7 +1221,7 @@ body.collection-media-open { overflow: hidden; }
     opacity: 1;
 }
 
-/* File-specific repository notes ----------------------------------------- */
+/* File-specific repository notes and workflows --------------------------- */
 .collection-file-readme-row {
     display: flex;
     align-items: center;
@@ -1198,6 +1240,7 @@ body.collection-media-open { overflow: hidden; }
     text-transform: uppercase;
 }
 .collection-readme-open,
+.collection-workflow-download,
 .collection-readme-actions a {
     display: inline-flex;
     align-items: center;
@@ -1213,8 +1256,18 @@ body.collection-media-open { overflow: hidden; }
     text-decoration: none;
     cursor: pointer;
 }
+.collection-workflow-download {
+    flex: 0 1 auto;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font-weight: 650;
+}
 .collection-readme-open:hover,
 .collection-readme-open:focus-visible,
+.collection-workflow-download:hover,
+.collection-workflow-download:focus-visible,
 .collection-readme-actions a:hover,
 .collection-readme-actions a:focus-visible {
     border-color: var(--collection-source-color);

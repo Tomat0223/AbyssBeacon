@@ -32,7 +32,7 @@
                 {% if collection_access_status == 'gated' %}<span class="collection-access-pill" title="Restricted on {{ source_label }}. Downloads remain available if your connected account has access.">🔒 Restricted</span>{% endif %}
             </div>
             <div class="collection-stats">
-                <div><strong>{{ family_count }}</strong><span>{{ collection_type }} families</span></div>
+                <div><strong>{{ family_count }}</strong><span>{{ collection_family_type }} families</span></div>
                 <div><strong>{{ repository_file_count }}</strong><span>repository files</span></div>
                 <div><strong>{{ media_count }}</strong><span>previews</span></div>
             </div>
@@ -97,7 +97,7 @@
             <div class="collection-section-heading collection-family-heading">
                 <div>
                     <span class="collection-section-kicker">MODELS IN THIS COLLECTION</span>
-                    <h2>{{ family_count }} {{ collection_type }} famil{{ 'y' if family_count == 1 else 'ies' }}</h2>
+                    <h2>{{ family_count }} {{ collection_family_type }} famil{{ 'y' if family_count == 1 else 'ies' }}</h2>
                 </div>
                 <div class="collection-family-heading-actions">
                     <span>Grouped from repository files</span>
@@ -123,6 +123,14 @@
                     {% endif %}
                     <span id="collectionSearchCount" class="collection-search-count">{{ family_count }} shown</span>
                 </div>
+                {% if source == 'modelscope' and collection_tags %}
+                <div class="collection-repository-tags" aria-label="ModelScope repository tags">
+                    <span class="collection-repository-tags-label">Repository tags</span>
+                    <div class="collection-repository-tag-list">
+                        {% for tag in collection_tags %}<span>{{ tag }}</span>{% endfor %}
+                    </div>
+                </div>
+                {% elif source != 'modelscope' %}
                 <div id="collectionAlphaFilter" class="collection-alpha-filter" aria-label="Filter Collection files by first character">
                     <button type="button" class="collection-alpha-button" data-alpha="all" aria-pressed="true">All</button>
                     <button type="button" class="collection-alpha-button" data-alpha="#" aria-pressed="false">#</button>
@@ -130,6 +138,7 @@
                     <button type="button" class="collection-alpha-button" data-alpha="{{ letter }}" aria-pressed="false">{{ letter }}</button>
                     {% endfor %}
                 </div>
+                {% endif %}
             </div>
 
             <div class="collection-grid" id="collectionFamilyGrid">
@@ -185,7 +194,7 @@
                                     {% if collection_access_status == 'gated' %}
                                     <span class="collection-file-access-lock" title="Restricted on {{ source_label }}. Download may still work if your connected account has access." aria-label="Restricted source">🔒</span>
                                     {% endif %}
-                                    <a class="collection-download" href="{{ file.download_url }}" title="Download model file: {{ file.name or file.path }}" aria-label="Download model file {{ file.name or file.path }}">↓</a>
+                                    <a class="collection-download" href="{{ file.download_url }}" title="Download {{ 'workflow' if group.artifact_type == 'Workflow' else 'model' }} file: {{ file.name or file.path }}" aria-label="Download {{ 'workflow' if group.artifact_type == 'Workflow' else 'model' }} file {{ file.name or file.path }}">↓</a>
                                 </div>
                             </div>
                             {% if file.preview_refs %}
@@ -215,6 +224,19 @@
                                     data-readme-path="{{ readme.path }}"
                                     title="Open {{ readme.path }} inside AbyssBeacon"
                                 >{{ readme.label }}</button>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                            {% if file.workflow_refs %}
+                            <div class="collection-file-readme-row collection-file-workflow-row">
+                                <span>Workflow{{ '' if file.workflow_refs|length == 1 else 's' }}</span>
+                                {% for workflow in file.workflow_refs %}
+                                <a
+                                    class="collection-repository-download collection-workflow-download"
+                                    href="{{ workflow.download_url }}"
+                                    title="Download workflow {{ workflow.display_name }} in your browser"
+                                    aria-label="Download workflow {{ workflow.display_name }}"
+                                >{{ workflow.display_name }}{% if workflow.size_display %} · {{ workflow.size_display }}{% endif %}</a>
                                 {% endfor %}
                             </div>
                             {% endif %}

@@ -306,6 +306,31 @@ def _huggingface_library_refresh_target():
         return 1
 
 
+def _modelscope_library_refresh_version(snapshot):
+    card = _json_object(snapshot.get("card_data"))
+    try:
+        from scanners import modelscope as modelscope_scanner
+        return int(modelscope_scanner.stored_library_refresh_version(card))
+    except Exception:
+        marker = card.get("modelscope_library_refresh")
+        if not isinstance(marker, dict):
+            return 0
+        try:
+            version = int(marker.get("version") or 0)
+        except (TypeError, ValueError):
+            return 0
+        status = str(marker.get("status") or "").strip().casefold()
+        return version if status in {"complete", "checked", "source_unavailable"} else 0
+
+
+def _modelscope_library_refresh_target():
+    try:
+        from scanners import modelscope as modelscope_scanner
+        return int(modelscope_scanner.MODELSCOPE_LIBRARY_REFRESH_VERSION)
+    except Exception:
+        return 1
+
+
 def _huggingface_nested_readme_current(snapshot):
     """Require README media v3 only for saved Hugging Face Collections."""
     card = _json_object(snapshot.get("card_data"))
@@ -348,6 +373,8 @@ def _repository_update_current(snapshot, source):
             _huggingface_library_refresh_version(snapshot) >= _huggingface_library_refresh_target()
             and _huggingface_nested_readme_current(snapshot)
         )
+    if source == "modelscope":
+        return _modelscope_library_refresh_version(snapshot) >= _modelscope_library_refresh_target()
     return True
 
 
@@ -361,6 +388,38 @@ def _mark_huggingface_library_refresh(snapshot, *, status="complete", reason="",
         "readme_checked": bool(readme_checked),
         "reason": str(reason or ""),
     }
+    snapshot["card_data"] = card
+
+
+def _mark_modelscope_library_refresh(
+    snapshot,
+    *,
+    status="complete",
+    reason="",
+    files_checked=True,
+    media_checked=True,
+    tags_checked=True,
+):
+    card = _json_object(snapshot.get("card_data"))
+    try:
+        from scanners import modelscope as modelscope_scanner
+        card = modelscope_scanner.library_refresh_marker(
+            card,
+            status=status,
+            reason=reason,
+            files_checked=files_checked,
+            media_checked=media_checked,
+            tags_checked=tags_checked,
+        )
+    except Exception:
+        card["modelscope_library_refresh"] = {
+            "version": int(_modelscope_library_refresh_target()),
+            "status": str(status or "checked"),
+            "files_checked": bool(files_checked),
+            "media_checked": bool(media_checked),
+            "tags_checked": bool(tags_checked),
+            "reason": str(reason or ""),
+        }
     snapshot["card_data"] = card
 
 
@@ -810,13 +869,57 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
             files = []
         snapshot["files"] = files
 
+        model_media = modelscope_scanner.extract_media_from_details(details, model_key)
+        existing_urls = {
+            str(item.get("url") or "")
+            for item in model_media
+            if isinstance(item, dict) and item.get("url")
+        }
+        for media_item in modelscope_scanner.extract_media_from_files(files, model_key):
+            if not isinstance(media_item, dict):
+                continue
+            media_url = str(media_item.get("url") or "")
+            if not media_url or media_url in existing_urls:
+                continue
+            media_item["position"] = len(model_media)
+            model_media.append(media_item)
+            existing_urls.add(media_url)
+        snapshot["media"] = model_media
+        images = [
+            item for item in model_media
+            if str(item.get("type") or "image").strip().casefold() != "video"
+        ]
+        snapshot["image"] = str(
+            (images[0].get("thumbnail") or images[0].get("url")) if images else ""
+        )
+        snapshot["preview_count"] = len(images)
+        snapshot["has_media"] = int(bool(model_media))
+        snapshot["has_video"] = int(any(
+            str(item.get("type") or "").strip().casefold() == "video"
+            for item in model_media
+        ))
+
+        tags = modelscope_scanner._modelscope_tag_values(details)
+        if tags:
+            snapshot["tags"] = ",".join(tags)
+            display_tags = _json_list(snapshot.get("display_tags"))
+            seen_display_tags = {str(tag or "").strip().casefold() for tag in display_tags}
+            for tag in tags:
+                if tag.casefold() not in seen_display_tags:
+                    seen_display_tags.add(tag.casefold())
+                    display_tags.append(tag)
+            snapshot["display_tags"] = display_tags[:24]
+
         card = _json_object(snapshot.get("card_data"))
         card["versions"] = versions_meta
         ms_card = card.get("modelscope")
         ms_card = dict(ms_card) if isinstance(ms_card, dict) else {}
+        ms_card["official_tags"] = details.get("OfficialTags") or []
+        ms_card["all_tags"] = tags
         ms_card["versions"] = versions_meta
+        ms_card["download_metadata_checked"] = True
         card["modelscope"] = ms_card
-        snapshot["card_data"] = card
+        snapshot["card_data"] = modelscope_scanner.library_refresh_marker(card)
 
         try:
             snapshot["gated"] = int(bool(modelscope_scanner.detect_gated_model({}, details)))
@@ -863,6 +966,11 @@ def _persist_snapshot_update(conn, row, snapshot, family_sync_queue=None):
 
     model_type = str(snapshot.get("model_type") or "").strip()
     display_name = str(snapshot.get("display_name") or "").strip()
+    raw_tags = snapshot.get("tags")
+    if isinstance(raw_tags, (list, tuple, set)):
+        tags = ",".join(str(tag or "").strip() for tag in raw_tags if str(tag or "").strip())
+    else:
+        tags = str(raw_tags or "").strip()
     display_tags = json.dumps(_json_list(snapshot.get("display_tags")), ensure_ascii=False)
     card_data = json.dumps(_json_object(snapshot.get("card_data")), ensure_ascii=False)
     files = json.dumps(_json_list(snapshot.get("files")), ensure_ascii=False)
@@ -874,6 +982,7 @@ def _persist_snapshot_update(conn, row, snapshot, family_sync_queue=None):
             files=?,
             model_type=CASE WHEN ?<>'' THEN ? ELSE model_type END,
             display_name=CASE WHEN ? AND ?<>'' THEN ? ELSE display_name END,
+            tags=CASE WHEN ?<>'' THEN ? ELSE tags END,
             display_tags=?,
             gated=?,
             description=CASE WHEN ?<>'' THEN ? ELSE description END,
@@ -889,6 +998,8 @@ def _persist_snapshot_update(conn, row, snapshot, family_sync_queue=None):
             int(is_collection),
             display_name,
             display_name,
+            tags,
+            tags,
             display_tags,
             int(bool(snapshot.get("gated", 0))),
             str(snapshot.get("description") or ""),
@@ -914,6 +1025,21 @@ def _refresh_huggingface_media(row, snapshot, model_key=""):
         return True
     except Exception as media_exc:
         print(f"  Hugging Face media refresh skipped [{model_key}]: {media_exc}")
+        return False
+
+
+def _refresh_modelscope_media(row, snapshot, model_key=""):
+    try:
+        media_items = _json_list(snapshot.get("media"))
+        database.refresh_canonical_model_media(
+            int(row["model_id"]),
+            "modelscope",
+            media_items,
+            fallback_image=str(snapshot.get("image") or ""),
+        )
+        return True
+    except Exception as media_exc:
+        print(f"  ModelScope media refresh skipped [{model_key}]: {media_exc}")
         return False
 
 
@@ -950,6 +1076,7 @@ def _run_repository_update():
             f"ModelScope v{repository_classifier_target_version('modelscope')}"
         )
         print(f"  Hugging Face library inventory/media refresh: v{_huggingface_library_refresh_target()}")
+        print(f"  ModelScope library metadata/media refresh: v{_modelscope_library_refresh_target()}")
         print(f"  Repository snapshots pending: {len(pending_rows)}")
 
         needs_source_refresh = []
@@ -968,6 +1095,12 @@ def _run_repository_update():
                         _huggingface_library_refresh_version(snapshot) < _huggingface_library_refresh_target()
                         or not _huggingface_nested_readme_current(snapshot)
                     )
+                ):
+                    needs_source_refresh.append((row, snapshot))
+                    continue
+                if (
+                    source == "modelscope"
+                    and _modelscope_library_refresh_version(snapshot) < _modelscope_library_refresh_target()
                 ):
                     needs_source_refresh.append((row, snapshot))
                     continue
@@ -1045,6 +1178,15 @@ def _run_repository_update():
                                 readme_checked=False,
                             )
                             _mark_huggingface_nested_readme_checked(snapshot)
+                        elif source == "modelscope":
+                            _mark_modelscope_library_refresh(
+                                snapshot,
+                                status="source_unavailable",
+                                reason=reason,
+                                files_checked=False,
+                                media_checked=False,
+                                tags_checked=False,
+                            )
                         _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                         conn.commit()
                         checked += 1
@@ -1063,6 +1205,8 @@ def _run_repository_update():
                             conn.commit()
                             if source == "huggingface":
                                 _refresh_huggingface_media(row, snapshot, model_key)
+                            elif source == "modelscope":
+                                _refresh_modelscope_media(row, snapshot, model_key)
                             checked += 1
                             _set_job(checked=checked, error=reason)
                         else:
@@ -1082,6 +1226,8 @@ def _run_repository_update():
                             conn.commit()
                             if source == "huggingface":
                                 _refresh_huggingface_media(row, snapshot, model_key)
+                            elif source == "modelscope":
+                                _refresh_modelscope_media(row, snapshot, model_key)
                             updated += 1
                             _set_job(updated=updated)
 
@@ -1106,6 +1252,15 @@ def _run_repository_update():
                                 readme_checked=False,
                             )
                             _mark_huggingface_nested_readme_checked(snapshot)
+                        elif source == "modelscope":
+                            _mark_modelscope_library_refresh(
+                                snapshot,
+                                status="source_unavailable",
+                                reason=reason,
+                                files_checked=False,
+                                media_checked=False,
+                                tags_checked=False,
+                            )
                         _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                         conn.commit()
                         checked += 1

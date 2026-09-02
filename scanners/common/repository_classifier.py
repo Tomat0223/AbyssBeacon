@@ -7,12 +7,13 @@ _CONFIG_FILES = {"model_index.json", "config.json", "adapter_config.json", "adap
 
 # Global newest classifier revision plus per-source migration targets.
 # Hugging Face v6 adds nested archive and independent-safetensor Collection detection.
-# ModelScope stays on v4 until its training-series grouping gets its own follow-up
-# pass, avoiding an unnecessary ModelScope refresh for an HF-only rule change.
+# ModelScope v5 records the completed version-aware Collection metadata pass.
+# Source targets remain independent so this does not force another Hugging Face
+# refresh when only ModelScope metadata changes.
 REPOSITORY_CLASSIFIER_VERSION = 6
 REPOSITORY_CLASSIFIER_SOURCE_VERSIONS = {
     "huggingface": 6,
-    "modelscope": 4,
+    "modelscope": 5,
 }
 
 
@@ -752,6 +753,33 @@ def collection_family_id(source, model_key, collection_type, family_key):
     return f"cf_{digest}"
 
 
+def is_collection_workflow_json(path):
+    """Return True for JSON that is plausible as a user-facing workflow.
+
+    Repository inventories do not include JSON contents, so this deliberately
+    identifies workflow candidates by exclusion. Known model, training,
+    tokenizer, package, metadata, and schema files remain repository support
+    files rather than becoming Collection families.
+    """
+    filename = _file_path(path).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if not filename.endswith(".json"):
+        return False
+    stem = filename[:-5]
+    if filename in {
+        "config.json", "model_index.json", "tokenizer.json",
+        "tokenizer_config.json", "adapter_config.json",
+        "generation_config.json", "scheduler_config.json",
+        "special_tokens_map.json", "added_tokens.json", "vocab.json",
+        "package.json", "package-lock.json", "manifest.json",
+        "metadata.json", "schema.json", "dataset_info.json",
+        "training_args.json", "trainer_state.json",
+    }:
+        return False
+    if stem.endswith(("_config", "-config", ".config")):
+        return False
+    return True
+
+
 def build_collection_groups(files, collection_type="LoRA", source="", model_key=""):
     """Group repository files into virtual model families for Collection view.
 
@@ -761,6 +789,7 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
     collection_type = str(collection_type or "LoRA").strip() or "LoRA"
     grouped = {}
     archive_layout = _detect_nested_archive_layout(files) if collection_type.casefold() == "lora" else {"is_archive": False}
+    grouped_weight_stems = set()
 
     for index, item in enumerate(files or []):
         if not isinstance(item, dict):
@@ -791,6 +820,13 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
         if not key:
             continue
 
+        grouped_weight_stems.add(
+            re.sub(r"\.safetensors$", "", path, flags=re.I)
+            .replace("\\", "/")
+            .strip("/")
+            .casefold()
+        )
+
         group = grouped.setdefault(key, {
             "key": key,
             "name": display,
@@ -807,12 +843,99 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
         })
         group["total_size_bytes"] += size
 
+    # A Collection may include complete ComfyUI workflows that have no model
+    # weight beside them. Promote each trustworthy standalone JSON into its own
+    # virtual Workflow family. Same-stem JSON remains attached to its matching
+    # safetensors row by the Collection page instead of appearing twice.
+    for index, item in enumerate(files or []):
+        if not isinstance(item, dict):
+            continue
+        path = _file_path(item)
+        if not path or not is_collection_workflow_json(path):
+            continue
+        workflow_stem = (
+            re.sub(r"\.json$", "", path, flags=re.I)
+            .replace("\\", "/")
+            .strip("/")
+            .casefold()
+        )
+        if workflow_stem in grouped_weight_stems:
+            continue
+
+        display = path.replace("\\", "/").rsplit("/", 1)[-1][:-5].strip() or "Workflow"
+        key = f"workflow:{workflow_stem}"
+        size = _file_size(item)
+        grouped[key] = {
+            "key": key,
+            "name": display,
+            "artifact_type": "Workflow",
+            "files": [{
+                **dict(item),
+                "_download_index": index,
+                "variant_label": "",
+            }],
+            "total_size_bytes": size,
+        }
+
     def natural_key(value):
         return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", str(value or ""))]
 
+    def checkpoint_number(*values):
+        """Return the highest checkpoint-like number found in the supplied values."""
+        explicit = []
+        trailing = []
+        for value in values:
+            text = str(value or "")
+            explicit.extend(
+                int(match)
+                for match in re.findall(
+                    r"(?:^|[-_.\s])(?:step|steps|st|epoch|ep|checkpoint|ckpt)[-_.\s]?(\d+)(?=$|[-_.\s])",
+                    text,
+                    flags=re.I,
+                )
+            )
+            basename = text.replace("\\", "/").rsplit("/", 1)[-1]
+            trailing_match = re.search(r"(\d+)(?=(?:\.[^.]+)?$)", basename)
+            if trailing_match:
+                trailing.append(int(trailing_match.group(1)))
+        if explicit:
+            return max(explicit)
+        if trailing:
+            return max(trailing)
+        return None
+
+    def modelscope_checkpoint_sort_key(group):
+        group_files = group.get("files") or []
+        rank = checkpoint_number(
+            group.get("name"),
+            group.get("key"),
+            *(file_data.get("variant_label") for file_data in group_files),
+            *(file_data.get("name") or file_data.get("path") for file_data in group_files),
+        )
+        return (
+            0 if rank is not None else 1,
+            -(rank or 0),
+            natural_key(group.get("name")),
+        )
+
     groups = list(grouped.values())
     for group in groups:
-        group["files"].sort(key=lambda file_data: (natural_key(file_data.get("variant_label")), natural_key(file_data.get("name") or file_data.get("path"))))
+        if str(source or "").strip().casefold() == "modelscope":
+            group["files"].sort(
+                key=lambda file_data: (
+                    0 if checkpoint_number(
+                        file_data.get("variant_label"),
+                        file_data.get("name") or file_data.get("path"),
+                    ) is not None else 1,
+                    -(checkpoint_number(
+                        file_data.get("variant_label"),
+                        file_data.get("name") or file_data.get("path"),
+                    ) or 0),
+                    natural_key(file_data.get("name") or file_data.get("path")),
+                )
+            )
+        else:
+            group["files"].sort(key=lambda file_data: (natural_key(file_data.get("variant_label")), natural_key(file_data.get("name") or file_data.get("path"))))
         variants = []
         for file_data in group["files"]:
             label = str(file_data.get("variant_label") or "").strip()
@@ -846,7 +969,10 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
             alpha_buckets.add(initial if "A" <= initial <= "Z" else "#")
         group["alpha_buckets"] = sorted(alpha_buckets)
 
-    groups.sort(key=lambda group: str(group.get("name") or "").casefold())
+    if str(source or "").strip().casefold() == "modelscope":
+        groups.sort(key=modelscope_checkpoint_sort_key)
+    else:
+        groups.sort(key=lambda group: str(group.get("name") or "").casefold())
     return groups
 
 def needs_repository_classification_refresh(card_data, minimum_version=None, source=None):

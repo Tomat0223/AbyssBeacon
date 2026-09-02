@@ -56,6 +56,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const expandAll = document.getElementById("collectionExpandAll");
     const changesOnly = document.getElementById("collectionChangesOnly");
     const viewChanges = document.getElementById("collectionViewChanges");
+    const alphaFilter = document.getElementById("collectionAlphaFilter");
+    const searchLabel = document.querySelector(".collection-search-label");
+    const searchRow = document.querySelector(".collection-search-row");
     const alphaButtons = Array.from(document.querySelectorAll(".collection-alpha-button"));
     const cards = Array.from(document.querySelectorAll(".collection-child-card"));
     let changedOnlyActive = false;
@@ -105,6 +108,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const availableAlpha = new Set(
         cards.flatMap(card => String(card.dataset.familyAlpha || "").split(/\s+/).filter(Boolean))
     );
+    const hasUsefulAlphaFilter = Boolean(alphaFilter && availableAlpha.size >= 2);
+    if(alphaFilter) alphaFilter.hidden = !hasUsefulAlphaFilter;
+    if(searchLabel) searchLabel.hidden = !hasUsefulAlphaFilter;
+    if(search) search.hidden = !hasUsefulAlphaFilter;
+    if(count) count.hidden = !hasUsefulAlphaFilter;
+    if(searchRow) searchRow.hidden = !hasUsefulAlphaFilter && !changesOnly;
     alphaButtons.forEach(button => {
         const alpha = String(button.dataset.alpha || "all");
         if(alpha !== "all"){
@@ -191,14 +200,9 @@ document.addEventListener("DOMContentLoaded", () => {
 // the shared Download Manager; browser downloads use a hidden frame so the
 // browser receives the file without replacing this page with route JSON.
 document.addEventListener("DOMContentLoaded", () => {
-    const status = document.getElementById("collectionReloadStatus");
     const downloads = Array.from(document.querySelectorAll(
         "a.collection-download, a.collection-repository-download"
     ));
-
-    function setStatus(message){
-        if(status) status.textContent = message;
-    }
 
     function browserDownload(link){
         const frame = document.createElement("iframe");
@@ -207,7 +211,6 @@ document.addEventListener("DOMContentLoaded", () => {
         frame.src = link.href;
         document.body.appendChild(frame);
         window.setTimeout(() => frame.remove(), 120000);
-        setStatus("Download sent to your browser. This Collection page will stay open.");
     }
 
     downloads.forEach(link => {
@@ -226,7 +229,6 @@ document.addEventListener("DOMContentLoaded", () => {
             const original = link.textContent;
             link.dataset.installing = "true";
             link.textContent = "…";
-            setStatus("Starting local download. Progress is available in Download Manager.");
             try{
                 const response = await fetch(link.href, {headers:{"Accept":"application/json"}});
                 const raw = await response.text();
@@ -239,17 +241,21 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
                 if(payload.existing_partial === true || payload.already_active === true){
                     link.textContent = original;
-                    setStatus(payload.message || "This download is already in Download Manager.");
                     document.getElementById("downloadHistoryButton")?.click();
                     return;
                 }
                 link.textContent = "✓";
                 link.title = `Installed: ${payload.path || payload.folder || "local library"}`;
-                setStatus("Download complete. Open Download Manager to review it.");
             }catch(error){
-                link.textContent = "!";
-                link.title = error.message || "Download failed";
-                setStatus(error.message || "Download failed.");
+                const message = String(error?.message || "");
+                const requestMayStillBeRunning = (
+                    error instanceof TypeError
+                    || /networkerror|failed to fetch|load failed/i.test(message)
+                );
+                link.textContent = requestMayStillBeRunning ? original : "!";
+                link.title = requestMayStillBeRunning
+                    ? "Download request sent. Check Download Manager for status."
+                    : (message || "Download failed");
                 if(error.payload?.restricted === true){
                     document.getElementById("downloadHistoryButton")?.click();
                 }

@@ -29,6 +29,58 @@ import scan_control
 import scan_status
 from secrets_manager import get_source_token
 
+MODELSCOPE_LIBRARY_REFRESH_KEY = "modelscope_library_refresh"
+MODELSCOPE_LIBRARY_REFRESH_VERSION = 1
+
+
+def _json_mapping(value):
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value or "{}")
+            return dict(decoded) if isinstance(decoded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def library_refresh_marker(
+    card_data,
+    *,
+    status="complete",
+    reason="",
+    files_checked=True,
+    media_checked=True,
+    tags_checked=True,
+):
+    """Mark a ModelScope snapshot as checked by the current metadata pass."""
+    card = _json_mapping(card_data)
+    card[MODELSCOPE_LIBRARY_REFRESH_KEY] = {
+        "version": MODELSCOPE_LIBRARY_REFRESH_VERSION,
+        "status": str(status or "complete"),
+        "files_checked": bool(files_checked),
+        "media_checked": bool(media_checked),
+        "tags_checked": bool(tags_checked),
+        "reason": str(reason or ""),
+    }
+    return card
+
+
+def stored_library_refresh_version(value):
+    card = _json_mapping(value)
+    marker = card.get(MODELSCOPE_LIBRARY_REFRESH_KEY)
+    if not isinstance(marker, dict):
+        return 0
+    try:
+        version = int(marker.get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+    status = str(marker.get("status") or "").strip().casefold()
+    if status not in {"complete", "checked", "source_unavailable"}:
+        return 0
+    return version
+
 
 
 _thread_local = threading.local()
@@ -1337,6 +1389,16 @@ def scan(
 
             details = get_details(model_id)
 
+            # The listing often contains only a small tag subset. Preserve its
+            # ordering, then append current detail-page tags for Collection and
+            # normal model views.
+            seen_tags = {str(value or "").strip().casefold() for value in tags if str(value or "").strip()}
+            for value in _modelscope_tag_values(details):
+                identity = value.casefold()
+                if identity not in seen_tags:
+                    seen_tags.add(identity)
+                    tags.append(value)
+
             # Search listings often omit the prose shown on the model page.
             # Prefer description fields from the richer detail response.
             detail_description = (
@@ -1429,6 +1491,17 @@ def scan(
 
             has_media = 1 if model_media else 0
 
+            raw_card_data = library_refresh_marker({
+                "versions": versions_meta,
+                "modelscope": {
+                    "listing_updated": listing_updated,
+                    "official_tags": details.get("OfficialTags") or [],
+                    "all_tags": tags,
+                    "versions": versions_meta,
+                    "download_metadata_checked": True,
+                },
+            })
+
             raw_model = {
 
                 "model_id": model_id,
@@ -1478,14 +1551,7 @@ def scan(
                 "gated":
                     detect_gated_model(item, details),
 
-                "card_data": {
-                    "versions": versions_meta,
-                    "modelscope": {
-                        "listing_updated": listing_updated,
-                        "versions": versions_meta,
-                        "download_metadata_checked": True,
-                    }
-                },
+                "card_data": raw_card_data,
 
                 "sensitive":
                     False,
@@ -1762,14 +1828,14 @@ def _build_tag_discovery_model(item, requested_tag=""):
         "has_video": any(x.get("type") == "video" for x in model_media),
         "preview_count": len(model_media),
         "gated": detect_gated_model(item, details),
-        "card_data": {
+        "card_data": library_refresh_marker({
             "versions": versions_meta,
             "modelscope": {
                 "official_tags": item.get("OfficialTags") or [],
                 "all_tags": tags,
                 "versions": versions_meta,
             }
-        },
+        }),
         "sensitive": False,
     }
     model = processors.build_model(raw_model)

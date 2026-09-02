@@ -6913,7 +6913,7 @@ def _collection_asset_stem(path):
     if not value:
         return ""
     value = value.split("?", 1)[0].split("#", 1)[0]
-    value = re.sub(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf|png|jpe?g|webp)$", "", value, flags=re.I)
+    value = re.sub(r"\.(?:safetensors|ckpt|pt|pth|bin|gguf|json|png|jpe?g|webp)$", "", value, flags=re.I)
     return re.sub(r"/+", "/", value).strip("/").casefold()
 
 
@@ -6959,6 +6959,8 @@ def _link_collection_media_to_files(groups, media):
     basenames = defaultdict(list)
     directories = defaultdict(list)
     filename_tokens = defaultdict(list)
+    version_names = defaultdict(list)
+    version_ids = defaultdict(list)
     refs = []
 
     generic_filename_tokens = {
@@ -7019,6 +7021,20 @@ def _link_collection_media_to_files(groups, media):
             directories[ref["directory"]].append(ref)
             for token in meaningful_filename_tokens(ref["basename"]):
                 filename_tokens[token].append(ref)
+            for value in {
+                str(file_data.get("version") or "").strip().casefold(),
+                str(file_data.get("version_name") or "").strip().casefold(),
+            } - {""}:
+                if ref not in version_names[value]:
+                    version_names[value].append(ref)
+            for value in {
+                str(file_data.get("modelscope_version_id") or "").strip().casefold(),
+                str(file_data.get("model_version_id") or "").strip().casefold(),
+                str(file_data.get("version_id") or "").strip().casefold(),
+                str(file_data.get("revision") or "").strip().casefold(),
+            } - {""}:
+                if ref not in version_ids[value]:
+                    version_ids[value].append(ref)
 
     def unique_ref(candidates):
         return candidates[0] if len(candidates) == 1 else None
@@ -7038,6 +7054,40 @@ def _link_collection_media_to_files(groups, media):
             if "/" in readme_path else ""
         )
 
+        # ModelScope's AIGC media records explicitly identify the model version
+        # that produced each preview. Prefer that source metadata over filename
+        # guessing, but require the version name/id evidence to resolve to one
+        # and only one grouped safetensors file.
+        match = None
+        match_reason = ""
+        item_source = str(item.get("source") or "").strip().casefold()
+        has_modelscope_version = any(
+            metadata.get(key) not in (None, "")
+            for key in (
+                "modelscope_version_name", "modelscope_version_id",
+                "model_version", "model_version_id",
+            )
+        )
+        if item_source == "modelscope" or has_modelscope_version:
+            version_matches = []
+            for value in {
+                str(metadata.get("modelscope_version_id") or "").strip().casefold(),
+                str(metadata.get("model_version_id") or "").strip().casefold(),
+            } - {""}:
+                candidate = unique_ref(version_ids.get(value, []))
+                if candidate is not None and candidate not in version_matches:
+                    version_matches.append(candidate)
+            for value in {
+                str(metadata.get("modelscope_version_name") or "").strip().casefold(),
+                str(metadata.get("model_version") or "").strip().casefold(),
+            } - {""}:
+                candidate = unique_ref(version_names.get(value, []))
+                if candidate is not None and candidate not in version_matches:
+                    version_matches.append(candidate)
+            match = unique_ref(version_matches)
+            if match is not None:
+                match_reason = "ModelScope media version identifies this model"
+
         # README text can name the exact model file beside an image/video. That
         # evidence is stronger than image naming conventions, especially in
         # archive-style repositories with generic preview filenames.
@@ -7055,8 +7105,9 @@ def _link_collection_media_to_files(groups, media):
             if candidate is not None and candidate not in reference_matches:
                 reference_matches.append(candidate)
 
-        match = unique_ref(reference_matches)
-        match_reason = "README names this safetensors file" if match is not None else ""
+        if match is None:
+            match = unique_ref(reference_matches)
+            match_reason = "README names this safetensors file" if match is not None else ""
 
         # Existing same-stem repository matches remain authoritative.
         if match is None:
@@ -7154,6 +7205,7 @@ def _attach_collection_readmes_to_files(groups, repository_files, model_id):
     """Expose trustworthy per-file README viewers without storing README text."""
     from collections import defaultdict
 
+    attached_paths = set()
     readmes_by_directory = defaultdict(list)
     for item in repository_files or []:
         if not isinstance(item, dict):
@@ -7202,6 +7254,7 @@ def _attach_collection_readmes_to_files(groups, repository_files, model_id):
                 if not canonical_readme_path:
                     continue
                 seen.add(identity)
+                attached_paths.add(identity)
                 readme_path = canonical_readme_path
                 refs.append({
                     "path": readme_path,
@@ -7213,6 +7266,81 @@ def _attach_collection_readmes_to_files(groups, repository_files, model_id):
                     ),
                 })
             file_data["readme_refs"] = refs
+
+    return attached_paths
+
+
+def _attach_collection_workflows_to_files(groups, repository_files):
+    """Attach repository workflow JSON to one model file when the match is safe.
+
+    Same-stem files (model.json beside model.safetensors) are authoritative.
+    A clearly named workflow/comfy/prompt/graph JSON may also attach when its
+    directory contains exactly one grouped model file. Config and support JSON
+    always remain ordinary repository files.
+    """
+    from collections import defaultdict
+
+    exact = defaultdict(list)
+    directories = defaultdict(list)
+
+    for group in groups or []:
+        for file_data in group.get("files") or []:
+            path = str(file_data.get("path") or file_data.get("name") or "").strip().replace("\\", "/")
+            stem = _collection_asset_stem(path)
+            if not stem:
+                continue
+            ref = {
+                "group": group,
+                "file": file_data,
+                "stem": stem,
+                "directory": stem.rsplit("/", 1)[0] if "/" in stem else "",
+            }
+            exact[stem].append(ref)
+            directories[ref["directory"]].append(ref)
+
+    def unique_ref(candidates):
+        return candidates[0] if len(candidates) == 1 else None
+
+    from scanners.common.repository_classifier import is_collection_workflow_json
+
+    attached_paths = set()
+    for item in repository_files or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip().replace("\\", "/")
+        filename = path.rsplit("/", 1)[-1]
+        if not is_collection_workflow_json(path):
+            continue
+
+        json_stem = re.sub(r"\.json$", "", path, flags=re.I).strip("/").casefold()
+        match = unique_ref(exact.get(json_stem, []))
+
+        if match is None:
+            directory = json_stem.rsplit("/", 1)[0] if "/" in json_stem else ""
+            workflow_named = bool(re.search(
+                r"(?:^|[-_. ])(?:workflow|comfy|prompt|graph)(?:$|[-_. ])",
+                filename,
+                flags=re.I,
+            ))
+            if workflow_named:
+                match = unique_ref(directories.get(directory, []))
+
+        if match is None:
+            continue
+
+        workflow_ref = {
+            "path": path,
+            "display_name": str(item.get("display_name") or filename or path),
+            "size_display": item.get("size_display") or "",
+            "download_url": item.get("download_url") or "",
+        }
+        match["file"].setdefault("workflow_refs", []).append(workflow_ref)
+        match["group"]["search_text"] = (
+            f"{match['group'].get('search_text') or ''} {workflow_ref['display_name']} {path}"
+        ).casefold()
+        attached_paths.add(path.casefold())
+
+    return attached_paths
 
 
 def _annotate_collection_family_changes(groups, change_lookup, downloaded_paths=None):
@@ -7564,6 +7692,14 @@ def collection_page(model_id):
     groups = build_collection_groups(
         files, collection_type, source=source, model_key=model_key
     )
+    collection_family_type = collection_type
+    group_artifact_types = {
+        str(group.get("artifact_type") or "").strip().casefold()
+        for group in groups
+        if str(group.get("artifact_type") or "").strip()
+    }
+    if len(group_artifact_types) > 1:
+        collection_family_type = "Model"
     favorite_family_ids = database.sync_collection_families(
         model_id, source, model_key, groups
     )
@@ -7670,6 +7806,70 @@ def collection_page(model_id):
             collection_card_data = {}
     if not isinstance(collection_card_data, dict):
         collection_card_data = {}
+
+    collection_tags = []
+    if source == "modelscope":
+        seen_collection_tags = set()
+
+        def store_collection_tag(value):
+            text = str(value or "").strip()
+            identity = text.casefold()
+            if (
+                not text
+                or identity in seen_collection_tags
+                or identity == "collection"
+                or identity.endswith(" collection")
+            ):
+                return
+            seen_collection_tags.add(identity)
+            collection_tags.append(text)
+
+        def add_collection_tags(value):
+            if value is None:
+                return
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return
+                if text[:1] in {"[", "{"}:
+                    try:
+                        decoded = json.loads(text)
+                    except Exception:
+                        decoded = None
+                    if decoded is not None:
+                        add_collection_tags(decoded)
+                        return
+                for part in re.split(r"[,\n]", text):
+                    store_collection_tag(part)
+                return
+            if isinstance(value, dict):
+                label = value.get("Name") or value.get("name") or value.get("Tag") or value.get("tag")
+                if label:
+                    store_collection_tag(label)
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add_collection_tags(item)
+                return
+            store_collection_tag(value)
+
+        modelscope_card = collection_card_data.get("modelscope")
+        modelscope_card = modelscope_card if isinstance(modelscope_card, dict) else {}
+        for tag_source in (
+            collection_snapshot.get("tags"),
+            canonical.get("tags"),
+            modelscope_card.get("all_tags"),
+            modelscope_card.get("official_tags"),
+            collection_card_data.get("tags"),
+            collection_card_data.get("Tags"),
+        ):
+            add_collection_tags(tag_source)
+        # Display tags include AbyssBeacon's inferred architecture/type labels.
+        # Use them only when the source snapshot has no repository tags.
+        if not collection_tags:
+            add_collection_tags(collection_snapshot.get("display_tags"))
+            add_collection_tags(canonical.get("display_tags"))
+        collection_tags = collection_tags[:24]
 
     collection_access_status = _source_access_status(
         source,
@@ -7814,7 +8014,16 @@ def collection_page(model_id):
             item["thumbnail"] = proxy_url
 
     _link_collection_media_to_files(groups, media)
-    _attach_collection_readmes_to_files(groups, files, model_id)
+    attached_repository_paths = _attach_collection_workflows_to_files(groups, repository_files)
+    attached_repository_paths.update(
+        _attach_collection_readmes_to_files(groups, repository_files, model_id)
+    )
+    if attached_repository_paths:
+        repository_files = [
+            item for item in repository_files
+            if str(item.get("path") or "").strip().replace("\\", "/").casefold()
+            not in attached_repository_paths
+        ]
 
     database.mark_viewed(model_id)
 
@@ -7896,6 +8105,7 @@ def collection_page(model_id):
         collection_access_status=collection_access_status,
         repository_file_count=len(files),
         family_count=len(groups),
+        collection_family_type=collection_family_type,
         collection_change_summary=collection_change_summary,
         groups=groups,
         repository_files=repository_files,
@@ -7905,6 +8115,7 @@ def collection_page(model_id):
         media_page_size=10,
         media_page_count=max(1, (len(media) + 9) // 10),
         media_count=len(media),
+        collection_tags=collection_tags,
         classification=collection_classification,
         preferences=preferences,
         sources=enabled_sources_for_ui,
