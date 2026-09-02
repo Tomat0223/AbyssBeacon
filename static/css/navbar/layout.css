@@ -427,6 +427,84 @@
     vertical-align:1px;
 }
 
+/* Creator and Collection pages share a compact secondary navbar. Feed search
+   and filter state stay on the feed; the return action takes the brand's left
+   position while page-specific status/actions remain aligned on the right. */
+.navbar.navbar-secondary {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 18px;
+}
+.nav-secondary-return {
+    display: flex;
+    align-items: center;
+    min-width: max-content;
+}
+.nav-secondary-return-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 0 18px;
+    border: 1px solid rgba(0, 234, 255, .48);
+    border-radius: 999px;
+    background: rgba(4, 15, 18, .88);
+    color: #dffcff;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: border-color .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.nav-secondary-return-button:hover,
+.nav-secondary-return-button:focus-visible {
+    color: #00eaff;
+    border-color: #00eaff;
+    box-shadow: 0 0 12px rgba(0,234,255,.24);
+    outline: none;
+}
+.navbar-secondary .nav-center-cluster {
+    grid-column: 2;
+    justify-self: end;
+    margin-right: 0;
+}
+.navbar-secondary .nav-actions {
+    grid-column: 3;
+}
+.navbar-secondary .nav-creator-controls {
+    justify-content: flex-end;
+}
+.nav-creator-scan-button {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 0 17px;
+    border: 1px solid rgba(0, 234, 255, .55);
+    border-radius: 999px;
+    background: rgba(0, 234, 255, .07);
+    color: #dffcff;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.nav-creator-scan-button:hover:not(:disabled),
+.nav-creator-scan-button:focus-visible {
+    color: #00eaff;
+    border-color: #00eaff;
+    box-shadow: 0 0 12px rgba(0,234,255,.20);
+    outline: none;
+}
+.nav-creator-scan-button:disabled { cursor: wait; opacity: .58; }
+
+@media (max-width: 760px) {
+    .navbar.navbar-secondary { gap: 10px; padding: 0 10px; }
+    .nav-secondary-return-button { min-height: 38px; padding: 0 13px; font-size: 12px; }
+    .navbar-secondary .nav-summary { display: none; }
+}
+
 
 /* Navbar totals double as fast status-filter shortcuts. */
 .nav-count-shortcut {

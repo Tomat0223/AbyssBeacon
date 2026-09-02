@@ -3,8 +3,9 @@ NAME = "huggingface"
 DISPLAY = "Hugging Face"
 ENABLED = True
 import requests, time, database, re, html
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from scanners.common import metadata, media, processors
-from scanners.common.repository_classifier import needs_repository_classification_refresh
+from scanners.common.repository_classifier import classify_repository, needs_repository_classification_refresh
 
 from datetime import datetime, timedelta
 from urllib.parse import quote, urljoin, urlparse, unquote
@@ -180,7 +181,9 @@ def _repository_file_record(model_id, filename, info=None, revision="main"):
 
 
 HF_README_MEDIA_KEY = "hf_readme_media"
-HF_README_MEDIA_VERSION = 1
+HF_README_MEDIA_VERSION = 3
+MAX_REPOSITORY_READMES = 1000
+MAX_README_BYTES = 2 * 1024 * 1024
 README_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")
 README_VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v")
 
@@ -197,7 +200,7 @@ def _readme_media_type(url):
     return ""
 
 
-def _normalize_readme_media_url(model_id, value):
+def _normalize_readme_media_url(model_id, value, readme_path="README.md", revision="main"):
     value = html.unescape(str(value or "")).strip().strip("<>")
     if not value or value.startswith(("data:", "javascript:", "#")):
         return ""
@@ -209,8 +212,16 @@ def _normalize_readme_media_url(model_id, value):
         value = value.replace("huggingface.co/", "huggingface.co/", 1)
         value = value.replace("/blob/", "/resolve/", 1)
         return value
-    base = f"https://huggingface.co/{model_id}/resolve/main/"
-    return urljoin(base, value.lstrip("/"))
+    revision = quote(str(revision or "main").strip() or "main", safe="")
+    repository_root = f"https://huggingface.co/{model_id}/resolve/{revision}/"
+    if value.startswith("/"):
+        return urljoin(repository_root, value.lstrip("/"))
+    normalized_readme_path = str(readme_path or "README.md").strip().replace("\\", "/")
+    readme_directory = normalized_readme_path.rsplit("/", 1)[0] if "/" in normalized_readme_path else ""
+    base = repository_root
+    if readme_directory:
+        base += quote(readme_directory.strip("/"), safe="/") + "/"
+    return urljoin(base, value)
 
 
 def _media_filename_from_url(url, fallback=""):
@@ -221,7 +232,7 @@ def _media_filename_from_url(url, fallback=""):
     return name or str(fallback or "README media").strip() or "README media"
 
 
-def extract_readme_media(readme_text, model_id):
+def extract_readme_media(readme_text, model_id, readme_path="README.md", revision="main"):
     """Extract image/video embeds from a Hugging Face model-card README.
 
     Model cards frequently host previews on cdn-uploads.huggingface.co instead
@@ -233,9 +244,46 @@ def extract_readme_media(readme_text, model_id):
         return []
 
     candidates = []
+    model_mentions = []
+    for mention in re.finditer(
+        r'(?i)([a-z0-9_+.()\[\]-]+(?:/[a-z0-9_+.()\[\] -]+)*\.safetensors)',
+        text,
+    ):
+        reference = str(mention.group(1) or "").strip(" `\"'()[]{}<>.,;:")
+        if reference:
+            model_mentions.append((mention.start(), reference))
 
-    def add(raw_url, kind="", label=""):
-        url = _normalize_readme_media_url(model_id, raw_url)
+    def nearby_model_references(position):
+        if position is None or not model_mentions:
+            return []
+        ranked = sorted(
+            (
+                (abs(int(position) - mention_position), mention_position, reference)
+                for mention_position, reference in model_mentions
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        nearest_distance = ranked[0][0]
+        if nearest_distance > 2500:
+            return []
+        # Keep ties only. Multiple different closest references are ambiguous
+        # and will be resolved conservatively by the Collection matcher.
+        references = []
+        seen_references = set()
+        for distance, _mention_position, reference in ranked:
+            if distance != nearest_distance:
+                break
+            identity = reference.casefold()
+            if identity in seen_references:
+                continue
+            seen_references.add(identity)
+            references.append(reference)
+        return references
+
+    def add(raw_url, kind="", label="", position=None):
+        url = _normalize_readme_media_url(
+            model_id, raw_url, readme_path=readme_path, revision=revision
+        )
         if not url:
             return
         media_type = kind or _readme_media_type(url)
@@ -245,7 +293,12 @@ def extract_readme_media(readme_text, model_id):
         lowered = url.casefold()
         if "shields.io/" in lowered or "/badge/" in lowered:
             return
-        candidates.append((url, media_type, str(label or "").strip()))
+        candidates.append((
+            url,
+            media_type,
+            str(label or "").strip(),
+            nearby_model_references(position),
+        ))
 
     # Standard Markdown images.
     for match in re.finditer(
@@ -253,7 +306,7 @@ def extract_readme_media(readme_text, model_id):
         text,
         flags=re.I,
     ):
-        add(match.group(2) or match.group(3), "image", match.group(1))
+        add(match.group(2) or match.group(3), "image", match.group(1), match.start())
 
     def attr(tag, name):
         match = re.search(
@@ -266,45 +319,174 @@ def extract_readme_media(readme_text, model_id):
         return match.group(1) or match.group(2) or match.group(3) or ""
 
     # HTML embeds are common for video because Markdown itself has no video tag.
-    for tag in re.findall(r'<img\b[^>]*>', text, flags=re.I | re.S):
-        add(attr(tag, "src"), "image", attr(tag, "alt"))
-    for tag in re.findall(r'<video\b[^>]*>', text, flags=re.I | re.S):
-        add(attr(tag, "poster"), "image", "Video poster")
-        add(attr(tag, "src"), "video", "README video")
-    for tag in re.findall(r'<source\b[^>]*>', text, flags=re.I | re.S):
+    for match in re.finditer(r'<img\b[^>]*>', text, flags=re.I | re.S):
+        tag = match.group(0)
+        add(attr(tag, "src"), "image", attr(tag, "alt"), match.start())
+    for match in re.finditer(r'<video\b[^>]*>', text, flags=re.I | re.S):
+        tag = match.group(0)
+        add(attr(tag, "poster"), "image", "Video poster", match.start())
+        add(attr(tag, "src"), "video", "README video", match.start())
+    for match in re.finditer(r'<source\b[^>]*>', text, flags=re.I | re.S):
+        tag = match.group(0)
         source_url = attr(tag, "src")
         source_type = str(attr(tag, "type") or "").casefold()
         kind = "video" if source_type.startswith("video/") else ""
-        add(source_url, kind, "README video")
+        add(source_url, kind, "README video", match.start())
 
     # Also recognize direct media links. This catches model cards that use a
     # normal link around a video/image instead of an actual embed tag.
     for match in re.finditer(r'https?://[^\s<>"\')\]]+', text, flags=re.I):
-        add(match.group(0))
+        add(match.group(0), position=match.start())
 
     media_items = []
     seen = set()
-    for url, media_type, label in candidates:
+    for url, media_type, label, model_references in candidates:
         identity = url.split("#", 1)[0]
         if identity in seen:
             continue
         seen.add(identity)
         filename = _media_filename_from_url(url, label)
+        media_path = filename
+        try:
+            parsed_path = unquote(urlparse(url).path or "")
+            resolve_marker = f"/{model_id}/resolve/"
+            if resolve_marker in parsed_path:
+                revision_and_path = parsed_path.split(resolve_marker, 1)[1]
+                if "/" in revision_and_path:
+                    media_path = revision_and_path.split("/", 1)[1] or filename
+        except Exception:
+            media_path = filename
         media_items.append({
             "type": media_type,
             "url": url,
             "thumbnail": "",
             "filename": filename,
-            "path": filename,
+            "path": media_path,
             "metadata": {
                 "filename": filename,
-                "path": filename,
+                "path": media_path,
                 "origin": "Hugging Face README",
+                "readme_path": str(readme_path or "README.md"),
+                "model_references": model_references,
+                "association_evidence": (
+                    "Nearest safetensors reference in README"
+                    if model_references else "README directory"
+                ),
                 "label": label,
             },
             "position": len(media_items),
         })
     return media_items
+
+
+def repository_readme_paths(files):
+    """Return every repository README path, without imposing a depth limit."""
+    paths = []
+    seen = set()
+    for item in files or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip().replace("\\", "/")
+        if not path or path.rsplit("/", 1)[-1].casefold() != "readme.md":
+            continue
+        identity = path.casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        paths.append(path)
+    return sorted(paths, key=lambda path: (path.count("/"), path.casefold()))
+
+
+def fetch_repository_readme_media(
+    model_id,
+    files,
+    *,
+    root_readme_text="",
+    revision="main",
+    include_nested=False,
+    max_readmes=MAX_REPOSITORY_READMES,
+):
+    """Collect embeds from root and nested READMEs listed by the Hub tree.
+
+    Nested cards are fetched only during an existing metadata refresh path.
+    Requests stay on the repository raw-file endpoint, are bounded in count and
+    response size, and run with a small worker pool so large Collections remain
+    practical without turning normal duplicate scans into repeated crawling.
+    """
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        return []
+
+    readme_paths = repository_readme_paths(files)
+    root_path = next((path for path in readme_paths if path.casefold() == "readme.md"), "README.md")
+    nested_paths = (
+        [path for path in readme_paths if path.casefold() != "readme.md"]
+        if include_nested
+        else []
+    )
+    limit = max(0, int(max_readmes or 0))
+    if limit and len(nested_paths) > limit:
+        print(
+            f"Hugging Face nested README media: checking the first {limit} of "
+            f"{len(nested_paths)} nested README files for {model_id}"
+        )
+        nested_paths = nested_paths[:limit]
+
+    collected = extract_readme_media(
+        root_readme_text,
+        model_id,
+        readme_path=root_path,
+        revision=revision,
+    ) if str(root_readme_text or "").strip() else []
+
+    if not nested_paths:
+        return collected
+
+    _apply_auth()
+    request_headers = dict(session.headers)
+    revision_path = quote(str(revision or "main").strip() or "main", safe="")
+
+    def fetch_one(path):
+        worker_session = requests.Session()
+        worker_session.headers.update(request_headers)
+        try:
+            encoded_path = quote(path, safe="/")
+            response = get_with_backoff(
+                worker_session,
+                f"https://huggingface.co/{model_id}/raw/{revision_path}/{encoded_path}",
+                provider="Hugging Face",
+                label=f"nested README {model_id}/{path}",
+                max_retries=2,
+                timeout=12,
+            )
+            if response.status_code != 200:
+                return path, []
+            content = response.content or b""
+            if len(content) > MAX_README_BYTES:
+                content = content[:MAX_README_BYTES]
+            encoding = response.encoding or "utf-8"
+            text = content.decode(encoding, errors="replace")
+            return path, extract_readme_media(
+                text,
+                model_id,
+                readme_path=path,
+                revision=revision,
+            )
+        except Exception:
+            return path, []
+        finally:
+            worker_session.close()
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(nested_paths))) as executor:
+        futures = {executor.submit(fetch_one, path): path for path in nested_paths}
+        for future in as_completed(futures):
+            path, items = future.result()
+            results[path] = items
+
+    for path in nested_paths:
+        collected = merge_media_items(collected, results.get(path) or [])
+    return collected
 
 
 def stored_readme_media(card_data):
@@ -980,11 +1162,27 @@ def scan(
             files,
             f"https://huggingface.co/{model_id}/resolve/main"
         )
-        readme_media = (
-            extract_readme_media(readme_text, model_id)
-            if readme_loaded
-            else cached_readme_media
-        )
+        repository_readmes = repository_readme_paths(files)
+        media_classification = classify_repository({
+            "source": "huggingface",
+            "model_id": model_id,
+            "details": details,
+            "files": files,
+            "tags": details.get("tags") or item.get("tags") or [],
+            "library": details.get("library_name") or details.get("libraryName") or "",
+        }) or {}
+        include_nested_readmes = media_classification.get("container") == "collection"
+        if readme_loaded or repository_readmes:
+            refreshed_readme_media = fetch_repository_readme_media(
+                model_id,
+                files,
+                root_readme_text=readme_text,
+                revision=repo_sha or "main",
+                include_nested=include_nested_readmes,
+            )
+            readme_media = refreshed_readme_media or cached_readme_media
+        else:
+            readme_media = cached_readme_media
         card_data = readme_media_marker(card_data, readme_media)
         if inventory_complete and readme_checked:
             card_data = library_refresh_marker(

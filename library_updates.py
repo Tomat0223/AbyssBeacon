@@ -306,12 +306,48 @@ def _huggingface_library_refresh_target():
         return 1
 
 
+def _huggingface_nested_readme_current(snapshot):
+    """Require README media v3 only for saved Hugging Face Collections."""
+    card = _json_object(snapshot.get("card_data"))
+    classification = card.get("repository_classification")
+    if not isinstance(classification, dict) or classification.get("container") != "collection":
+        return True
+    marker = card.get("hf_readme_media")
+    if not isinstance(marker, dict):
+        return False
+    try:
+        from scanners import huggingface as huggingface_scanner
+        return int(marker.get("version") or 0) >= int(huggingface_scanner.HF_README_MEDIA_VERSION)
+    except Exception:
+        return int(marker.get("version") or 0) >= 3
+
+
+def _mark_huggingface_nested_readme_checked(snapshot):
+    """Resolve an unavailable Collection for this README media revision."""
+    card = _json_object(snapshot.get("card_data"))
+    marker = card.get("hf_readme_media")
+    marker = dict(marker) if isinstance(marker, dict) else {}
+    try:
+        from scanners import huggingface as huggingface_scanner
+        marker["version"] = int(huggingface_scanner.HF_README_MEDIA_VERSION)
+    except Exception:
+        marker["version"] = 3
+    if not isinstance(marker.get("items"), list):
+        marker["items"] = []
+    marker["checked_unavailable"] = True
+    card["hf_readme_media"] = marker
+    snapshot["card_data"] = card
+
+
 def _repository_update_current(snapshot, source):
     source = str(source or "").strip().casefold()
     if _repository_metadata_version(snapshot) < repository_classifier_target_version(source):
         return False
     if source == "huggingface":
-        return _huggingface_library_refresh_version(snapshot) >= _huggingface_library_refresh_target()
+        return (
+            _huggingface_library_refresh_version(snapshot) >= _huggingface_library_refresh_target()
+            and _huggingface_nested_readme_current(snapshot)
+        )
     return True
 
 
@@ -712,10 +748,20 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
             files,
             f"https://huggingface.co/{model_key}/resolve/main",
         )
-        readme_media = (
-            huggingface_scanner.extract_readme_media(readme_text, model_key)
-            if readme_text
-            else []
+        media_classification = classify_repository({
+            "source": "huggingface",
+            "model_id": model_key,
+            "details": details,
+            "files": files,
+            "tags": details.get("tags") or [],
+            "library": details.get("library_name") or details.get("libraryName") or "",
+        }) or {}
+        readme_media = huggingface_scanner.fetch_repository_readme_media(
+            model_key,
+            files,
+            root_readme_text=readme_text,
+            revision=revision,
+            include_nested=media_classification.get("container") == "collection",
         )
         card = huggingface_scanner.readme_media_marker(card, readme_media)
         model_media = huggingface_scanner.merge_media_items(
@@ -794,7 +840,7 @@ def _hydrate_repository_snapshot(snapshot, source, model_key):
     return None, False, f"targeted repository refresh is not supported for {source}"
 
 
-def _persist_snapshot_update(conn, row, snapshot):
+def _persist_snapshot_update(conn, row, snapshot, family_sync_queue=None):
     source = str(row["source"] or "").strip().lower()
     model_key = str(row["model_key"] or "").strip()
     source_data = json.dumps(snapshot, ensure_ascii=False)
@@ -802,6 +848,11 @@ def _persist_snapshot_update(conn, row, snapshot):
         "UPDATE model_sources SET source_data=? WHERE id=?",
         (source_data, int(row["source_link_id"])),
     )
+    if family_sync_queue is not None:
+        sync_snapshot = dict(snapshot)
+        sync_snapshot["source"] = source
+        sync_snapshot["model_key"] = model_key
+        family_sync_queue[(int(row["model_id"]), source, model_key)] = sync_snapshot
 
     canonical_matches = (
         str(row["canonical_source"] or "").strip().lower() == source
@@ -878,6 +929,7 @@ def _run_repository_update():
     deferred = 0
     failed = 0
     source_refreshes = 0
+    family_sync_queue = {}
     try:
         rows = _repository_rows(conn)
         pending_rows = []
@@ -912,7 +964,10 @@ def _run_repository_update():
             try:
                 if (
                     source == "huggingface"
-                    and _huggingface_library_refresh_version(snapshot) < _huggingface_library_refresh_target()
+                    and (
+                        _huggingface_library_refresh_version(snapshot) < _huggingface_library_refresh_target()
+                        or not _huggingface_nested_readme_current(snapshot)
+                    )
                 ):
                     needs_source_refresh.append((row, snapshot))
                     continue
@@ -929,12 +984,12 @@ def _run_repository_update():
                             snapshot, source, model_key, reason,
                             status="classification_unavailable",
                         )
-                        _persist_snapshot_update(conn, row, snapshot)
+                        _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                         checked += 1
                         _set_job(checked=checked, error=reason)
                     continue
 
-                _persist_snapshot_update(conn, row, snapshot)
+                _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                 updated += 1
                 _set_job(updated=updated)
                 if index % 100 == 0:
@@ -947,7 +1002,7 @@ def _run_repository_update():
                         snapshot, source, model_key, reason,
                         status="classification_error",
                     )
-                    _persist_snapshot_update(conn, row, snapshot)
+                    _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                     checked += 1
                     _set_job(checked=checked, error=reason)
                 except Exception:
@@ -989,7 +1044,8 @@ def _run_repository_update():
                                 inventory_complete=False,
                                 readme_checked=False,
                             )
-                        _persist_snapshot_update(conn, row, snapshot)
+                            _mark_huggingface_nested_readme_checked(snapshot)
+                        _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                         conn.commit()
                         checked += 1
                         _set_job(checked=checked, error=reason)
@@ -1003,7 +1059,7 @@ def _run_repository_update():
                                 snapshot, source, model_key, reason,
                                 status="classification_unavailable",
                             )
-                            _persist_snapshot_update(conn, row, snapshot)
+                            _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                             conn.commit()
                             if source == "huggingface":
                                 _refresh_huggingface_media(row, snapshot, model_key)
@@ -1022,7 +1078,7 @@ def _run_repository_update():
                                         inventory_complete=bool(details.get("_library_inventory_complete")),
                                         readme_checked=bool(details.get("_library_readme_checked")),
                                     )
-                            _persist_snapshot_update(conn, row, snapshot)
+                            _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                             conn.commit()
                             if source == "huggingface":
                                 _refresh_huggingface_media(row, snapshot, model_key)
@@ -1049,7 +1105,8 @@ def _run_repository_update():
                                 inventory_complete=False,
                                 readme_checked=False,
                             )
-                        _persist_snapshot_update(conn, row, snapshot)
+                            _mark_huggingface_nested_readme_checked(snapshot)
+                        _persist_snapshot_update(conn, row, snapshot, family_sync_queue)
                         conn.commit()
                         checked += 1
                         _set_job(checked=checked, error=reason)
@@ -1058,6 +1115,14 @@ def _run_repository_update():
                         _set_job(deferred=deferred, error=reason)
 
         conn.commit()
+        for (model_id, _source, _model_key), snapshot in family_sync_queue.items():
+            try:
+                database.sync_collection_families_from_snapshot(model_id, snapshot)
+            except Exception as sync_exc:
+                print(
+                    "  Collection family tracking skipped "
+                    f"[{_source}] {_model_key}: {type(sync_exc).__name__}: {sync_exc}"
+                )
         remaining = _compute_update_status()
         result = {
             "updated": updated,

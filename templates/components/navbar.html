@@ -1,10 +1,19 @@
-<div class="navbar">
+<div class="navbar{% if creator_page_mode or collection_page_mode %} navbar-secondary{% endif %}">
 
     <div class="navbar-bg"></div>
 
+    {% if creator_page_mode or collection_page_mode %}
+    <div class="nav-secondary-return">
+        <a href="/" class="nav-secondary-return-button"{% if collection_page_mode %} data-feed-restore="true"{% endif %} title="Return to the AbyssBeacon home feed">
+            ← Back to AbyssBeacon
+        </a>
+    </div>
+    {% else %}
     {% include "components/navbar/brand.html" %}
+    {% endif %}
 
     {% if not hide_scan %}
+    {% if not creator_page_mode and not collection_page_mode %}
     <div class="nav-search-area">
         <div class="nav-search-box">
             <span class="nav-search-icon" aria-hidden="true">⌕</span>
@@ -22,8 +31,22 @@
             Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>favorite:</strong> <strong>sort:</strong>
         </div>
     </div>
+    {% endif %}
 
     <div class="nav-center-cluster">
+        {% if collection_page_mode %}
+        <div class="nav-summary nav-library-summary nav-collection-summary" aria-live="polite">
+            <div class="nav-summary-total"><strong>{{ family_count }}</strong><span>families</span></div>
+            <div class="nav-summary-statuses">
+                {% if collection_change_summary.has_changes %}
+                <strong>{{ collection_change_summary.family_updates + collection_change_summary.new_variants }}</strong>
+                <span>latest changes</span>
+                {% else %}
+                <span>Collection current</span>
+                {% endif %}
+            </div>
+        </div>
+        {% else %}
         <div class="nav-summary nav-library-summary" aria-live="polite">
             <div class="nav-summary-total">
                 <strong id="modelCountValue" class="nav-count-value">{{ model_count }}</strong>
@@ -56,14 +79,37 @@
                 </span>
             </div>
         </div>
+        {% endif %}
 
-        {% if creator_page_mode %}
-        <div class="nav-creator-controls">
-            <div class="nav-creator-return">
-                <a href="/" class="nav-creator-return-button" title="Return to the AbyssBeacon home feed">
-                    ← Back to AbyssBeacon
-                </a>
+        {% if collection_page_mode %}
+        <div class="nav-creator-controls nav-collection-controls">
+            <span id="collectionReloadStatus" class="collection-reload-status" aria-live="polite"></span>
+            <button
+                type="button"
+                id="collectionReloadButton"
+                class="collection-reload-button"
+                data-reload-url="{{ reload_url }}"
+                title="Reload this Collection from its attached source(s)"
+            >↻ Reload</button>
+            {% if source_url %}
+            <button
+                type="button"
+                id="collectionCopyLinkButton"
+                class="collection-copy-link"
+                data-copy-url="{{ source_url }}"
+                title="Copy this Collection's source URL"
+            >Copy URL</button>
+            <a class="collection-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">View on {{ source_label }}</a>
+            {% endif %}
+            <div class="navbar-download-links">
+                <button id="downloadHistoryButton" class="download-history-button" type="button">Download Manager</button>
+                <span id="activeDownloadPing" class="active-download-ping" hidden
+                      title="Download active" aria-label="Download active"></span>
             </div>
+        </div>
+        {% elif creator_page_mode %}
+        <div class="nav-creator-controls">
+            <button id="openCreatorScanBtn" class="nav-creator-scan-button" type="button">Creator Scan</button>
             <button id="creatorScanDetailsButton"
                     class="scan-details-button creator-scan-details-button"
                     type="button"

@@ -11,36 +11,17 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components/collection.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components/gallery.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components/fullscreen.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/layout.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/dropdowns.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/options.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/scan.css') }}">
     <script src="{{ url_for('static', filename='js/gallery.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/fullscreen.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/collection.js') }}" defer></script>
 </head>
 <body class="collection-page" data-access-status="{{ collection_access_status }}" style="--collection-source-color: {{ source_color }}">
+    {% include "components/navbar.html" %}
     <main class="collection-shell">
-        <div class="collection-topbar">
-            <a class="collection-back" href="/">← Back to AbyssBeacon</a>
-            <div class="collection-topbar-actions">
-                <span id="collectionReloadStatus" class="collection-reload-status" aria-live="polite"></span>
-                <button
-                    type="button"
-                    id="collectionReloadButton"
-                    class="collection-reload-button"
-                    data-reload-url="{{ reload_url }}"
-                    title="Reload this Collection from its attached source(s)"
-                >↻ Reload Collection</button>
-                {% if source_url %}
-                <button
-                    type="button"
-                    id="collectionCopyLinkButton"
-                    class="collection-copy-link"
-                    data-copy-url="{{ source_url }}"
-                    title="Copy this Collection's source URL"
-                >Copy Link</button>
-                <a class="collection-source-link" href="{{ source_url }}" target="_blank" rel="noopener noreferrer">View on {{ source_label }}</a>
-                {% endif %}
-            </div>
-        </div>
-
         <section class="collection-hero">
             <div class="collection-kicker">{{ collection_type }} Collection</div>
             <h1>{{ title }}</h1>
@@ -55,6 +36,18 @@
                 <div><strong>{{ repository_file_count }}</strong><span>repository files</span></div>
                 <div><strong>{{ media_count }}</strong><span>previews</span></div>
             </div>
+            {% if collection_change_summary.has_changes %}
+            <div class="collection-change-summary" aria-label="Latest Collection changes">
+                <span class="collection-change-summary-kicker">LATEST CHANGES</span>
+                <strong>
+                    {% if collection_change_summary.family_updates %}{{ collection_change_summary.family_updates }} family update{{ '' if collection_change_summary.family_updates == 1 else 's' }}{% endif %}
+                    {% if collection_change_summary.family_updates and collection_change_summary.new_variants %}<span aria-hidden="true">·</span>{% endif %}
+                    {% if collection_change_summary.new_variants %}{{ collection_change_summary.new_variants }} new variant{{ '' if collection_change_summary.new_variants == 1 else 's' }}{% endif %}
+                </strong>
+                <span>Detected from repository files. Downloads continue through AbyssBeacon's normal Download Manager.</span>
+                <button type="button" id="collectionViewChanges" class="collection-view-changes">View changed families</button>
+            </div>
+            {% endif %}
         </section>
 
         {% if media %}
@@ -64,7 +57,14 @@
                     <span class="collection-section-kicker">COLLECTION MEDIA</span>
                     <h2>Repository previews</h2>
                 </div>
-                <span id="collectionMediaPageStatus">Page 1 of {{ media_page_count }} · {{ media_count }} previews</span>
+                <div class="collection-media-page-meta">
+                    <span id="collectionMediaPageStatus">Page 1 of {{ media_page_count }} · {{ media_count }} previews</span>
+                    <nav class="collection-media-page-jump" aria-label="Repository preview pages">
+                        <button id="collectionMediaFirstPage" type="button" title="First preview page">First</button>
+                        <div id="collectionMediaPageNumbers" class="collection-media-page-numbers"></div>
+                        <button id="collectionMediaLastPage" type="button" title="Last preview page">Last</button>
+                    </nav>
+                </div>
             </div>
             <div class="collection-media-browser">
                 <button id="collectionMediaPagePrev" class="collection-media-page-button" type="button" aria-label="Previous preview page" title="Previous previews">‹</button>
@@ -118,13 +118,23 @@
                         placeholder="Search families, variants, or filenames..."
                         autocomplete="off"
                     >
+                    {% if collection_change_summary.has_changes %}
+                    <button type="button" id="collectionChangesOnly" class="collection-changes-only" aria-pressed="false">Show changes</button>
+                    {% endif %}
                     <span id="collectionSearchCount" class="collection-search-count">{{ family_count }} shown</span>
+                </div>
+                <div id="collectionAlphaFilter" class="collection-alpha-filter" aria-label="Filter Collection files by first character">
+                    <button type="button" class="collection-alpha-button" data-alpha="all" aria-pressed="true">All</button>
+                    <button type="button" class="collection-alpha-button" data-alpha="#" aria-pressed="false">#</button>
+                    {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
+                    <button type="button" class="collection-alpha-button" data-alpha="{{ letter }}" aria-pressed="false">{{ letter }}</button>
+                    {% endfor %}
                 </div>
             </div>
 
             <div class="collection-grid" id="collectionFamilyGrid">
                 {% for group in groups %}
-                <details id="{{ group.dom_id }}" class="collection-child-card" data-family-search="{{ group.search_text|e }}">
+                <details id="{{ group.dom_id }}" class="collection-child-card" data-family-search="{{ group.search_text|e }}" data-family-alpha="{{ group.alpha_buckets|join(' ') }}" data-family-changed="{{ 'true' if group.change_badges else 'false' }}">
                     <summary>
                         <div class="collection-child-main">
                             <div class="collection-child-title">{{ group.name }}</div>
@@ -133,6 +143,13 @@
                                 <span>{{ group.file_count }} file{{ '' if group.file_count == 1 else 's' }}</span>
                                 {% if group.size_display %}<span>{{ group.size_display }}</span>{% endif %}
                             </div>
+                            {% if group.change_badges %}
+                            <div class="collection-family-change-badges" aria-label="Latest family changes">
+                                {% for badge in group.change_badges %}
+                                <span class="collection-change-badge is-{{ badge.kind }}" title="{{ badge.detail }}">{{ badge.label }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
                             {% if group.variants %}
                             <div class="collection-variant-preview">
                                 {% for variant in group.variants[:6] %}<span>{{ variant }}</span>{% endfor %}
@@ -162,6 +179,7 @@
                                         {% if file.variant_label %}<span>{{ file.variant_label }}</span>{% endif %}
                                         {% if file.size_display %}<span>{{ file.size_display }}</span>{% endif %}
                                     </div>
+                                    {% if file.change_label %}<span class="collection-file-change is-{{ file.change_kind }}">{{ file.change_label }}</span>{% endif %}
                                 </div>
                                 <div class="collection-download-stack">
                                     {% if collection_access_status == 'gated' %}
@@ -184,6 +202,20 @@
                                     </button>
                                     {% endfor %}
                                 </div>
+                            </div>
+                            {% endif %}
+                            {% if file.readme_refs %}
+                            <div class="collection-file-readme-row">
+                                <span>Model information</span>
+                                {% for readme in file.readme_refs %}
+                                <button
+                                    type="button"
+                                    class="collection-readme-open"
+                                    data-readme-url="{{ readme.url }}"
+                                    data-readme-path="{{ readme.path }}"
+                                    title="Open {{ readme.path }} inside AbyssBeacon"
+                                >{{ readme.label }}</button>
+                                {% endfor %}
                             </div>
                             {% endif %}
                         </div>
@@ -230,6 +262,24 @@
     </main>
 
     <button id="collectionBackToTop" class="back-to-top" type="button" aria-label="Back to top" title="Back to top">↑ Top</button>
+
+    <div id="collectionReadmeOverlay" class="collection-readme-overlay" aria-hidden="true">
+        <div class="collection-readme-panel" role="dialog" aria-modal="true" aria-labelledby="collectionReadmeTitle">
+            <div class="collection-readme-header">
+                <div>
+                    <span class="collection-section-kicker">MODEL README</span>
+                    <strong id="collectionReadmeTitle">README</strong>
+                    <small id="collectionReadmePath"></small>
+                </div>
+                <div class="collection-readme-actions">
+                    <a id="collectionReadmeSource" href="#" target="_blank" rel="noopener noreferrer" hidden>View on Hugging Face</a>
+                    <button id="collectionReadmeClose" type="button" aria-label="Close README viewer">×</button>
+                </div>
+            </div>
+            <div id="collectionReadmeStatus" class="collection-readme-status" aria-live="polite"></div>
+            <pre id="collectionReadmeContent" class="collection-readme-content"></pre>
+        </div>
+    </div>
 
     {% if media %}
     <!-- Reuse the exact normal-card media viewer instead of opening raw image
@@ -290,5 +340,35 @@
         <button id="fullscreenNext" class="fullscreen-nav fullscreen-next" type="button" aria-label="Next image">›</button>
     </div>
     {% endif %}
+
+    <div id="settingsOverlay" class="settings-overlay" aria-hidden="true">
+        <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsOverlayTitle">
+            <div class="settings-modal-header">
+                <span id="settingsOverlayTitle">Settings</span>
+                <button id="closeSettingsOverlay" class="settings-modal-close" type="button" aria-label="Close settings">×</button>
+            </div>
+            <iframe id="settingsFrame" class="settings-frame" title="AbyssBeacon settings"></iframe>
+        </div>
+    </div>
+
+    <script id="favorite-creators-data" type="application/json">{{ favorite_creator_names | default([]) | tojson }}</script>
+    <script id="user-preferences" type="application/json">{{ preferences | default({}) | tojson }}</script>
+    <script>
+        try {
+            window.userPreferences = JSON.parse(
+                document.getElementById("user-preferences")?.textContent || "{}"
+            );
+        } catch (_) {
+            window.userPreferences = {};
+        }
+    </script>
+    <script src="{{ url_for('static', filename='js/scanner.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/search_sources.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/discovery.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/navbar.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/modal.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

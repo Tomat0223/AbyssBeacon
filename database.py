@@ -367,6 +367,8 @@ def initialize():
         favorite INTEGER DEFAULT 0,
         file_count INTEGER DEFAULT 0,
         variant_signature TEXT DEFAULT '',
+        change_summary TEXT DEFAULT '',
+        change_detected_at TEXT DEFAULT '',
         first_seen TEXT,
         last_seen TEXT,
         FOREIGN KEY(model_id) REFERENCES models(id),
@@ -383,6 +385,17 @@ def initialize():
     CREATE INDEX IF NOT EXISTS idx_collection_families_favorite
     ON collection_families(favorite, model_id)
     """)
+
+    collection_family_columns = {
+        row["name"]
+        for row in c.execute("PRAGMA table_info(collection_families)").fetchall()
+    }
+    for name, definition in [
+        ("change_summary", "TEXT DEFAULT ''"),
+        ("change_detected_at", "TEXT DEFAULT ''"),
+    ]:
+        if name not in collection_family_columns:
+            c.execute(f"ALTER TABLE collection_families ADD COLUMN {name} {definition}")
 
     conn.commit()
     conn.close()
@@ -671,6 +684,10 @@ def refresh_model_source_snapshot(model_id, source, model_key, snapshot, url="")
 
     conn.commit()
     conn.close()
+    collection_snapshot = dict(snapshot)
+    collection_snapshot["source"] = source
+    collection_snapshot["model_key"] = model_key
+    sync_collection_families_from_snapshot(model_id, collection_snapshot)
     return changed
 
 def refresh_canonical_model_media(model_id, source, media_items, fallback_image=""):
@@ -1724,6 +1741,10 @@ def add_model(model):
             c.execute("UPDATE models SET last_seen=? WHERE id=?", (now_seen, cross["id"]))
             conn.commit()
             conn.close()
+            collection_snapshot = _model_mapping(model)
+            collection_snapshot["source"] = incoming_source
+            collection_snapshot["model_key"] = str(model.get("model_key", "") or "")
+            sync_collection_families_from_snapshot(cross["id"], collection_snapshot)
             return {
                 "model_id": cross["id"],
                 "state": "unchanged",
@@ -2082,6 +2103,11 @@ def add_model(model):
 
     conn.commit()
     conn.close()
+
+    collection_snapshot = _model_mapping(model)
+    collection_snapshot["source"] = str(model.get("source", "") or "")
+    collection_snapshot["model_key"] = str(model.get("model_key", "") or "")
+    sync_collection_families_from_snapshot(model_id, collection_snapshot)
 
     return {
         "model_id": model_id,
@@ -2663,13 +2689,222 @@ def set_model_favorite(model_id, favorite):
     return bool(changed)
 
 
-def sync_collection_families(model_id, source, model_key, groups):
-    """Persist stable Collection family identities without creating feed rows.
+def _collection_file_path(file_data):
+    if not isinstance(file_data, dict):
+        return ""
+    return str(
+        file_data.get("path")
+        or file_data.get("name")
+        or file_data.get("filename")
+        or ""
+    ).strip().replace("\\", "/")
 
-    Existing favorite state is preserved across rescans/reloads. File/variant
-    signatures are retained as a future update-tracking foundation but are not
-    interpreted as update state yet.
-    """
+
+def _collection_file_content_identity(file_data):
+    """Return positive content evidence without using repository timestamps."""
+    if not isinstance(file_data, dict):
+        return ""
+
+    hash_values = []
+    hashes = file_data.get("hashes")
+    if isinstance(hashes, dict):
+        for key in ("sha256", "SHA256", "sha", "oid"):
+            if hashes.get(key):
+                hash_values.append(hashes.get(key))
+    elif hashes:
+        hash_values.append(hashes)
+
+    lfs = file_data.get("lfs")
+    if isinstance(lfs, dict):
+        hash_values.extend([lfs.get("sha256"), lfs.get("oid")])
+
+    hash_values.extend([
+        file_data.get("sha256"),
+        file_data.get("sha"),
+        file_data.get("hash"),
+        file_data.get("oid"),
+        file_data.get("blob_id"),
+    ])
+    for value in hash_values:
+        value = str(value or "").strip().casefold()
+        if value:
+            return f"hash:{value}"
+
+    file_id = str(
+        file_data.get("model_file_id")
+        or file_data.get("file_id")
+        or file_data.get("id")
+        or ""
+    ).strip().casefold()
+    if file_id:
+        return f"id:{file_id}"
+
+    try:
+        size = int(file_data.get("size_bytes") or file_data.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return f"size:{size}" if size > 0 else ""
+
+
+def _collection_family_signature(group):
+    variants = [
+        str(value).strip()
+        for value in (group.get("variants") or [])
+        if str(value).strip()
+    ]
+    files = []
+    for item in group.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        path = _collection_file_path(item)
+        if not path:
+            continue
+        files.append({
+            "path": path,
+            "path_key": path.casefold(),
+            "variant": str(item.get("variant_label") or "").strip(),
+            "content": _collection_file_content_identity(item),
+        })
+    files.sort(key=lambda item: item["path_key"])
+    return json.dumps(
+        {"version": 2, "variants": variants, "files": files},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _decode_collection_family_signature(value):
+    try:
+        parsed = json.loads(str(value or ""))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _collection_step_number(value):
+    match = re.fullmatch(r"step\s*(\d+)", str(value or "").strip(), flags=re.I)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_collection_family_changes(old_signature, new_signature):
+    """Classify a stored family snapshot transition into user-facing changes."""
+    old = _decode_collection_family_signature(old_signature)
+    new = _decode_collection_family_signature(new_signature)
+    try:
+        old_version = int(old.get("version") or 0)
+    except (TypeError, ValueError):
+        old_version = 0
+    try:
+        new_version = int(new.get("version") or 0)
+    except (TypeError, ValueError):
+        new_version = 0
+    # The original family signature already retained variants, so it can
+    # safely detect steps/ranks during the v2 migration. Content replacement
+    # detection still requires file identities from two v2 snapshots.
+    if not old or "variants" not in old or new_version < 2:
+        return {}
+
+    old_files = {
+        str(item.get("path_key") or ""): item
+        for item in (old.get("files") or [])
+        if isinstance(item, dict) and str(item.get("path_key") or "")
+    }
+    new_files = {
+        str(item.get("path_key") or ""): item
+        for item in (new.get("files") or [])
+        if isinstance(item, dict) and str(item.get("path_key") or "")
+    }
+
+    updated_files = []
+    if old_version >= 2:
+        for path_key in sorted(set(old_files) & set(new_files)):
+            previous = old_files[path_key]
+            current = new_files[path_key]
+            old_content = str(previous.get("content") or "")
+            new_content = str(current.get("content") or "")
+            old_kind = old_content.split(":", 1)[0] if ":" in old_content else ""
+            new_kind = new_content.split(":", 1)[0] if ":" in new_content else ""
+            # A metadata refresh may improve an identity from size -> SHA
+            # without the file itself changing. Compare like-for-like evidence.
+            if (
+                old_content
+                and new_content
+                and old_kind == new_kind
+                and old_content != new_content
+            ):
+                updated_files.append({
+                    "path": str(current.get("path") or previous.get("path") or path_key),
+                    "path_key": path_key,
+                })
+
+    old_variants = {
+        str(value).strip().casefold(): str(value).strip()
+        for value in (old.get("variants") or [])
+        if str(value).strip()
+    }
+    new_variants = {
+        str(value).strip().casefold(): str(value).strip()
+        for value in (new.get("variants") or [])
+        if str(value).strip()
+    }
+    added_variant_keys = set(new_variants) - set(old_variants)
+
+    old_steps = [
+        step for step in (_collection_step_number(value) for value in old_variants.values())
+        if step is not None
+    ]
+    new_steps = [
+        step for step in (_collection_step_number(value) for value in new_variants.values())
+        if step is not None
+    ]
+    newer_step = {}
+    old_max = max(old_steps) if old_steps else None
+    new_max = max(new_steps) if new_steps else None
+    if old_max is not None and new_max is not None and new_max > old_max:
+        step_paths = [
+            str(item.get("path") or "")
+            for item in new_files.values()
+            if (_collection_step_number(item.get("variant")) or -1) > old_max
+        ]
+        newer_step = {
+            "from": old_max,
+            "to": new_max,
+            "paths": [path for path in step_paths if path],
+        }
+
+    new_variants_list = []
+    for key in sorted(added_variant_keys):
+        label = new_variants[key]
+        if _collection_step_number(label) is not None:
+            continue
+        paths = [
+            str(item.get("path") or "")
+            for item in new_files.values()
+            if str(item.get("variant") or "").strip().casefold() == key
+        ]
+        new_variants_list.append({
+            "label": label,
+            "paths": [path for path in paths if path],
+        })
+
+    if not newer_step and not new_variants_list and not updated_files:
+        return {}
+    return {
+        "version": 1,
+        "newer_step": newer_step,
+        "new_variants": new_variants_list,
+        "updated_files": updated_files,
+    }
+
+
+def sync_collection_families(model_id, source, model_key, groups):
+    """Persist identities and classify changes without creating feed rows."""
     model_id = int(model_id)
     source = str(source or "").strip().lower()
     model_key = str(model_key or "").strip()
@@ -2678,6 +2913,12 @@ def sync_collection_families(model_id, source, model_key, groups):
     conn = connect()
     cur = conn.cursor()
     family_ids = []
+    existing_rows = cur.execute(
+        "SELECT family_id,variant_signature,change_summary,change_detected_at "
+        "FROM collection_families WHERE lower(source)=? AND lower(model_key)=lower(?)",
+        (source, model_key),
+    ).fetchall()
+    existing_by_id = {str(row["family_id"]): row for row in existing_rows}
 
     for group in groups or []:
         if not isinstance(group, dict):
@@ -2687,22 +2928,37 @@ def sync_collection_families(model_id, source, model_key, groups):
         if not family_id or not family_key:
             continue
         family_ids.append(family_id)
-        variants = [str(v) for v in (group.get("variants") or []) if str(v).strip()]
-        file_names = [
-            str(item.get("name") or item.get("path") or "")
-            for item in (group.get("files") or [])
-            if isinstance(item, dict)
-        ]
-        signature = json.dumps(
-            {"variants": variants, "files": file_names},
-            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
-        )
+        signature = _collection_family_signature(group)
+        existing = existing_by_id.get(family_id)
+        previous_signature = str(existing["variant_signature"] or "") if existing else ""
+        previous_summary = str(existing["change_summary"] or "") if existing else ""
+        previous_detected_at = str(existing["change_detected_at"] or "") if existing else ""
+
+        if existing and previous_signature == signature:
+            change_summary = previous_summary
+            change_detected_at = previous_detected_at
+        elif existing:
+            changes = _classify_collection_family_changes(previous_signature, signature)
+            if changes:
+                changes["detected_at"] = now
+                change_summary = json.dumps(
+                    changes, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                )
+                change_detected_at = now
+            else:
+                change_summary = ""
+                change_detected_at = ""
+        else:
+            change_summary = ""
+            change_detected_at = ""
+
         cur.execute(
             """
             INSERT INTO collection_families
                 (family_id, model_id, source, model_key, family_key, display_name,
-                 artifact_type, favorite, file_count, variant_signature, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                 artifact_type, favorite, file_count, variant_signature,
+                 change_summary, change_detected_at, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(family_id) DO UPDATE SET
                 model_id=excluded.model_id,
                 source=excluded.source,
@@ -2712,6 +2968,8 @@ def sync_collection_families(model_id, source, model_key, groups):
                 artifact_type=excluded.artifact_type,
                 file_count=excluded.file_count,
                 variant_signature=excluded.variant_signature,
+                change_summary=excluded.change_summary,
+                change_detected_at=excluded.change_detected_at,
                 last_seen=excluded.last_seen
             """,
             (
@@ -2719,22 +2977,104 @@ def sync_collection_families(model_id, source, model_key, groups):
                 str(group.get("name") or family_key),
                 str(group.get("artifact_type") or ""),
                 int(group.get("file_count") or 0),
-                signature, now, now,
+                signature, change_summary, change_detected_at, now, now,
             ),
         )
 
     favorites = set()
     if family_ids:
-        placeholders = ",".join("?" for _ in family_ids)
         rows = cur.execute(
-            f"SELECT family_id FROM collection_families WHERE favorite=1 AND family_id IN ({placeholders})",
-            family_ids,
+            "SELECT family_id FROM collection_families "
+            "WHERE favorite=1 AND lower(source)=? AND lower(model_key)=lower(?)",
+            (source, model_key),
         ).fetchall()
-        favorites = {str(row["family_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows}
+        current_ids = set(family_ids)
+        favorites = {
+            str(row["family_id"] if isinstance(row, sqlite3.Row) else row[0])
+            for row in rows
+            if str(row["family_id"] if isinstance(row, sqlite3.Row) else row[0]) in current_ids
+        }
 
     conn.commit()
     conn.close()
     return favorites
+
+
+def sync_collection_families_from_snapshot(model_id, snapshot):
+    """Build/sync Collection families directly after a scan or source reload."""
+    if not model_id:
+        return set()
+    snapshot = _model_mapping(snapshot)
+    if not snapshot:
+        return set()
+    card = snapshot.get("card_data")
+    if isinstance(card, str):
+        try:
+            card = json.loads(card or "{}")
+        except Exception:
+            card = {}
+    card = card if isinstance(card, dict) else {}
+    classification = card.get("repository_classification")
+    if not isinstance(classification, dict) or classification.get("container") != "collection":
+        return set()
+
+    files = snapshot.get("files") or []
+    if isinstance(files, str):
+        try:
+            files = json.loads(files or "[]")
+        except Exception:
+            files = []
+    if not isinstance(files, list):
+        files = []
+
+    source = str(snapshot.get("source") or "").strip().lower()
+    model_key = str(snapshot.get("model_key") or "").strip()
+    collection_type = str(
+        classification.get("collection_type")
+        or classification.get("primary_artifact_type")
+        or "Model"
+    ).strip() or "Model"
+    if not source or not model_key:
+        return set()
+
+    from scanners.common.repository_classifier import build_collection_groups
+    groups = build_collection_groups(
+        files, collection_type, source=source, model_key=model_key
+    )
+    return sync_collection_families(model_id, source, model_key, groups)
+
+
+def get_collection_family_changes(model_id, family_ids=None):
+    """Return the latest classified transition for current Collection families."""
+    model_id = int(model_id)
+    ids = {str(value).strip() for value in (family_ids or []) if str(value).strip()}
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT family_id,change_summary,change_detected_at "
+            "FROM collection_families WHERE model_id=?",
+            (model_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = {}
+    for row in rows:
+        family_id = str(row["family_id"])
+        if ids and family_id not in ids:
+            continue
+        try:
+            summary = json.loads(row["change_summary"] or "{}")
+        except Exception:
+            summary = {}
+        if not isinstance(summary, dict) or not summary:
+            continue
+        summary = dict(summary)
+        summary["detected_at"] = str(
+            summary.get("detected_at") or row["change_detected_at"] or ""
+        )
+        result[family_id] = summary
+    return result
 
 
 def set_collection_family_favorite(model_id, family_id, favorite):

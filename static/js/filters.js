@@ -49,6 +49,7 @@ function ensureSearchUI(){
     if(document.getElementById("modelSearch")) return;
 
     const navbar=document.querySelector(".navbar");
+    if(navbar?.classList.contains("navbar-secondary")) return;
     const cluster=navbar?.querySelector(".nav-center-cluster");
     if(!navbar || !cluster) return;
 
@@ -76,6 +77,8 @@ function ensureSearchUI(){
 }
 
 function initializeFilters(){
+
+    if(document.querySelector(".navbar.navbar-secondary")) return;
 
     ensureSearchUI();
     restorePreferences();

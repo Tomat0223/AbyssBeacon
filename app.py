@@ -2988,14 +2988,6 @@ def refresh_download_source(model_id, source, _batch=False):
             if description:
                 snapshot["description"] = str(description)
 
-            readme_media_items = (
-                huggingface_scanner.extract_readme_media(readme_text, model_key)
-                if readme_loaded
-                else cached_readme_media
-            )
-            card_data = huggingface_scanner.readme_media_marker(card_data, readme_media_items)
-            snapshot["card_data"] = card_data
-
             apply_repository_classification(
                 "huggingface",
                 details,
@@ -3007,6 +2999,35 @@ def refresh_download_source(model_id, source, _batch=False):
                     or ""
                 ),
             )
+            refreshed_classification = (
+                (snapshot.get("card_data") or {}).get("repository_classification")
+                if isinstance(snapshot.get("card_data"), dict)
+                else {}
+            ) or {}
+            repository_readmes = huggingface_scanner.repository_readme_paths(files)
+            if readme_loaded or repository_readmes:
+                refreshed_readme_media = huggingface_scanner.fetch_repository_readme_media(
+                    model_key,
+                    files,
+                    root_readme_text=readme_text,
+                    revision=str(details.get("sha") or "main"),
+                    include_nested=refreshed_classification.get("container") == "collection",
+                )
+                readme_media_items = refreshed_readme_media or cached_readme_media
+            else:
+                readme_media_items = cached_readme_media
+            # Classification above updates snapshot.card_data. Merge README
+            # media into that current object rather than the pre-classification
+            # local copy, otherwise a successful reload can erase the
+            # repository_classification it just produced.
+            current_card_data = snapshot.get("card_data")
+            if not isinstance(current_card_data, dict):
+                current_card_data = card_data if isinstance(card_data, dict) else {}
+            card_data = huggingface_scanner.readme_media_marker(
+                current_card_data, readme_media_items
+            )
+            snapshot["card_data"] = card_data
+
             refreshed_card_data = snapshot.get("card_data") or {}
 
             # Explicit HF reload should refresh repository media as well as
@@ -6896,6 +6917,32 @@ def _collection_asset_stem(path):
     return re.sub(r"/+", "/", value).strip("/").casefold()
 
 
+def _collection_training_step(stem, *, sample=False):
+    """Extract a trustworthy terminal training step from a file or sample stem."""
+    basename = str(stem or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    if not basename:
+        return None
+
+    patterns = (
+        (
+            r"__(?:step[-_. ]*)?0*(\d+)(?:[-_. ]+\d+)?$",
+            r"(?:^|[-_. ])step[-_. ]*0*(\d+)(?:[-_. ]+\d+)?$",
+        )
+        if sample else
+        (
+            r"(?:^|[-_. ])(?:step[-_. ]*)?0*(\d+)$",
+        )
+    )
+    for pattern in patterns:
+        match = re.search(pattern, basename, flags=re.I)
+        if match:
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def _link_collection_media_to_files(groups, media):
     """Attach previews to model files only when repository names match safely.
 
@@ -6903,13 +6950,39 @@ def _link_collection_media_to_files(groups, media):
     basename-only match is accepted only when that basename identifies one
     model file in the whole Collection. We also support a conservative numbered
     preview suffix (foo 1.png -> foo.safetensors), which is common in HF backup
-    repositories. Nothing fuzzy is guessed beyond those cases.
+    repositories. Training samples in a recognized preview subfolder may also
+    match the unique parent-folder weight carrying the same step number.
     """
     from collections import defaultdict
 
     exact = defaultdict(list)
     basenames = defaultdict(list)
+    directories = defaultdict(list)
+    filename_tokens = defaultdict(list)
     refs = []
+
+    generic_filename_tokens = {
+        "asset", "assets", "best", "checkpoint", "checkpoints", "ckpt",
+        "final", "flux", "image", "images", "img", "krea", "krea2",
+        "lora", "loras", "locon", "lokr", "lycoris", "model", "models",
+        "output", "outputs", "preview", "previews", "raw", "sample",
+        "samples", "sd15", "sdxl", "showcase", "train", "training",
+        "wan", "wan22", "weight", "weights",
+    }
+
+    def meaningful_filename_tokens(value):
+        tokens = set(re.findall(r"[a-z0-9]+", str(value or "").casefold()))
+        return {
+            token for token in tokens
+            if len(token) >= 2
+            and any(character.isalpha() for character in token)
+            and token not in generic_filename_tokens
+            and not re.fullmatch(
+                r"(?:v|ver|version|r|rank|step|steps|epoch|ep|checkpoint|ckpt|fp|bf|int|q)\d+",
+                token,
+                flags=re.I,
+            )
+        }
 
     for group in groups or []:
         family_id = str(group.get("family_id") or "")
@@ -6923,6 +6996,7 @@ def _link_collection_media_to_files(groups, media):
             file_dom_id = f"collection-file-{file_index}"
             file_data["dom_id"] = file_dom_id
             file_data["preview_refs"] = []
+            file_data["readme_paths"] = []
             path = str(file_data.get("path") or file_data.get("name") or "").strip()
             stem = _collection_asset_stem(path)
             if not stem:
@@ -6936,10 +7010,15 @@ def _link_collection_media_to_files(groups, media):
                 "file_name": str(file_data.get("name") or path.rsplit("/", 1)[-1]),
                 "stem": stem,
                 "basename": stem.rsplit("/", 1)[-1],
+                "directory": stem.rsplit("/", 1)[0] if "/" in stem else "",
+                "training_step": _collection_training_step(stem),
             }
             refs.append(ref)
             exact[stem].append(ref)
             basenames[ref["basename"]].append(ref)
+            directories[ref["directory"]].append(ref)
+            for token in meaningful_filename_tokens(ref["basename"]):
+                filename_tokens[token].append(ref)
 
     def unique_ref(candidates):
         return candidates[0] if len(candidates) == 1 else None
@@ -6951,9 +7030,53 @@ def _link_collection_media_to_files(groups, media):
         if not stem:
             continue
 
-        match = unique_ref(exact.get(stem, []))
+        metadata = item.get("metadata_obj") or item.get("metadata") or {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        readme_path = str(metadata.get("readme_path") or "").strip().replace("\\", "/")
+        readme_directory = (
+            readme_path.rsplit("/", 1)[0].strip("/").casefold()
+            if "/" in readme_path else ""
+        )
+
+        # README text can name the exact model file beside an image/video. That
+        # evidence is stronger than image naming conventions, especially in
+        # archive-style repositories with generic preview filenames.
+        reference_matches = []
+        for reference in metadata.get("model_references") or []:
+            reference_stem = _collection_asset_stem(reference)
+            if not reference_stem:
+                continue
+            candidates = list(exact.get(reference_stem, []))
+            if not candidates and readme_directory and "/" not in reference_stem:
+                candidates = list(exact.get(f"{readme_directory}/{reference_stem}", []))
+            if not candidates:
+                candidates = list(basenames.get(reference_stem.rsplit("/", 1)[-1], []))
+            candidate = unique_ref(candidates)
+            if candidate is not None and candidate not in reference_matches:
+                reference_matches.append(candidate)
+
+        match = unique_ref(reference_matches)
+        match_reason = "README names this safetensors file" if match is not None else ""
+
+        # Existing same-stem repository matches remain authoritative.
+        if match is None:
+            match = unique_ref(exact.get(stem, []))
+            if match is not None:
+                match_reason = "Preview and model share the same repository stem"
+
+        # A nested README usually describes the model artifact stored beside
+        # it. Accept that relationship only when exactly one grouped model file
+        # exists in the README directory; multi-file folders still require an
+        # explicit reference or filename evidence.
+        if match is None and readme_path:
+            match = unique_ref(directories.get(readme_directory, []))
+            if match is not None:
+                match_reason = "README and model share a repository directory"
+
         if match is None:
             match = unique_ref(basenames.get(stem.rsplit("/", 1)[-1], []))
+            if match is not None:
+                match_reason = "Preview basename uniquely identifies this model"
 
         # Some repositories keep a second preview as "model 1.png" beside
         # "model.safetensors". Only strip a trailing standalone number and only
@@ -6964,6 +7087,48 @@ def _link_collection_media_to_files(groups, media):
                 match = unique_ref(exact.get(numbered, []))
                 if match is None:
                     match = unique_ref(basenames.get(numbered.rsplit("/", 1)[-1], []))
+                if match is not None:
+                    match_reason = "Numbered preview stem identifies this model"
+
+        # Flat bundle repositories sometimes give every preview a long export
+        # prefix while retaining one short, model-specific token from the
+        # safetensors filename. For example, girlslike_krea2_fbb.safetensors
+        # pairs with ...-krea2-fbb-showcase-0004.png. Accept this only when a
+        # meaningful delimiter-separated token identifies exactly one model
+        # file, and all unique token evidence agrees on that same file.
+        if match is None:
+            token_matches = []
+            for token in meaningful_filename_tokens(stem.rsplit("/", 1)[-1]):
+                candidate = unique_ref(filename_tokens.get(token, []))
+                if candidate is not None and candidate not in token_matches:
+                    token_matches.append(candidate)
+            match = unique_ref(token_matches)
+            if match is not None:
+                match_reason = "Unique shared filename token identifies this model"
+
+        # AI Toolkit-style training repositories commonly put samples beneath
+        # <family>/samples and name them timestamp__000001500_2.png, while the
+        # matching weight is <family>_000001500.safetensors one directory up.
+        # Require both the recognized preview folder and a unique step match in
+        # the nearest parent model directory so timestamps are never guessed.
+        if match is None and "/" in stem:
+            media_directory = stem.rsplit("/", 1)[0]
+            directory_parts = media_directory.split("/")
+            preview_folder = directory_parts[-1].casefold() if directory_parts else ""
+            preview_folders = {
+                "sample", "samples", "preview", "previews", "image", "images",
+                "media", "output", "outputs",
+            }
+            sample_step = _collection_training_step(stem, sample=True)
+            if preview_folder in preview_folders and sample_step is not None:
+                parent_directory = "/".join(directory_parts[:-1])
+                step_candidates = [
+                    ref for ref in directories.get(parent_directory, [])
+                    if ref.get("training_step") == sample_step
+                ]
+                match = unique_ref(step_candidates)
+                if match is not None:
+                    match_reason = "Training sample and model share a parent folder and step"
 
         if match is None:
             continue
@@ -6972,11 +7137,226 @@ def _link_collection_media_to_files(groups, media):
         item["_collection_family_dom_id"] = match["family_dom_id"]
         item["_collection_file_dom_id"] = match["file_dom_id"]
         item["_collection_file_name"] = match["file_name"]
+        metadata["associated_model_file"] = match["file_name"]
+        metadata["association_evidence"] = match_reason
+        item["metadata"] = metadata
+        item["metadata_obj"] = metadata
+        if readme_path and readme_path not in match["file"]["readme_paths"]:
+            match["file"]["readme_paths"].append(readme_path)
         match["file"]["preview_refs"].append({
             "media_index": media_index,
             "thumbnail": item.get("thumbnail") or item.get("url") or "",
             "filename": item.get("filename") or "Preview",
         })
+
+
+def _attach_collection_readmes_to_files(groups, repository_files, model_id):
+    """Expose trustworthy per-file README viewers without storing README text."""
+    from collections import defaultdict
+
+    readmes_by_directory = defaultdict(list)
+    for item in repository_files or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip().replace("\\", "/")
+        if not path or path.rsplit("/", 1)[-1].casefold() != "readme.md":
+            continue
+        directory = path.rsplit("/", 1)[0].casefold() if "/" in path else ""
+        if path not in readmes_by_directory[directory]:
+            readmes_by_directory[directory].append(path)
+
+    weights_by_directory = defaultdict(int)
+    for group in groups or []:
+        for file_data in group.get("files") or []:
+            path = str(file_data.get("path") or file_data.get("name") or "").strip().replace("\\", "/")
+            directory = path.rsplit("/", 1)[0].casefold() if "/" in path else ""
+            weights_by_directory[directory] += 1
+
+    known_readme_paths = {
+        path.casefold(): path
+        for paths in readmes_by_directory.values()
+        for path in paths
+    }
+
+    for group in groups or []:
+        for file_data in group.get("files") or []:
+            path = str(file_data.get("path") or file_data.get("name") or "").strip().replace("\\", "/")
+            directory = path.rsplit("/", 1)[0].casefold() if "/" in path else ""
+            readme_paths = list(file_data.get("readme_paths") or [])
+
+            # A README beside exactly one grouped model file is trustworthy.
+            # Multi-file directories require the explicit filename/media
+            # evidence collected above, preventing one generic README from
+            # being presented as the card for several unrelated weights.
+            if weights_by_directory[directory] == 1:
+                readme_paths.extend(readmes_by_directory.get(directory) or [])
+
+            refs = []
+            seen = set()
+            for readme_path in readme_paths:
+                readme_path = str(readme_path or "").strip().replace("\\", "/")
+                identity = readme_path.casefold()
+                if not readme_path or identity in seen:
+                    continue
+                canonical_readme_path = known_readme_paths.get(identity)
+                if not canonical_readme_path:
+                    continue
+                seen.add(identity)
+                readme_path = canonical_readme_path
+                refs.append({
+                    "path": readme_path,
+                    "label": "View README" if not refs else f"View README {len(refs) + 1}",
+                    "url": url_for(
+                        "collection_readme",
+                        model_id=int(model_id),
+                        path=readme_path,
+                    ),
+                })
+            file_data["readme_refs"] = refs
+
+
+def _annotate_collection_family_changes(groups, change_lookup, downloaded_paths=None):
+    """Add latest-change badges to family/file view data and summarize them."""
+    downloaded_paths = {
+        str(path or "").strip().replace("\\", "/").casefold()
+        for path in (downloaded_paths or set())
+        if str(path or "").strip()
+    }
+
+    def outstanding_paths(paths):
+        return [
+            str(path)
+            for path in (paths or [])
+            if str(path).strip().replace("\\", "/").casefold() not in downloaded_paths
+        ]
+
+    summary = {
+        "family_updates": 0,
+        "new_variants": 0,
+        "updated_files": 0,
+        "detected_at": "",
+    }
+
+    for group in groups or []:
+        family_id = str(group.get("family_id") or "")
+        change = change_lookup.get(family_id) if isinstance(change_lookup, dict) else None
+        change = change if isinstance(change, dict) else {}
+        group["change"] = change
+        group["change_badges"] = []
+
+        newer_step = change.get("newer_step")
+        newer_step = dict(newer_step) if isinstance(newer_step, dict) else {}
+        if newer_step.get("paths"):
+            newer_step["paths"] = outstanding_paths(newer_step.get("paths"))
+            if not newer_step["paths"]:
+                newer_step = {}
+        updated_files = change.get("updated_files")
+        updated_files = [
+            item for item in (updated_files if isinstance(updated_files, list) else [])
+            if isinstance(item, dict) and outstanding_paths([
+                item.get("path_key") or item.get("path") or ""
+            ])
+        ]
+        new_variants = change.get("new_variants")
+        outstanding_variants = []
+        for item in (new_variants if isinstance(new_variants, list) else []):
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            if item.get("paths"):
+                item["paths"] = outstanding_paths(item.get("paths"))
+                if not item["paths"]:
+                    continue
+            outstanding_variants.append(item)
+        new_variants = outstanding_variants
+
+        if newer_step:
+            from_step = newer_step.get("from")
+            to_step = newer_step.get("to")
+            group["change_badges"].append({
+                "kind": "newer-step",
+                "label": "Newer training step available",
+                "detail": f"step {from_step} → step {to_step}",
+            })
+        if updated_files:
+            count = len(updated_files)
+            group["change_badges"].append({
+                "kind": "updated-file",
+                "label": f"{count} updated file{'s' if count != 1 else ''}",
+                "detail": "Same repository path with new file content",
+            })
+            summary["updated_files"] += count
+        if new_variants:
+            labels = [
+                str(item.get("label") or "").strip()
+                for item in new_variants
+                if isinstance(item, dict) and str(item.get("label") or "").strip()
+            ]
+            count = len(labels)
+            if count:
+                group["change_badges"].append({
+                    "kind": "new-variant",
+                    "label": (
+                        f"New variant: {labels[0]}"
+                        if count == 1
+                        else f"{count} new variants"
+                    ),
+                    "detail": ", ".join(labels),
+                })
+                summary["new_variants"] += count
+
+        if newer_step or updated_files:
+            summary["family_updates"] += 1
+        detected_at = str(change.get("detected_at") or "")
+        if detected_at > summary["detected_at"]:
+            summary["detected_at"] = detected_at
+
+        file_changes = {}
+        for item in new_variants:
+            if not isinstance(item, dict):
+                continue
+            for path in item.get("paths") or []:
+                file_changes[str(path).replace("\\", "/").casefold()] = (
+                    "new-variant", "New variant"
+                )
+        for path in newer_step.get("paths") or []:
+            file_changes[str(path).replace("\\", "/").casefold()] = (
+                "newer-step", "Newer training step"
+            )
+        for item in updated_files:
+            if not isinstance(item, dict):
+                continue
+            path_key = str(
+                item.get("path_key") or item.get("path") or ""
+            ).replace("\\", "/").casefold()
+            if path_key:
+                file_changes[path_key] = ("updated-file", "Updated file")
+
+        search_change_text = []
+        for badge in group["change_badges"]:
+            search_change_text.extend([badge["label"], badge["detail"]])
+        if search_change_text:
+            group["search_text"] = " ".join([
+                str(group.get("search_text") or ""),
+                *search_change_text,
+            ]).strip().casefold()
+
+        for file_data in group.get("files") or []:
+            path_key = str(
+                file_data.get("path")
+                or file_data.get("name")
+                or file_data.get("filename")
+                or ""
+            ).strip().replace("\\", "/").casefold()
+            file_data["change_kind"] = ""
+            file_data["change_label"] = ""
+            if path_key in file_changes:
+                file_data["change_kind"], file_data["change_label"] = file_changes[path_key]
+
+    summary["has_changes"] = bool(
+        summary["family_updates"] or summary["new_variants"]
+    )
+    return summary
 
 
 
@@ -7065,6 +7445,7 @@ def collection_page(model_id):
     """Render a repository Collection as grouped virtual child artifacts."""
     from scanners.common.repository_classifier import (
         build_collection_groups,
+        classify_repository,
         synthesize_collection_title,
         humanize_collection_family_name,
     )
@@ -7109,6 +7490,57 @@ def collection_page(model_id):
                 collection_snapshot["files"] = []
             collection_classification = classification
 
+    if collection_snapshot is None:
+        # v1.2.5's first Collection reload could briefly save the refreshed
+        # repository files while an older card-data copy removed the freshly
+        # computed classification. Reclassify those stored snapshots in memory
+        # so an affected Collection can reopen and its next Reload can persist
+        # the corrected metadata. This remains conservative: the normal
+        # repository classifier must independently identify a Collection.
+        fallback_snapshots = [
+            _decode_source_snapshot(link, canonical)
+            for link in links
+            if str(link.get("source") or "").strip().lower() in {"huggingface", "modelscope"}
+        ]
+        if str(canonical.get("source") or "").strip().lower() in {"huggingface", "modelscope"}:
+            fallback_snapshots.append(dict(canonical))
+
+        for snapshot in fallback_snapshots:
+            source_key = str(snapshot.get("source") or canonical.get("source") or "").strip().lower()
+            snapshot_files = snapshot.get("files") or []
+            if isinstance(snapshot_files, str):
+                try:
+                    snapshot_files = json.loads(snapshot_files or "[]")
+                except Exception:
+                    snapshot_files = []
+            if not isinstance(snapshot_files, list) or not snapshot_files:
+                continue
+
+            details = snapshot.get("card_data")
+            if isinstance(details, str):
+                try:
+                    details = json.loads(details or "{}")
+                except Exception:
+                    details = {}
+            details = dict(details) if isinstance(details, dict) else {}
+            if snapshot.get("description") and not details.get("description"):
+                details["description"] = snapshot.get("description")
+
+            classification = classify_repository({
+                "source": source_key,
+                "model_id": str(snapshot.get("model_key") or canonical.get("model_key") or ""),
+                "details": details,
+                "files": snapshot_files,
+                "tags": snapshot.get("tags") or [],
+                "library": snapshot.get("library") or "",
+            })
+            if isinstance(classification, dict) and classification.get("container") == "collection":
+                snapshot["files"] = snapshot_files
+                snapshot["card_data"] = details
+                collection_snapshot = snapshot
+                collection_classification = classification
+                break
+
     if collection_snapshot is None or not isinstance(collection_classification, dict):
         return "This model is not classified as a Collection.", 404
 
@@ -7135,6 +7567,36 @@ def collection_page(model_id):
     favorite_family_ids = database.sync_collection_families(
         model_id, source, model_key, groups
     )
+    family_change_lookup = database.get_collection_family_changes(
+        model_id,
+        [group.get("family_id") for group in groups],
+    )
+    downloaded_fingerprints = {
+        str(row.get("file_fingerprint") or "")
+        for row in database.get_download_history_for_model(model_id)
+        if str(row.get("source") or "").strip().casefold() == source.casefold()
+        and str(row.get("model_key") or "").strip().casefold() == model_key.casefold()
+        and str(row.get("file_fingerprint") or "")
+    }
+    downloaded_paths = set()
+    if downloaded_fingerprints:
+        for group in groups:
+            for file_data in group.get("files") or []:
+                fingerprint = _download_file_fingerprint(collection_snapshot, file_data)
+                if fingerprint in downloaded_fingerprints:
+                    path = str(
+                        file_data.get("path")
+                        or file_data.get("name")
+                        or file_data.get("filename")
+                        or ""
+                    ).strip()
+                    if path:
+                        downloaded_paths.add(path)
+    collection_change_summary = {
+        "has_changes": False,
+        "family_updates": 0,
+        "new_variants": 0,
+    }
     for group in groups:
         group["favorite"] = str(group.get("family_id") or "") in favorite_family_ids
         group["size_display"] = _format_download_size({"size_bytes": group.get("total_size_bytes", 0)}, source)
@@ -7213,6 +7675,17 @@ def collection_page(model_id):
         source,
         gated=bool(collection_snapshot.get("gated") or canonical.get("gated")),
         card_data=collection_card_data,
+    )
+
+    # A repository whose connected account cannot download is not actionable.
+    # Preserve its stored family history, but do not advertise an update that
+    # the user cannot retrieve. If access is later granted, the same saved
+    # comparison becomes visible again without rebuilding history.
+    visible_family_changes = (
+        family_change_lookup if collection_access_status != "gated" else {}
+    )
+    collection_change_summary = _annotate_collection_family_changes(
+        groups, visible_family_changes, downloaded_paths
     )
 
     # HF's API-level gated flag remains true even after an approved token gains
@@ -7319,6 +7792,16 @@ def collection_page(model_id):
 
     if proxy_hf_collection_media:
         for item in media:
+            current_media_url = str(item.get("url") or "").strip()
+            parsed_media_url = urlparse(current_media_url)
+            repository_prefix = f"/{model_key}/resolve/"
+            # CDN/external images embedded by a README are already public URLs
+            # and must not be rewritten as if they were repository file paths.
+            if (
+                parsed_media_url.netloc.casefold() != "huggingface.co"
+                or not parsed_media_url.path.startswith(repository_prefix)
+            ):
+                continue
             preview_path = str(item.get("path") or item.get("filename") or "").strip().replace("\\", "/")
             if not preview_path:
                 continue
@@ -7331,8 +7814,72 @@ def collection_page(model_id):
             item["thumbnail"] = proxy_url
 
     _link_collection_media_to_files(groups, media)
+    _attach_collection_readmes_to_files(groups, files, model_id)
 
     database.mark_viewed(model_id)
+
+    # Collection pages use the same persistent navbar and Download Manager as
+    # Creator pages, while retaining their purpose-built Collection body.
+    all_sources = source_settings.get("sources", {})
+    architectures = load_architectures()
+    model_types = load_model_types()
+    default_enabled_sources = [
+        name for name, data in all_sources.items()
+        if isinstance(data, dict) and data.get("enabled")
+    ]
+    enabled_sources_for_ui = dict(sorted(
+        (
+            (name, data) for name, data in all_sources.items()
+            if isinstance(data, dict) and data.get("enabled")
+        ),
+        key=lambda item: str(item[1].get("display") or item[0]).casefold(),
+    ))
+    selected_sources = [
+        name for name in preferences.get("selected_sources", default_enabled_sources)
+        if name in enabled_sources_for_ui
+    ]
+    selected_scan_sources = [
+        name for name in preferences.get("selected_scan_sources", default_enabled_sources)
+        if name in enabled_sources_for_ui
+    ]
+    configured_architectures = preferences.get("enabled_architectures")
+    if not isinstance(configured_architectures, list):
+        configured_architectures = preferences.get("scan_architectures")
+    if not isinstance(configured_architectures, list):
+        configured_architectures = list(architectures.keys())
+    enabled_architectures_for_ui = sorted(
+        [name for name in configured_architectures if name in architectures and name != "Other"],
+        key=lambda value: str(value).casefold(),
+    )
+    discovery_sources = dict(sorted(
+        (
+            (name, data) for name, data in all_sources.items()
+            if isinstance(data, dict)
+            and data.get("enabled")
+            and SOURCE_INFO.get(name, {}).get("discovery_scan")
+        ),
+        key=lambda item: str(item[1].get("display") or item[0]).casefold(),
+    ))
+    stats_conn = database.connect()
+    library_model_count = stats_conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
+    favorite_model_count = stats_conn.execute(
+        """
+        SELECT COUNT(*) FROM models m
+        WHERE COALESCE(m.favorite, 0) = 1
+           OR EXISTS (
+                SELECT 1 FROM collection_families cf
+                WHERE cf.model_id = m.id AND cf.favorite = 1
+           )
+        """
+    ).fetchone()[0]
+    try:
+        favorite_creator_rows = stats_conn.execute(
+            "SELECT name FROM creators WHERE favorite = 1 ORDER BY lower(name)"
+        ).fetchall()
+        favorite_creator_names = [row[0] for row in favorite_creator_rows]
+    except Exception:
+        favorite_creator_names = []
+    stats_conn.close()
 
     return render_template(
         "collection.html",
@@ -7349,6 +7896,7 @@ def collection_page(model_id):
         collection_access_status=collection_access_status,
         repository_file_count=len(files),
         family_count=len(groups),
+        collection_change_summary=collection_change_summary,
         groups=groups,
         repository_files=repository_files,
         repository_extra_file_count=len(repository_files),
@@ -7358,8 +7906,130 @@ def collection_page(model_id):
         media_page_count=max(1, (len(media) + 9) // 10),
         media_count=len(media),
         classification=collection_classification,
-        hide_scan=True,
+        preferences=preferences,
+        sources=enabled_sources_for_ui,
+        discovery_sources=discovery_sources,
+        selected_sources=selected_sources,
+        architectures=enabled_architectures_for_ui,
+        model_types=model_types.keys(),
+        selected_scan_sources=selected_scan_sources,
+        library_model_count=library_model_count,
+        favorite_model_count=favorite_model_count,
+        favorite_creator_count=len(favorite_creator_names),
+        favorite_creator_names=favorite_creator_names,
+        selected_architecture="",
+        selected_model_type="",
+        selected_sort="activity",
+        show_media_only=False,
+        collection_page_mode=True,
+        hide_scan=False,
     )
+
+
+@app.route("/collection/<int:model_id>/readme")
+def collection_readme(model_id):
+    """Return one repository README for the Collection's safe in-page viewer."""
+    from scanners import huggingface as huggingface_scanner
+
+    requested_path = str(request.args.get("path") or "").strip().replace("\\", "/")
+    if not requested_path or requested_path.startswith("/") or ".." in requested_path.split("/"):
+        return {"success": False, "error": "Invalid README path."}, 400
+    if requested_path.rsplit("/", 1)[-1].casefold() != "readme.md":
+        return {"success": False, "error": "The selected repository file is not a README."}, 400
+
+    conn = database.connect()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM models WHERE id=?", (int(model_id),)).fetchone()
+    conn.close()
+    if row is None:
+        return {"success": False, "error": "Collection not found."}, 404
+    canonical = dict(row)
+
+    selected_snapshot = None
+    selected_file = None
+    for link in database.get_model_sources(model_id):
+        snapshot = _decode_source_snapshot(dict(link), canonical)
+        if str(snapshot.get("source") or "").strip().lower() != "huggingface":
+            continue
+        snapshot_files = snapshot.get("files") or []
+        if isinstance(snapshot_files, str):
+            try:
+                snapshot_files = json.loads(snapshot_files or "[]")
+            except Exception:
+                snapshot_files = []
+        for file_data in snapshot_files if isinstance(snapshot_files, list) else []:
+            if not isinstance(file_data, dict):
+                continue
+            file_path = str(file_data.get("path") or file_data.get("name") or "").strip().replace("\\", "/")
+            if file_path.casefold() == requested_path.casefold():
+                selected_snapshot = snapshot
+                selected_file = file_data
+                requested_path = file_path
+                break
+        if selected_snapshot is not None:
+            break
+
+    if selected_snapshot is None:
+        return {"success": False, "error": "README not found in this Collection snapshot."}, 404
+
+    model_key = str(selected_snapshot.get("model_key") or canonical.get("model_key") or "").strip()
+    revision = str(
+        selected_file.get("revision")
+        or selected_snapshot.get("sha")
+        or selected_snapshot.get("revision")
+        or "main"
+    ).strip() or "main"
+    if not model_key:
+        return {"success": False, "error": "Hugging Face repository identity is missing."}, 404
+
+    revision_path = quote(revision, safe="")
+    encoded_path = quote(requested_path, safe="/")
+    raw_url = f"https://huggingface.co/{model_key}/raw/{revision_path}/{encoded_path}"
+    source_url = f"https://huggingface.co/{model_key}/blob/{revision_path}/{encoded_path}"
+
+    try:
+        huggingface_scanner._apply_auth()
+        response = huggingface_scanner.get_with_backoff(
+            huggingface_scanner.session,
+            raw_url,
+            provider="Hugging Face",
+            label=f"Collection README {model_key}/{requested_path}",
+            max_retries=2,
+            timeout=15,
+        )
+        if response.status_code in (401, 403):
+            return {
+                "success": False,
+                "restricted": True,
+                "source_url": source_url,
+                "error": "This README is restricted by Hugging Face for the configured account.",
+            }, response.status_code
+        if response.status_code != 200:
+            return {
+                "success": False,
+                "source_url": source_url,
+                "error": f"Hugging Face returned HTTP {response.status_code} for this README.",
+            }, 502
+
+        content = response.content or b""
+        truncated = len(content) > huggingface_scanner.MAX_README_BYTES
+        if truncated:
+            content = content[:huggingface_scanner.MAX_README_BYTES]
+        text_content = content.decode(response.encoding or "utf-8", errors="replace")
+        return {
+            "success": True,
+            "path": requested_path,
+            "text": text_content,
+            "truncated": truncated,
+            "source_url": source_url,
+        }
+    except Exception as exc:
+        logging.warning("Collection README fetch failed for %s/%s: %s", model_key, requested_path, exc)
+        return {
+            "success": False,
+            "source_url": source_url,
+            "error": "Unable to load this README from Hugging Face right now.",
+        }, 502
 
 
 @app.route("/collection/<int:model_id>/family/<family_id>/favorite", methods=["POST"])

@@ -10,14 +10,17 @@
 
     <div class="options-shell">
         <nav class="options-menu" aria-label="AbyssBeacon options">
+            {% if not creator_page_mode and not collection_page_mode %}
             <button class="options-item active" data-page="filters" type="button">Filters <span id="optionsFilterCount" class="options-count hidden">0</span></button>
             <button class="options-item" data-page="sort" type="button">Sort</button>
-            <button class="options-item" data-page="scanner" type="button">Scanner</button>
+            {% endif %}
+            <button class="options-item{% if creator_page_mode or collection_page_mode %} active{% endif %}" data-page="scanner" type="button">Scanner</button>
             <button class="options-item" data-page="library" type="button">Library</button>
             <button id="closeOptionsReturn" class="options-item options-return-nav" type="button">← Return</button>
         </nav>
 
         <div class="options-content">
+            {% if not creator_page_mode and not collection_page_mode %}
             <div class="options-page" data-options-page="filters">
                 <div class="options-page-heading">Filters</div>
                 <div class="options-note">These controls change the models visible in the feed. Active filters also appear as removable pills under Search.</div>
@@ -73,8 +76,9 @@
                 </div>
                 <button id="applySort" class="apply-sort" type="button">Apply Sort</button>
             </div>
+            {% endif %}
 
-            <div class="options-page" data-options-page="scanner">
+            <div class="options-page{% if creator_page_mode or collection_page_mode %} active{% endif %}" data-options-page="scanner">
                 <div class="options-page-heading">Scanner</div>
                 <div class="options-note">SCAN now opens its own Sources and Models to Scan picker, independent from feed filters.</div>
                 

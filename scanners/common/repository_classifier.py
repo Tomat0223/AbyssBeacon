@@ -833,6 +833,18 @@ def build_collection_groups(files, collection_type="LoRA", source="", model_key=
             for file_data in group["files"]
         )
         group["search_text"] = " ".join(search_parts).casefold()
+        alpha_buckets = set()
+        for file_data in group["files"]:
+            file_path = str(
+                file_data.get("path")
+                or file_data.get("name")
+                or file_data.get("filename")
+                or ""
+            ).strip().replace("\\", "/")
+            basename = file_path.rsplit("/", 1)[-1]
+            initial = basename[:1].upper()
+            alpha_buckets.add(initial if "A" <= initial <= "Z" else "#")
+        group["alpha_buckets"] = sorted(alpha_buckets)
 
     groups.sort(key=lambda group: str(group.get("name") or "").casefold())
     return groups

@@ -2,7 +2,7 @@
 // saved scroll position. This is more reliable than browser history alone and
 // still lets an intentional browser refresh of the home page start at the top.
 document.addEventListener("DOMContentLoaded", () => {
-    const back = document.querySelector(".collection-back");
+    const back = document.querySelector("[data-feed-restore='true']");
     back?.addEventListener("click", event => {
         event.preventDefault();
         try{ sessionStorage.setItem("abyss_feed_restore_pending_v1","1"); }catch(_){ }
@@ -54,7 +54,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const count = document.getElementById("collectionSearchCount");
     const empty = document.getElementById("collectionSearchEmpty");
     const expandAll = document.getElementById("collectionExpandAll");
+    const changesOnly = document.getElementById("collectionChangesOnly");
+    const viewChanges = document.getElementById("collectionViewChanges");
+    const alphaButtons = Array.from(document.querySelectorAll(".collection-alpha-button"));
     const cards = Array.from(document.querySelectorAll(".collection-child-card"));
+    let changedOnlyActive = false;
+    let activeAlpha = "all";
 
     function visibleCards(){
         return cards.filter(card => !card.hidden);
@@ -74,7 +79,11 @@ document.addEventListener("DOMContentLoaded", () => {
         let shown = 0;
         for(const card of cards){
             const haystack = String(card.dataset.familySearch || "").toLowerCase();
-            const visible = !query || haystack.includes(query);
+            const matchesQuery = !query || haystack.includes(query);
+            const alphaBuckets = String(card.dataset.familyAlpha || "").split(/\s+/).filter(Boolean);
+            const matchesAlpha = activeAlpha === "all" || alphaBuckets.includes(activeAlpha);
+            const matchesChanges = !changedOnlyActive || card.dataset.familyChanged === "true";
+            const visible = matchesQuery && matchesAlpha && matchesChanges;
             card.hidden = !visible;
             if(visible) shown += 1;
         }
@@ -87,6 +96,51 @@ document.addEventListener("DOMContentLoaded", () => {
         search.addEventListener("input", updateSearch);
     }
 
+    function syncAlphaButtons(){
+        alphaButtons.forEach(button => {
+            button.setAttribute("aria-pressed", button.dataset.alpha === activeAlpha ? "true" : "false");
+        });
+    }
+
+    const availableAlpha = new Set(
+        cards.flatMap(card => String(card.dataset.familyAlpha || "").split(/\s+/).filter(Boolean))
+    );
+    alphaButtons.forEach(button => {
+        const alpha = String(button.dataset.alpha || "all");
+        if(alpha !== "all"){
+            button.disabled = !availableAlpha.has(alpha);
+        }
+        button.addEventListener("click", () => {
+            if(button.disabled || activeAlpha === alpha) return;
+            activeAlpha = alpha;
+            syncAlphaButtons();
+            updateSearch();
+        });
+    });
+    syncAlphaButtons();
+
+    function setChangedOnly(active, {jump=false} = {}){
+        changedOnlyActive = !!active;
+        if(jump){
+            activeAlpha = "all";
+            syncAlphaButtons();
+        }
+        if(changesOnly){
+            changesOnly.setAttribute("aria-pressed", changedOnlyActive ? "true" : "false");
+            changesOnly.textContent = changedOnlyActive ? "Show all" : "Show changes";
+        }
+        updateSearch();
+        if(jump){
+            const first = visibleCards()[0];
+            if(first){
+                first.open = true;
+                window.requestAnimationFrame(() => first.scrollIntoView({behavior:"smooth", block:"center"}));
+            }
+        }
+    }
+
+    changesOnly?.addEventListener("click", () => setChangedOnly(!changedOnlyActive));
+    viewChanges?.addEventListener("click", () => setChangedOnly(true, {jump:true}));
     expandAll?.addEventListener("click", () => {
         const visible = visibleCards();
         const shouldOpen = !(visible.length > 0 && visible.every(card => card.open));
@@ -130,6 +184,165 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Clicking the star should never toggle the surrounding <details> card.
         button.addEventListener("mousedown", event => event.stopPropagation());
+    });
+});
+
+// Keep Collection downloads inside the AbyssBeacon page. Local installs feed
+// the shared Download Manager; browser downloads use a hidden frame so the
+// browser receives the file without replacing this page with route JSON.
+document.addEventListener("DOMContentLoaded", () => {
+    const status = document.getElementById("collectionReloadStatus");
+    const downloads = Array.from(document.querySelectorAll(
+        "a.collection-download, a.collection-repository-download"
+    ));
+
+    function setStatus(message){
+        if(status) status.textContent = message;
+    }
+
+    function browserDownload(link){
+        const frame = document.createElement("iframe");
+        frame.hidden = true;
+        frame.title = "Collection download";
+        frame.src = link.href;
+        document.body.appendChild(frame);
+        window.setTimeout(() => frame.remove(), 120000);
+        setStatus("Download sent to your browser. This Collection page will stay open.");
+    }
+
+    downloads.forEach(link => {
+        link.addEventListener("click", async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if(link.dataset.installing === "true") return;
+
+            const repositoryAsset = link.classList.contains("collection-repository-download");
+            const behavior = String(window.userPreferences?.download_behavior || "browser").toLowerCase();
+            if(repositoryAsset || behavior !== "local"){
+                browserDownload(link);
+                return;
+            }
+
+            const original = link.textContent;
+            link.dataset.installing = "true";
+            link.textContent = "…";
+            setStatus("Starting local download. Progress is available in Download Manager.");
+            try{
+                const response = await fetch(link.href, {headers:{"Accept":"application/json"}});
+                const raw = await response.text();
+                let payload = {};
+                try{ payload = raw ? JSON.parse(raw) : {}; }catch(_){ }
+                if(!response.ok || payload.success !== true){
+                    const error = new Error(payload.message || payload.error || raw || `Download failed (HTTP ${response.status})`);
+                    error.payload = payload;
+                    throw error;
+                }
+                if(payload.existing_partial === true || payload.already_active === true){
+                    link.textContent = original;
+                    setStatus(payload.message || "This download is already in Download Manager.");
+                    document.getElementById("downloadHistoryButton")?.click();
+                    return;
+                }
+                link.textContent = "✓";
+                link.title = `Installed: ${payload.path || payload.folder || "local library"}`;
+                setStatus("Download complete. Open Download Manager to review it.");
+            }catch(error){
+                link.textContent = "!";
+                link.title = error.message || "Download failed";
+                setStatus(error.message || "Download failed.");
+                if(error.payload?.restricted === true){
+                    document.getElementById("downloadHistoryButton")?.click();
+                }
+            }finally{
+                delete link.dataset.installing;
+            }
+        });
+    });
+});
+
+// Nested repository READMEs can carry the model-specific description and
+// usage notes for one safetensors file. Load the exact document only when the
+// user asks for it, then keep it inside the Collection page.
+document.addEventListener("DOMContentLoaded", () => {
+    const overlay = document.getElementById("collectionReadmeOverlay");
+    const closeButton = document.getElementById("collectionReadmeClose");
+    const title = document.getElementById("collectionReadmeTitle");
+    const path = document.getElementById("collectionReadmePath");
+    const status = document.getElementById("collectionReadmeStatus");
+    const content = document.getElementById("collectionReadmeContent");
+    const source = document.getElementById("collectionReadmeSource");
+    if(!overlay || !content) return;
+
+    const cache = new Map();
+
+    function closeViewer(){
+        overlay.classList.remove("open");
+        overlay.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("collection-readme-open");
+    }
+
+    function openViewer(button){
+        const url = String(button.dataset.readmeUrl || "").trim();
+        const readmePath = String(button.dataset.readmePath || "README.md").trim();
+        if(!url) return;
+
+        overlay.classList.add("open");
+        overlay.setAttribute("aria-hidden", "false");
+        document.body.classList.add("collection-readme-open");
+        if(title) title.textContent = readmePath.split("/").slice(-2).join(" / ") || "README";
+        if(path) path.textContent = readmePath;
+        if(status) status.textContent = "Loading README…";
+        content.textContent = "";
+        if(source){
+            source.hidden = true;
+            source.removeAttribute("href");
+        }
+
+        const load = cache.has(url)
+            ? Promise.resolve(cache.get(url))
+            : fetch(url, {headers:{"Accept":"application/json"}})
+                .then(async response => {
+                    const payload = await response.json().catch(() => ({}));
+                    if(!response.ok || payload.success !== true){
+                        const error = new Error(payload.error || `README request failed (HTTP ${response.status})`);
+                        error.payload = payload;
+                        throw error;
+                    }
+                    cache.set(url, payload);
+                    return payload;
+                });
+
+        load.then(payload => {
+            content.textContent = String(payload.text || "");
+            if(status){
+                status.textContent = payload.truncated
+                    ? "This very large README was shortened for the in-page viewer."
+                    : "";
+            }
+            if(source && payload.source_url){
+                source.href = payload.source_url;
+                source.hidden = false;
+            }
+        }).catch(error => {
+            content.textContent = error.message || "Unable to load this README.";
+            if(status) status.textContent = "README unavailable";
+            const sourceUrl = error.payload?.source_url;
+            if(source && sourceUrl){
+                source.href = sourceUrl;
+                source.hidden = false;
+            }
+        });
+    }
+
+    document.querySelectorAll(".collection-readme-open").forEach(button => {
+        button.addEventListener("click", () => openViewer(button));
+    });
+    closeButton?.addEventListener("click", closeViewer);
+    overlay.addEventListener("click", event => {
+        if(event.target === overlay) closeViewer();
+    });
+    document.addEventListener("keydown", event => {
+        if(event.key === "Escape" && overlay.classList.contains("open")) closeViewer();
     });
 });
 
@@ -191,6 +404,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const pagePrev = document.getElementById("collectionMediaPagePrev");
     const pageNext = document.getElementById("collectionMediaPageNext");
     const pageStatus = document.getElementById("collectionMediaPageStatus");
+    const firstPage = document.getElementById("collectionMediaFirstPage");
+    const lastPage = document.getElementById("collectionMediaLastPage");
+    const pageNumbers = document.getElementById("collectionMediaPageNumbers");
     const viewerModelButton = document.getElementById("collectionMediaModelButton");
     if(!overlay || !detail) return;
 
@@ -355,6 +571,40 @@ document.addEventListener("DOMContentLoaded", () => {
         if(pageStatus) pageStatus.textContent = `Page ${mediaPage + 1} of ${pageCount} · ${mediaData.length} previews`;
         if(pagePrev) pagePrev.disabled = mediaPage <= 0;
         if(pageNext) pageNext.disabled = mediaPage >= pageCount - 1;
+        if(firstPage){
+            firstPage.hidden = mediaPage < 5;
+            firstPage.disabled = mediaPage <= 0;
+        }
+        if(lastPage){
+            lastPage.hidden = mediaPage >= pageCount - 1;
+            lastPage.disabled = mediaPage >= pageCount - 1;
+        }
+
+        if(pageNumbers){
+            const visiblePageCount = Math.min(9, pageCount);
+            const pagesOnEachSide = Math.floor(visiblePageCount / 2);
+            const latestWindowStart = Math.max(0, pageCount - visiblePageCount);
+            const windowStart = Math.min(
+                Math.max(0, mediaPage - pagesOnEachSide),
+                latestWindowStart,
+            );
+            const windowEnd = Math.min(pageCount, windowStart + visiblePageCount);
+            const pageFragment = document.createDocumentFragment();
+            for(let pageIndex = windowStart; pageIndex < windowEnd; pageIndex += 1){
+                const pageButton = document.createElement("button");
+                pageButton.type = "button";
+                pageButton.dataset.pageIndex = String(pageIndex);
+                pageButton.textContent = String(pageIndex + 1);
+                pageButton.title = `Go to preview page ${pageIndex + 1}`;
+                pageButton.setAttribute("aria-label", `Go to preview page ${pageIndex + 1}`);
+                if(pageIndex === mediaPage){
+                    pageButton.classList.add("is-current");
+                    pageButton.setAttribute("aria-current", "page");
+                }
+                pageFragment.appendChild(pageButton);
+            }
+            pageNumbers.replaceChildren(pageFragment);
+        }
     }
 
     function updateViewerModelButton(index){
@@ -417,6 +667,25 @@ document.addEventListener("DOMContentLoaded", () => {
         const pageCount = Math.max(1, Math.ceil(mediaData.length / PAGE_SIZE));
         if(mediaPage >= pageCount - 1) return;
         mediaPage += 1;
+        renderMediaPage();
+    });
+    firstPage?.addEventListener("click", () => {
+        if(mediaPage <= 0) return;
+        mediaPage = 0;
+        renderMediaPage();
+    });
+    lastPage?.addEventListener("click", () => {
+        const pageCount = Math.max(1, Math.ceil(mediaData.length / PAGE_SIZE));
+        if(mediaPage >= pageCount - 1) return;
+        mediaPage = pageCount - 1;
+        renderMediaPage();
+    });
+    pageNumbers?.addEventListener("click", event => {
+        const button = event.target.closest("button[data-page-index]");
+        if(!button) return;
+        const pageIndex = Number.parseInt(button.dataset.pageIndex || "", 10);
+        if(!Number.isFinite(pageIndex) || pageIndex === mediaPage) return;
+        mediaPage = pageIndex;
         renderMediaPage();
     });
 
