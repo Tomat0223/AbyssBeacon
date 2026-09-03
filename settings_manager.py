@@ -5,6 +5,9 @@ import threading
 
 
 _SETTINGS_LOCK = threading.RLock()
+_SETTINGS_ROOT = os.path.dirname(os.path.abspath(__file__))
+_SETTINGS_FILE = os.path.join(_SETTINGS_ROOT, "settings.json")
+_DEFAULT_SETTINGS_FILE = os.path.join(_SETTINGS_ROOT, "settings.defaults.json")
 
 
 DEFAULT_SEARCH_SETTINGS = {
@@ -254,7 +257,7 @@ def normalize_search_settings(search_settings=None):
 
 def _write_settings_unlocked(settings):
     """Write settings atomically so concurrent requests cannot corrupt JSON."""
-    target = os.path.abspath("settings.json")
+    target = os.path.abspath(_SETTINGS_FILE)
     temp = target + ".tmp"
 
     with open(temp, "w", encoding="utf-8") as f:
@@ -279,14 +282,32 @@ def _recover_first_json_object(text):
     return value if isinstance(value, dict) else None
 
 
+def _load_fresh_install_defaults():
+    """Load packaged defaults without ever modifying the template itself."""
+    try:
+        with open(_DEFAULT_SETTINGS_FILE, encoding="utf-8") as f:
+            defaults = json.load(f)
+        return defaults if isinstance(defaults, dict) else {}
+    except Exception as e:
+        print("ERROR LOADING SETTINGS.DEFAULTS.JSON")
+        print(e)
+        return {}
+
+
 def load_settings():
     repaired = False
 
     with _SETTINGS_LOCK:
         try:
-            with open("settings.json", encoding="utf-8") as f:
+            with open(_SETTINGS_FILE, encoding="utf-8") as f:
                 text = f.read()
             settings = json.loads(text)
+        except FileNotFoundError:
+            # Fresh install only: seed the writable, Git-ignored user file from
+            # the tracked release template. Existing settings are never merged
+            # with or replaced by a later release's defaults.
+            settings = _load_fresh_install_defaults()
+            repaired = True
         except json.JSONDecodeError as e:
             print("ERROR LOADING SETTINGS.JSON")
             print(e)
@@ -418,4 +439,3 @@ def save_settings(settings):
         settings.pop("scanner", None)
 
         _write_settings_unlocked(settings)
-

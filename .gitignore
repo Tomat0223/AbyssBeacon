@@ -8,6 +8,7 @@ models.db
 models.db-wal
 models.db-shm
 models.db-journal
+settings.json
 app_config/active_downloads.json
 app_config/active_downloads.json.tmp
 settings.json.tmp

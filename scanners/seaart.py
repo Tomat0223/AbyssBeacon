@@ -1,6 +1,7 @@
 from scan_logging import verbose_print as print
 
 import html
+import builtins
 import re
 import time
 import uuid
@@ -32,6 +33,7 @@ DETAIL_API = BASE + "/api/v1/model/detail"
 DOWNLOAD_API = BASE + "/api/v1/resource/getDownloadLink"
 ACCOUNT_MY_API = BASE + "/api/v1/account/my"
 TAG_LIST_API = BASE + "/api/v1/square/v3/model/list"
+RECOMMEND_API = BASE + "/api/v1/square/v3/model/recommend"
 CREATOR_LIST_API = BASE + "/api/v1/square/v3/model/account_list"
 
 
@@ -485,6 +487,15 @@ def _fetch_creator_catalog(creator_id, settings):
 def _card_architecture(card):
     if not isinstance(card, dict):
         return "Other"
+    subtype = str(card.get("content_sub_type") or "").strip().casefold()
+    # SeaArt's current catalog calls these architectures by provider-specific
+    # names that are not present in ordinary model titles. Normalize them before
+    # generic architecture classification so Search Sources/creator filtering
+    # does not discard valid cards before detail enrichment.
+    if subtype == "krea image":
+        return "Krea 2"
+    if "minimax h3" in subtype:
+        return "MiniMax-H3"
     return processors.classify_architecture(" ".join([
         str(card.get("content_sub_type") or ""),
         str(card.get("base_model") or card.get("base_model_title") or ""),
@@ -549,14 +560,40 @@ def _card_activity(card):
 
 
 def _card_activity_text(card):
-    """SeaArt catalog activity in the same ISO format stored in ModelRadar."""
-    activity = _card_activity(card)
-    if activity is None:
+    """Return only a trustworthy catalog *change* timestamp.
+
+    SeaArt's top-level ``create_at`` is the model publish time, not an update
+    marker.  Using it for the unchanged precheck permanently freezes an already
+    seen model because that value never changes when a later version/detail is
+    updated.  Keep create_at available through ``_card_activity`` for retention,
+    but only use explicit update/version activity here.
+    """
+    if not isinstance(card, dict):
         return ""
-    try:
-        return activity.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    except Exception:
-        return ""
+
+    values = []
+    for key in ("update_at", "updated_at", "last_ver_create_at"):
+        if card.get(key) not in (None, ""):
+            values.append(card.get(key))
+
+    version = card.get("model_ver_info_v2") or card.get("model_ver_info") or {}
+    if isinstance(version, dict):
+        # A current-version creation/update time is safe as a change marker: when
+        # the current version changes, this value changes with it.
+        for key in ("update_at", "create_at"):
+            if version.get(key) not in (None, ""):
+                values.append(version.get(key))
+
+    for value in values:
+        try:
+            text = _iso_ms(value)
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        except Exception:
+            continue
+    return ""
 
 
 def _card_version_id(card):
@@ -582,17 +619,198 @@ def _card_version_id(card):
     return ""
 
 
-def _fetch_catalog(base_model, settings, live=None):
-    """Read SeaArt's current newest-first model search for a watched base model.
+def _catalog_card_matches_base(card, seaart_base):
+    """Best-effort base-model check for SeaArt's unfiltered recommendation feed."""
+    wanted = str(seaart_base or "").strip().casefold()
+    aliases = {
+        "krea image": ("krea image", "krea 2", "krea2"),
+        "minimax h3 open": ("minimax h3 open", "minimax h3", "minimax-h3"),
+    }.get(wanted, (wanted,))
+    values = []
+    for node in _walk(card):
+        if not isinstance(node, dict):
+            continue
+        for key in ("base_model", "base_model_title", "base_model_name", "baseModel"):
+            value = node.get(key)
+            if value not in (None, ""):
+                values.append(str(value).casefold())
+    text = " ".join(values)
+    return bool(text and any(alias and alias in text for alias in aliases))
 
-    SeaArt retired the older /square/v3/model/list payload used by normal
-    ModelRadar discovery. The live Models search now uses /search/list with a
-    keyword plus its structured base-model filter. Keep this wrapper separate
-    from explicit Search Sources so normal architecture watches can continue to
-    use the source-specific profile while sharing the proven pagination path.
+
+
+def _fetch_empty_query_catalog(seaart_base, settings, requested_sort, live=None):
+    """Try SeaArt search with an empty keyword plus a structured base-model filter.
+
+    This is deliberately a probe/fallback-safe path.  The website normally insists
+    that users type a search term, but the underlying search API keeps the keyword
+    (``obj_name``) separate from ``base_models``.  If SeaArt accepts ``obj_name: \"\"``
+    we can use the search endpoint as a stable architecture catalog and avoid the
+    virtualized Models-page toolbar/scroll path for New/Hot scans.
+
+    Returns ``None`` when the request itself is unavailable/rejected, an empty list
+    when SeaArt successfully answers with zero cards, or a list of model cards.
     """
-    return _fetch_search(base_model, settings, live=live)
+    if requested_sort == "recommended":
+        return None
 
+    settings = settings or {}
+    max_results = max(1, int(settings.get("max_results") or 100))
+    page_size = min(24, max_results)
+    collected = []
+    known = set()
+    page = 1
+
+    try:
+        while len(collected) < max_results and page <= 60 and not scan_control.should_stop():
+            requested = min(page_size, max_results - len(collected))
+            payload = {
+                "form_type": "sku",
+                "order_by": "hot" if requested_sort == "hot" else "new",
+                "base_models": [seaart_base],
+                "model_types": [],
+                "scene": "square",
+                "obj_name": "",
+                "obj_type": "2",
+                "page": page,
+                "page_size": requested,
+                "offset": 0 if page == 1 else "",
+                "ss": 51,
+            }
+            referer = BASE + "/search/model/model"
+            if live is not None:
+                response = live.post_json(SEARCH_API, payload, referer)
+            else:
+                response = _post(SEARCH_API, payload, referer)
+
+            items = _search_items(response)
+            if not items:
+                break
+
+            before = len(collected)
+            for item in items:
+                key = str(item.get("id") or item.get("model_id") or item.get("model_no") or "").strip()
+                if not key or key in known:
+                    continue
+                known.add(key)
+                collected.append(item)
+                if len(collected) >= max_results:
+                    break
+
+            if len(collected) == before or len(items) < requested:
+                break
+            page += 1
+    except Exception as exc:
+        # This line is intentionally always visible during the test.  Do not leak
+        # request headers/tokens; only report the exception class and short message.
+        message = " ".join(str(exc or "").split())[:180]
+        builtins.print(
+            f"SeaArt empty-query backend search unavailable: {type(exc).__name__}"
+            + (f" ({message})" if message else "")
+            + "; using Models catalog fallback"
+        )
+        return None
+
+    label = "Hot" if requested_sort == "hot" else "New"
+    builtins.print(
+        f"SeaArt empty-query backend search: {seaart_base} / {label} -> "
+        f"{len(collected[:max_results])} candidate(s) (limit {max_results})"
+    )
+    return collected[:max_results]
+
+def _fetch_catalog(base_model, settings, live=None):
+    """Read SeaArt's real Models catalog for one watched base model.
+
+    Normal architecture scanning must not be implemented as a keyword search.
+    SeaArt's Models page uses /square/v3/model/list with a structured
+    ``base_models`` filter; searching for text such as ``krea 2`` misses valid
+    Krea models whose title/tags do not contain that phrase.
+
+    New and Hot use SeaArt's filtered model-list endpoint. Recommended is a
+    separate feed on SeaArt; the browser path applies the selected Base Model
+    through the real UI, while the imported-cURL fallback keeps only cards whose
+    recommendation metadata identifies the watched base model.
+    """
+    settings = settings or {}
+    max_results = max(1, int(settings.get("max_results") or 100))
+    requested_sort = str(settings.get("sort") or "newest").strip().lower()
+    if requested_sort not in {"newest", "hot", "recommended"}:
+        requested_sort = "newest"
+
+    _query, base_models = _search_profile(settings, base_model)
+    if not base_models:
+        # Unknown/custom watches do not have a structured SeaArt base-model
+        # value yet. Preserve the literal keyword-search fallback for those.
+        return _fetch_search(base_model, settings, live=live)
+
+    seaart_base = base_models[0]
+    if live is not None:
+        # Blank/wildcard keyword searches use SeaArt's text-search index and do
+        # not reproduce Models -> Base Model -> New. Use the real catalog path.
+        return live.catalog_models(
+            seaart_base,
+            max_results=max_results,
+            sort=requested_sort,
+        )
+
+    recommended = requested_sort == "recommended"
+    endpoint = RECOMMEND_API if recommended else TAG_LIST_API
+    page_size = min(24, max_results)
+    collected = []
+    known = set()
+    page = 1
+    offset = ""
+
+    while len(collected) < max_results and page <= 60 and not scan_control.should_stop():
+        requested = min(page_size, max_results - len(collected))
+        if recommended:
+            payload = {
+                "offset": offset,
+                "page": page,
+                "page_size": requested,
+                "canary_for_other": "sku",
+            }
+        else:
+            payload = {
+                "scene": "scene_ai_search_list_order_by_hot",
+                "offset": offset,
+                "page": page,
+                "page_size": requested,
+                "base_models": [seaart_base],
+                "model_types": [],
+                "model_category": "all",
+                "order_by": "hot" if requested_sort == "hot" else "scope_b",
+                "canary_for_other": "sku",
+                "ss": 54,
+            }
+
+        response = _post(endpoint, payload, BASE + "/model")
+        items = _search_items(response)
+        if not items:
+            break
+
+        raw_added = 0
+        for item in items:
+            key = str(item.get("id") or item.get("model_id") or item.get("model_no") or "").strip()
+            if not key or key in known:
+                continue
+            known.add(key)
+            raw_added += 1
+            if recommended and not _catalog_card_matches_base(item, seaart_base):
+                continue
+            collected.append(item)
+            if len(collected) >= max_results:
+                break
+
+        next_offset = _response_offset(response)
+        if not raw_added:
+            break
+        offset = next_offset
+        if len(items) < requested and not next_offset:
+            break
+        page += 1
+
+    return collected[:max_results]
 
 def _fetch_search(term, settings, live=None):
     max_results = max(1, int(settings.get("max_results") or 100))
@@ -633,6 +851,34 @@ def _detail(model_id, live=None):
     if live is not None:
         return (live.post_json(DETAIL_API, payload, BASE + f"/models/detail/{model_id}").get("data") or {})
     return _post(DETAIL_API, payload, BASE + f"/models/detail/{model_id}").get("data") or {}
+
+
+def _detail_many(model_ids, live, max_concurrency=6):
+    """Fetch aligned detail payloads through the live browser worker pool."""
+    ids = [str(model_id) for model_id in (model_ids or []) if str(model_id).strip()]
+    if not ids or live is None or not hasattr(live, "post_json_many"):
+        return {}
+    payloads = [
+        {"ss": 54, "id": model_id, "ver_id": "", "scene": "model_detail_v2"}
+        for model_id in ids
+    ]
+    referers = [BASE + f"/models/detail/{model_id}" for model_id in ids]
+    details = {}
+    # Keep each Selenium async-script call comfortably below its normal timeout.
+    for start in range(0, len(ids), 48):
+        chunk_ids = ids[start:start + 48]
+        responses = live.post_json_many(
+            DETAIL_API,
+            payloads[start:start + 48],
+            referers=referers[start:start + 48],
+            max_concurrency=max_concurrency,
+        )
+        for model_id, response in zip(chunk_ids, responses):
+            if isinstance(response, dict):
+                detail = response.get("data") or {}
+                if isinstance(detail, dict) and detail:
+                    details[model_id] = detail
+    return details
 
 
 def _hash_map(detail):
@@ -908,8 +1154,42 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         except Exception:
             cutoff = None
 
-    rejected_early = 0
+    unchanged_precheck = 0
+    retention_rejected = 0
+    architecture_rejected = 0
     detail_attempted = 0
+    detail_failed = 0
+    detail_empty = 0
+    detail_unbuildable = 0
+    first_detail_error = ""
+    first_unbuildable_keys = []
+    prefetched_details = {}
+    if live is not None and cards:
+        candidate_ids = []
+        seen_candidate_ids = set()
+        for card in cards:
+            candidate_id = str(card.get("id") or card.get("model_id") or card.get("model_no") or "").strip()
+            if candidate_id and candidate_id not in seen_candidate_ids:
+                seen_candidate_ids.add(candidate_id)
+                candidate_ids.append(candidate_id)
+        batch_started = time.perf_counter()
+        try:
+            prefetched_details = _detail_many(candidate_ids, live, max_concurrency=6)
+        except Exception as exc:
+            print(f"SeaArt concurrent detail fallback: {type(exc).__name__}")
+            prefetched_details = {}
+        batch_elapsed = time.perf_counter() - batch_started
+        print(
+            f"SeaArt concurrent details: {len(prefetched_details)}/{len(candidate_ids)} "
+            f"in {batch_elapsed:.2f}s (6 workers)"
+        )
+        batch_diagnostic = getattr(live, "_last_post_json_many_diagnostic", None) or {}
+        failures = batch_diagnostic.get("failures") or {}
+        if failures:
+            failure_text = ", ".join(f"{name} x{count}" for name, count in sorted(failures.items()))
+            first_failure = str(batch_diagnostic.get("first_failure") or "")
+            suffix = f"; first: {first_failure}" if first_failure else ""
+            print(f"SeaArt concurrent detail failures: {failure_text}{suffix}")
     detail_started = time.perf_counter()
     for card in cards:
         if scan_control.should_stop():
@@ -961,26 +1241,36 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
             )
 
             if timestamp_matches or version_matches:
-                rejected_early += 1
+                unchanged_precheck += 1
                 continue
 
-        # The catalog is newest-first. When card metadata exposes activity time,
-        # avoid a detail/media request for an old model that retention would
-        # immediately reject.
-        if cutoff and not existing_source and not database.model_exists(model_id, NAME):
-            activity = _card_activity(card)
-            if activity is not None and activity < cutoff:
-                rejected_early += 1
-                continue
+        # Do not apply retention from the catalog card before detail. SeaArt's
+        # New feed can resurface an older model when a newer version/activity is
+        # published, while the top-level catalog ``create_at`` still reflects the
+        # original model creation time. Retention is therefore evaluated only
+        # after detail gives us the current model/version timestamps.
 
         try:
             detail_attempted += 1
-            detail = _detail(model_id, live=live)
+            detail = prefetched_details.get(model_id)
+            if not detail:
+                detail = _detail(model_id, live=live)
+            if not detail:
+                detail_empty += 1
+                continue
             model = _build(detail)
+            if model is None:
+                detail_unbuildable += 1
+                if not first_unbuildable_keys and isinstance(detail, dict):
+                    first_unbuildable_keys = sorted(str(key) for key in detail.keys())[:20]
+                continue
         except Exception as exc:
+            detail_failed += 1
+            if not first_detail_error:
+                first_detail_error = f"{type(exc).__name__}: {' '.join(str(exc or '').split())[:180]}"
             print(f"SeaArt detail failed for {model_id}: {type(exc).__name__}")
             continue
-        if not model or model.author.casefold() in blocked:
+        if model.author.casefold() in blocked:
             continue
 
         if str(getattr(model, "architecture", "") or "").casefold() == "other":
@@ -992,6 +1282,17 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 getattr(model, "tags", ""),
                 getattr(model, "description", ""),
             )
+
+        # The Models page contains Featured and recommendation rails beside its
+        # filtered waterfall. The browser collector is scoped to the waterfall,
+        # and this detail-level check is the final safety boundary: a normal
+        # architecture scan must never import a different family.
+        if not external_search and search_mode == "base_model":
+            wanted_architecture = str(settings.get("_watch_architecture") or term or "").strip().casefold()
+            resolved_architecture = str(getattr(model, "architecture", "") or "").strip().casefold()
+            if wanted_architecture and resolved_architecture != wanted_architecture:
+                architecture_rejected += 1
+                continue
 
         # Persist the exact cheap catalog markers separately from detail.updated.
         # The next scan can reject unchanged cards before requesting detail,
@@ -1012,6 +1313,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 if activity.tzinfo is None:
                     activity = activity.replace(tzinfo=timezone.utc)
                 if activity < cutoff and not database.model_exists(model.model_key, NAME):
+                    retention_rejected += 1
                     continue
             except Exception:
                 pass
@@ -1019,11 +1321,41 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
 
     detail_elapsed = time.perf_counter() - detail_started
     if not external_search and search_mode == "base_model":
+        builtins.print(
+            "SeaArt candidate stage: "
+            f"{len(cards)} candidate(s) · "
+            f"{unchanged_precheck} safe unchanged-precheck · "
+            f"{architecture_rejected} architecture-rejected · "
+            f"{retention_rejected} retention-rejected · "
+            f"{detail_attempted} detailed · "
+            f"{len(results)} kept"
+        )
+    if cards and not results:
+        parts = [
+            f"{len(cards)} candidate(s)",
+            f"{detail_attempted} detail request(s)",
+            f"{detail_failed} failed",
+            f"{detail_empty} empty",
+            f"{detail_unbuildable} unbuildable",
+            f"{architecture_rejected} architecture-rejected",
+            f"{unchanged_precheck} unchanged-precheck",
+            f"{retention_rejected} retention-rejected",
+        ]
+        builtins.print("SeaArt detail stage kept 0: " + " · ".join(parts))
+        if first_detail_error:
+            builtins.print(f"SeaArt first detail error: {first_detail_error}")
+        if first_unbuildable_keys:
+            builtins.print(
+                "SeaArt first unbuildable detail keys: " + ", ".join(first_unbuildable_keys)
+            )
+    if not external_search and search_mode == "base_model":
         print("\nSeaArt structured search timing")
         print(f"  Base model         : {term}")
-        print(f"  Search query       : {catalog_elapsed:.2f}s")
+        print(f"  Search order       : {str(settings.get('sort') or 'newest').title()}")
+        print(f"  Catalog browse     : {catalog_elapsed:.2f}s")
         print(f"  Candidates         : {len(cards)}")
-        print(f"  Rejected early     : {rejected_early}")
+        print(f"  Unchanged precheck : {unchanged_precheck}")
+        print(f"  Retention rejected : {retention_rejected}")
         print(f"  Detailed           : {detail_attempted}")
         print(f"  Detail/media/files : {detail_elapsed:.2f}s")
         print(f"  Kept               : {len(results)}")
@@ -1088,10 +1420,9 @@ def test_scan_connection():
     if browser_session_saved():
         try:
             with live_session() as live:
-                cards = live.search_models("krea 2", max_results=1)
-                if cards:
-                    return True, "SeaArt live browser scanning is ready."
-                return False, "SeaArt opened successfully, but no model cards were detected on the search page."
+                if live.model_catalog_page_ready():
+                    return True, "SeaArt live browser session is ready for public scanning."
+                return False, "SeaArt Browser Session opened, but the Models catalog did not become available."
         except Exception as exc:
             return False, f"SeaArt live browser scanning failed: {exc}"
 
@@ -1099,15 +1430,22 @@ def test_scan_connection():
         return False, "SeaArt Browser Session is not connected yet."
     try:
         payload = {
-            "form_type": "sku", "order_by": "new", "base_models": ["Krea Image"],
-            "model_types": [], "scene": "square", "obj_name": "krea 2", "obj_type": "2",
-            "page": 1, "page_size": 1, "offset": 0, "ss": 51,
+            "scene": "scene_ai_search_list_order_by_hot",
+            "offset": "",
+            "page": 1,
+            "page_size": 1,
+            "base_models": ["Krea Image"],
+            "model_types": [],
+            "model_category": "all",
+            "order_by": "scope_b",
+            "canary_for_other": "sku",
+            "ss": 54,
         }
-        data = _post(SEARCH_API, payload, BASE + "/search/model/krea%202", timeout=15)
+        data = _post(TAG_LIST_API, payload, BASE + "/model", timeout=15)
         status = data.get("status") if isinstance(data, dict) else {}
         if isinstance(status, dict) and status.get("code") in (10000, "10000"):
-            return True, "SeaArt manual public scanning session accepted."
-        return False, "SeaArt responded, but the manual public scanning session could not be validated."
+            return True, "SeaArt manual public catalog session accepted."
+        return False, "SeaArt responded, but the manual public catalog session could not be validated."
     except Exception as exc:
         return False, f"SeaArt manual public scanning session rejected: {exc}"
 

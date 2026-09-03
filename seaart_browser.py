@@ -776,6 +776,7 @@ class SeaArtLiveSession:
 
         if self.browser == "firefox":
             options = FirefoxOptions()
+            options.enable_bidi = True
             options.binary_location = exe
             options.add_argument("-headless")
             options.add_argument("-profile")
@@ -783,6 +784,7 @@ class SeaArtLiveSession:
             driver = webdriver.Firefox(options=options)
         elif self.browser == "chrome":
             options = ChromeOptions()
+            options.enable_bidi = True
             options.binary_location = exe
             options.add_argument("--headless=new")
             options.add_argument(f"--user-data-dir={profile}")
@@ -791,6 +793,7 @@ class SeaArtLiveSession:
             driver = webdriver.Chrome(options=options)
         else:
             options = EdgeOptions()
+            options.enable_bidi = True
             options.binary_location = exe
             options.add_argument("--headless=new")
             options.add_argument(f"--user-data-dir={profile}")
@@ -861,54 +864,1100 @@ class SeaArtLiveSession:
                 ids.append(value)
         return ids
 
-    def _try_newest(self):
-        """Best-effort switch of SeaArt's search UI to Newest.
+    def _install_catalog_response_capture(self):
+        """Capture SeaArt's real catalog cards from same-page XHR/fetch responses.
 
-        We deliberately drive SeaArt's own UI instead of modifying signed API bodies.
-        The site has changed this control more than once, so keep selectors text-based.
+        SeaArt's current ``/square/v3/model/list`` schema exposes the public model
+        identifier directly at ``data.items[*].id``. Preserve those top-level card
+        objects instead of recursively guessing at nested ids; ``child[*].id`` is a
+        different internal object and must never be used as a model detail id.
+        """
+        if self.driver is None:
+            return False
+        script = r"""
+            try {
+                if (!window.__abyssSeaartCatalogCaptureInstalled) {
+                    window.__abyssSeaartCatalogCaptureInstalled = true;
+                    window.__abyssSeaartCatalogCards = [];
+
+                    const wanted = (url) => {
+                        url = String(url || '');
+                        return url.includes('/api/v1/square/v3/model/list') ||
+                               url.includes('/api/v1/square/v3/model/recommend');
+                    };
+                    const addCards = (payload) => {
+                        try {
+                            const current = window.__abyssSeaartCatalogCards ||
+                                (window.__abyssSeaartCatalogCards = []);
+                            const byId = new Map(current.map(card => [String(card && card.id || ''), card]));
+
+                            const data = payload && typeof payload === 'object' ? payload.data : null;
+                            let cards = data && Array.isArray(data.items) ? data.items : [];
+
+                            // Recommended has used slightly different wrappers in older
+                            // SeaArt builds. Keep a narrow direct-array fallback, but never
+                            // recurse into child/version/media objects looking for ids.
+                            if (!cards.length && data && typeof data === 'object') {
+                                const direct = ['list', 'models', 'model_list', 'recommend_list'];
+                                for (const key of direct) {
+                                    if (Array.isArray(data[key])) {
+                                        cards = data[key];
+                                        break;
+                                    }
+                                }
+                            }
+
+                            for (const raw of cards) {
+                                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+                                const id = String(raw.id ?? raw.model_id ?? raw.model_no ?? '').trim();
+                                const title = String(raw.title ?? raw.name ?? '').trim();
+                                if (!id || !title) continue;
+                                const card = Object.assign({}, raw, {id, model_id: id});
+                                byId.set(id, card);
+                            }
+                            window.__abyssSeaartCatalogCards = Array.from(byId.values()).slice(-1200);
+                        } catch (_) {}
+                    };
+
+                    const originalFetch = window.fetch;
+                    if (typeof originalFetch === 'function') {
+                        window.fetch = function(...args) {
+                            const requestUrl = args && args.length ?
+                                (typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url)) : '';
+                            return originalFetch.apply(this, args).then(response => {
+                                try {
+                                    if (wanted(requestUrl || response.url)) {
+                                        response.clone().json().then(addCards).catch(() => {});
+                                    }
+                                } catch (_) {}
+                                return response;
+                            });
+                        };
+                    }
+
+                    const proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+                    if (proto && !proto.__abyssSeaartCapturePatched) {
+                        proto.__abyssSeaartCapturePatched = true;
+                        const originalOpen = proto.open;
+                        const originalSend = proto.send;
+                        proto.open = function(method, url, ...rest) {
+                            this.__abyssSeaartUrl = String(url || '');
+                            return originalOpen.call(this, method, url, ...rest);
+                        };
+                        proto.send = function(...args) {
+                            try {
+                                if (wanted(this.__abyssSeaartUrl)) {
+                                    this.addEventListener('load', function() {
+                                        try { addCards(JSON.parse(this.responseText || 'null')); } catch (_) {}
+                                    }, {once:true});
+                                }
+                            } catch (_) {}
+                            return originalSend.apply(this, args);
+                        };
+                    }
+                }
+                window.__abyssSeaartCatalogCards = [];
+                return true;
+            } catch (_) {
+                return false;
+            }
+        """
+        try:
+            return bool(self.driver.execute_script(script))
+        except Exception:
+            return False
+
+    def _captured_catalog_cards(self):
+        if self.driver is None:
+            return []
+        try:
+            values = self.driver.execute_script(
+                "return Array.isArray(window.__abyssSeaartCatalogCards) ? "
+                "window.__abyssSeaartCatalogCards.slice() : [];"
+            ) or []
+        except Exception:
+            return []
+        out = []
+        seen = set()
+        for card in values:
+            if not isinstance(card, dict):
+                continue
+            model_id = str(card.get("id") or card.get("model_id") or card.get("model_no") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            card = dict(card)
+            card["id"] = model_id
+            card["model_id"] = model_id
+            out.append(card)
+        return out
+
+    def _captured_catalog_ids(self):
+        # Compatibility helper for older call sites/debugging.
+        return [str(card.get("id") or "") for card in self._captured_catalog_cards() if card.get("id")]
+
+    def _catalog_grid_model_ids(self):
+        """Collect model IDs only from SeaArt's filtered waterfall result grid."""
+        if self.driver is None:
+            return []
+        script = r"""
+            const grids = [...document.querySelectorAll('.hy-waterfall-container')]
+                .filter(el => el && el.offsetWidth > 0 && el.offsetHeight > 0);
+            if (!grids.length) return [];
+            // The active catalog grid is the visible waterfall with the most
+            // model-card links. Featured/recommendation rails live outside it.
+            grids.sort((a, b) =>
+                b.querySelectorAll('a.sku-card-box[href*="/detail/"]').length -
+                a.querySelectorAll('a.sku-card-box[href*="/detail/"]').length
+            );
+            const out = [], seen = new Set();
+            for (const link of grids[0].querySelectorAll('a.sku-card-box[href*="/detail/"]')) {
+                const href = link.getAttribute('href') || link.href || '';
+                const match = href.match(/\/(?:models|model)\/detail\/([A-Za-z0-9_-]{8,})/);
+                if (match && !seen.has(match[1])) {
+                    seen.add(match[1]);
+                    out.push(match[1]);
+                }
+            }
+            return out;
+        """
+        try:
+            return [str(value) for value in (self.driver.execute_script(script) or []) if str(value).strip()]
+        except Exception:
+            return []
+
+    def _scroll_catalog_surface(self):
+        """Advance SeaArt's virtualized model grid far enough to request the next page.
+
+        SeaArt currently lazy-loads the Models catalog in ~24-card pages. Jumping
+        straight to the absolute bottom can skip the frontend's intersection
+        sentinel, so move incrementally past the last visible model card and emit
+        scroll events on the actual scroll container.
+        """
+        if self.driver is None:
+            return {}
+        script = r"""
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const grids = [...document.querySelectorAll('.hy-waterfall-container')]
+                .filter(el => visible(el));
+            grids.sort((a, b) =>
+                b.querySelectorAll('a.sku-card-box[href*="/detail/"]').length -
+                a.querySelectorAll('a.sku-card-box[href*="/detail/"]').length
+            );
+            const grid = grids.length ? grids[0] : null;
+            const links = [...(grid ? grid.querySelectorAll('a.sku-card-box[href]') : [])].filter(el =>
+                visible(el) && /\/(?:models|model)\/detail\/[A-Za-z0-9_-]{8,}/.test(el.getAttribute('href') || el.href || '')
+            );
+            const last = links.length ? links[links.length - 1] : null;
+
+            // First let the browser reveal the last rendered card. For nested
+            // virtual scrollers, scrollIntoView moves the correct ancestor even
+            // when window itself is not the scrolling surface.
+            try {
+                if (last) last.scrollIntoView({block: 'end', inline: 'nearest', behavior: 'instant'});
+            } catch (_) {}
+
+            const candidates = [];
+            for (const el of document.querySelectorAll('body *')) {
+                if (!visible(el)) continue;
+                const style = getComputedStyle(el);
+                const overflow = String(style.overflowY || '');
+                const room = (el.scrollHeight || 0) - (el.clientHeight || 0);
+                if (/(auto|scroll)/.test(overflow) && room > 160) {
+                    candidates.push({el, room, area: (el.clientWidth || 0) * (el.clientHeight || 0)});
+                }
+            }
+
+            let scroller = null;
+            if (last) {
+                let node = last.parentElement;
+                while (node && node !== document.body && node !== document.documentElement) {
+                    const style = getComputedStyle(node);
+                    if (/(auto|scroll)/.test(String(style.overflowY || '')) &&
+                        node.scrollHeight > node.clientHeight + 160) {
+                        scroller = node;
+                        break;
+                    }
+                    node = node.parentElement;
+                }
+            }
+            if (!scroller && candidates.length) {
+                candidates.sort((a, b) => (b.room - a.room) || (b.area - a.area));
+                scroller = candidates[0].el;
+            }
+            if (!scroller) scroller = document.scrollingElement || document.documentElement;
+
+            const root = scroller === document.scrollingElement ||
+                         scroller === document.documentElement ||
+                         scroller === document.body;
+            const beforeTop = root ? (window.scrollY || scroller.scrollTop || 0) : (scroller.scrollTop || 0);
+            const beforeHeight = scroller.scrollHeight || document.documentElement.scrollHeight || 0;
+            const client = root ? (window.innerHeight || scroller.clientHeight || 800) : (scroller.clientHeight || 800);
+            const maxTop = Math.max(0, beforeHeight - client);
+
+            // Advance about one viewport at a time. This reliably crosses the
+            // infinite-scroll sentinel instead of teleporting past it.
+            // If the virtual list is already parked at the bottom but its
+            // observer did not fire, nudge upward. The next pass crosses the
+            // sentinel again instead of issuing identical no-op scrolls.
+            const atBottom = beforeTop >= Math.max(0, maxTop - 4);
+            const target = atBottom
+                ? Math.max(0, maxTop - Math.max(client * 0.45, 420))
+                : Math.min(maxTop, beforeTop + Math.max(client * 0.92, 650));
+            if (root) {
+                window.scrollTo(0, target);
+                try { window.dispatchEvent(new Event('scroll')); } catch (_) {}
+            } else {
+                scroller.scrollTop = target;
+                try { scroller.dispatchEvent(new Event('scroll', {bubbles: true})); } catch (_) {}
+            }
+
+            const afterTop = root ? (window.scrollY || scroller.scrollTop || 0) : (scroller.scrollTop || 0);
+            return {
+                root,
+                beforeTop,
+                afterTop,
+                beforeHeight,
+                client,
+                maxTop,
+                renderedLinks: links.length,
+                scrollCandidates: candidates.length
+            };
+        """
+        try:
+            return self.driver.execute_script(script) or {}
+        except Exception:
+            return {}
+
+    def _try_sort(self, sort):
+        """Switch SeaArt's Models-page sort control through its exposed menu.
+
+        Current SeaArt builds expose the *closed* sort trigger as an
+        ``aria-haspopup="menu"`` control whose visible text is the current sort
+        (for example ``Recommended``).  Prefer that stable semantic control over
+        trying to guess which icon button opens the menu.  The wider toolbar
+        probing remains as a fallback for older layouts.
+        """
+        if self.driver is None:
+            return False
+
+        requested = str(sort or "newest").strip().lower()
+        wanted = {
+            "newest": "New",
+            "new": "New",
+            "hot": "Hot",
+            "recommended": "Recommended",
+        }.get(requested, "New")
+
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.action_chains import ActionChains
+        except Exception:
+            By = None
+            ActionChains = None
+
+        def _text(el):
+            try:
+                return " ".join(str(el.text or "").split())
+            except Exception:
+                return ""
+
+        def _native_click(el):
+            """Use a real WebDriver click first; JS click is only a fallback."""
+            try:
+                el.click()
+                return True
+            except Exception:
+                pass
+            if ActionChains is not None:
+                try:
+                    ActionChains(self.driver).move_to_element(el).click().perform()
+                    return True
+                except Exception:
+                    pass
+            try:
+                self.driver.execute_script(r"""
+                    const el = arguments[0];
+                    el.scrollIntoView({block:'center', inline:'center'});
+                    const opts = {bubbles:true, cancelable:true, view:window};
+                    el.dispatchEvent(new MouseEvent('mousedown', opts));
+                    el.dispatchEvent(new MouseEvent('mouseup', opts));
+                    el.dispatchEvent(new MouseEvent('click', opts));
+                """, el)
+                return True
+            except Exception:
+                return False
+
+        def _menu_target(label):
+            """Find the requested entry inside an actual open menu/listbox."""
+            if By is None:
+                return None
+            xpaths = [
+                f"//*[@role='menu']//*[@role='menuitem' and normalize-space(.)={json.dumps(label)}]",
+                f"//*[@role='menu']//*[normalize-space(.)={json.dumps(label)}]",
+                f"//*[@role='listbox']//*[@role='option' and normalize-space(.)={json.dumps(label)}]",
+                f"//*[@role='listbox']//*[normalize-space(.)={json.dumps(label)}]",
+                f"//*[@role='menuitem' and normalize-space(.)={json.dumps(label)}]",
+                f"//*[@role='option' and normalize-space(.)={json.dumps(label)}]",
+            ]
+            for xpath in xpaths:
+                try:
+                    for el in self.driver.find_elements(By.XPATH, xpath):
+                        if el.is_displayed():
+                            return el
+                except Exception:
+                    continue
+            return None
+
+        # Preferred path: SeaArt currently exposes the closed trigger as, e.g.,
+        # ``Recommended`` + aria-haspopup="menu".  The diagnostic from the live
+        # site reports this as ``Recommended|menu``.
+        if By is not None:
+            triggers = []
+            try:
+                triggers.extend(self.driver.find_elements(By.CSS_SELECTOR, '[aria-haspopup="menu"]'))
+            except Exception:
+                pass
+            try:
+                triggers.extend(self.driver.find_elements(By.CSS_SELECTOR, '[role="button"][aria-haspopup]'))
+            except Exception:
+                pass
+
+            seen_ids = set()
+            for trigger in triggers:
+                try:
+                    if not trigger.is_displayed():
+                        continue
+                    key = getattr(trigger, "id", None) or id(trigger)
+                    if key in seen_ids:
+                        continue
+                    seen_ids.add(key)
+                    current = _text(trigger)
+                    if current not in {"Recommended", "Hot", "New", "Newest"}:
+                        continue
+                    if current in {wanted, "Newest" if wanted == "New" else wanted}:
+                        return True
+                    if not _native_click(trigger):
+                        continue
+                    deadline = time.time() + 2.5
+                    while time.time() < deadline:
+                        target = _menu_target(wanted)
+                        if target is not None:
+                            clickable = target
+                            try:
+                                # Prefer the menu item/option ancestor when the
+                                # text itself is a nested span.
+                                clickable = target.find_element(By.XPATH, "ancestor-or-self::*[@role='menuitem' or @role='option'][1]")
+                            except Exception:
+                                pass
+                            if _native_click(clickable):
+                                time.sleep(1.4)
+                                return True
+                        time.sleep(.1)
+                except Exception:
+                    continue
+            # Do not stop here; older layouts may have no semantic trigger.
+
+        # Fallback: when the popup is already open, require the distinctive trio
+        # before selecting anything. This prevents a model-card Hot badge from
+        # being treated as the Hot sort option.
+        menu_script = r"""
+            const wanted = arguments[0];
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const exact = label => [...document.querySelectorAll('body *')]
+                .filter(el => visible(el) && (el.textContent || '').trim() === label);
+            const rec = exact('Recommended'), hot = exact('Hot'), fresh = exact('New');
+            if (!rec.length || !hot.length || !fresh.length) return false;
+            for (const r of rec) {
+                const rr = r.getBoundingClientRect();
+                const near = el => {
+                    const x = el.getBoundingClientRect();
+                    return Math.abs(x.left - rr.left) < 260 && Math.abs(x.top - rr.top) < 260;
+                };
+                const h = hot.find(near), n = fresh.find(near);
+                if (!h || !n) continue;
+                const pool = wanted === 'Recommended' ? rec : (wanted === 'Hot' ? hot : fresh);
+                const target = pool.find(near);
+                if (!target) continue;
+                const clickable = target.closest('[role="menuitem"],[role="option"],button,[role="button"]') || target;
+                const opts = {bubbles:true, cancelable:true, view:window};
+                clickable.dispatchEvent(new MouseEvent('mousedown', opts));
+                clickable.dispatchEvent(new MouseEvent('mouseup', opts));
+                clickable.dispatchEvent(new MouseEvent('click', opts));
+                return true;
+            }
+            return false;
+        """
+        try:
+            if bool(self.driver.execute_script(menu_script, wanted)):
+                time.sleep(1.4)
+                return True
+        except Exception:
+            pass
+
+        # Older-layout fallback: probe safe controls on the same toolbar row as
+        # Base Model and accept a candidate only if opening it reveals the real
+        # Recommended/Hot/New menu.
+        candidate_script = r"""
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const all = [...document.querySelectorAll('body *')];
+            const baseText = all.find(el => visible(el) && (el.textContent || '').trim() === 'Base Model');
+            if (!baseText) return [];
+            const baseControl = baseText.closest('button,[role="button"],[aria-haspopup],[data-state]') || baseText;
+            const br = baseControl.getBoundingClientRect();
+            const by = br.top + br.height / 2;
+            const raw = all.filter(el => {
+                if (!visible(el) || el === baseControl || el.contains(baseControl) || baseControl.contains(el)) return false;
+                if (el.closest('a[href]')) return false;
+                const r = el.getBoundingClientRect(), cy = r.top + r.height / 2;
+                if (Math.abs(cy - by) > 48) return false;
+                const role = el.getAttribute('role') || '';
+                const interactive = el.tagName === 'BUTTON' || role === 'button' ||
+                    el.hasAttribute('aria-haspopup') || el.hasAttribute('data-state') ||
+                    (el.querySelector('svg') && getComputedStyle(el).cursor === 'pointer');
+                if (!interactive) return false;
+                const text = (el.innerText || '').trim();
+                if (/^(Create|Upload Model|Base Model)$/i.test(text)) return false;
+                return true;
+            });
+            const unique = raw.filter(el => !raw.some(other => other !== el && other.contains(el)));
+            return unique.map(el => {
+                const r = el.getBoundingClientRect();
+                const text = (el.innerText || '').trim();
+                const semanticSort = /^(Recommended|Hot|New|Newest)$/i.test(text) && el.hasAttribute('aria-haspopup');
+                const iconOnly = !text && !!el.querySelector('svg');
+                const popup = el.hasAttribute('aria-haspopup') || el.hasAttribute('data-state');
+                return {el, semanticSort, iconOnly, popup, x:r.left, area:r.width*r.height};
+            }).sort((a,b) =>
+                (Number(b.semanticSort)-Number(a.semanticSort)) ||
+                (Number(b.popup)-Number(a.popup)) ||
+                (Number(b.iconOnly)-Number(a.iconOnly)) ||
+                (b.x-a.x) ||
+                (a.area-b.area)
+            ).slice(0, 18).map(x => x.el);
+        """
+        try:
+            candidates = self.driver.execute_script(candidate_script) or []
+        except Exception:
+            candidates = []
+
+        for target in candidates:
+            try:
+                current = _text(target)
+                if current in {wanted, "Newest" if wanted == "New" else wanted}:
+                    return True
+                if not _native_click(target):
+                    continue
+                deadline = time.time() + 1.8
+                while time.time() < deadline:
+                    menu_target = _menu_target(wanted)
+                    if menu_target is not None and _native_click(menu_target):
+                        time.sleep(1.4)
+                        return True
+                    try:
+                        if bool(self.driver.execute_script(menu_script, wanted)):
+                            time.sleep(1.4)
+                            return True
+                    except Exception:
+                        pass
+                    time.sleep(.1)
+                try:
+                    from selenium.webdriver.common.keys import Keys
+                    self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    time.sleep(.12)
+                except Exception:
+                    pass
+            except Exception:
+                continue
+        return False
+
+    def _sort_control_debug(self):
+        """Return a compact, non-sensitive description of the Models toolbar."""
+        if self.driver is None:
+            return ""
+        script = r"""
+            const visible = el => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            const all = [...document.querySelectorAll('body *')];
+            const base = all.find(el => visible(el) && (el.textContent || '').trim() === 'Base Model');
+            if (!base) return ['Base Model text not found'];
+            const br = base.getBoundingClientRect(), by = br.top + br.height/2;
+            const controls = all.filter(el => {
+                if (!visible(el) || el.closest('a[href]')) return false;
+                const r=el.getBoundingClientRect();
+                if (Math.abs((r.top+r.height/2)-by) > 55) return false;
+                const role=el.getAttribute('role') || '';
+                return el.tagName === 'BUTTON' || role === 'button' || el.hasAttribute('aria-haspopup') ||
+                    el.hasAttribute('data-state') || (el.querySelector('svg') && getComputedStyle(el).cursor === 'pointer');
+            }).filter(el => !controlsContainsParent(el));
+
+            function controlsContainsParent(el) {
+                // Keep outer clickable wrappers rather than nested svg/span nodes.
+                return all.some(other => other !== el && visible(other) && other.contains(el) &&
+                    (other.tagName === 'BUTTON' || (other.getAttribute('role') || '') === 'button'));
+            }
+
+            return controls.map(el => {
+                const r=el.getBoundingClientRect();
+                const text=(el.innerText || '').trim().replace(/\s+/g,' ').slice(0,45);
+                const aria=el.getAttribute('aria-label') || '';
+                const title=el.getAttribute('title') || '';
+                const popup=el.getAttribute('aria-haspopup') || '';
+                const state=el.getAttribute('data-state') || '';
+                const label=[text,aria,title,popup,state].filter(Boolean).join('|') || '(icon button)';
+                return {x:Math.round(r.left), w:Math.round(r.width), label};
+            }).sort((a,b)=>b.x-a.x).slice(0,12)
+              .map(x => `${x.label}@x${x.x}/w${x.w}`);
+        """
+        try:
+            values = self.driver.execute_script(script) or []
+            return ", ".join(str(x)[:120] for x in values)
+        except Exception:
+            return ""
+
+    def _try_newest(self):
+        # Backward-compatible helper used by explicit keyword search.
+        return self._try_sort("newest")
+
+    def _try_base_model(self, base_model, sort="newest"):
+        """Apply SeaArt's Models-page sort and Base Model in one open popover.
+
+        SeaArt signs the underlying catalog request inside its frontend, so the
+        persistent browser path must let the site perform this interaction rather
+        than replaying or inventing X-Sign values. SeaArt does not reliably retain
+        a selection when this popover is closed and reopened, so both controls must
+        be selected before the menu is dismissed.
         """
         if self.driver is None:
             return False
         try:
+            from selenium.webdriver.common.action_chains import ActionChains
             from selenium.webdriver.common.by import By
         except Exception:
             return False
 
-        # If Newest is already visible, click it directly.
-        expressions = [
-            "//*[normalize-space()='Newest']",
-            "//*[contains(translate(normalize-space(.),'NEWEST','newest'),'newest')]",
-        ]
-        for xpath in expressions:
-            try:
-                for el in self.driver.find_elements(By.XPATH, xpath):
-                    if el.is_displayed():
-                        self.driver.execute_script("arguments[0].click();", el)
-                        time.sleep(1.4)
-                        return True
-            except Exception:
-                pass
+        value = str(base_model or "").strip()
+        aliases = {
+            "krea image": ["Krea 2", "Krea Image"],
+            "minimax h3 open": ["MiniMax H3", "Minimax H3 Open", "Minimax H3"],
+        }.get(value.casefold(), [value])
+        sort_label = {
+            "newest": "New",
+            "new": "New",
+            "hot": "Hot",
+            "recommended": "Recommended",
+        }.get(str(sort or "newest").strip().casefold(), "New")
 
-        # Otherwise open a likely sort control, then try Newest again.
-        for label in ("Hot", "Popular", "Recommended", "Sort"):
+        def native_click(element):
             try:
-                candidates = self.driver.find_elements(
-                    By.XPATH,
-                    f"//*[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{label.lower()}')]",
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center',inline:'center'});", element
                 )
-                target = next((x for x in candidates if x.is_displayed()), None)
-                if target is None:
-                    continue
-                self.driver.execute_script("arguments[0].click();", target)
-                time.sleep(.5)
-                for el in self.driver.find_elements(By.XPATH, "//*[normalize-space()='Newest']"):
-                    if el.is_displayed():
-                        self.driver.execute_script("arguments[0].click();", el)
-                        time.sleep(1.4)
-                        return True
+                ActionChains(self.driver).move_to_element(element).pause(.12).click().perform()
+                return True
             except Exception:
+                try:
+                    element.click()
+                    return True
+                except Exception:
+                    return False
+
+        before_ids = tuple(self._catalog_grid_model_ids())
+
+        # "Base Model" in the horizontal navigation is a category tab, not the
+        # filter menu.  Open the right-side Filter control and constrain all
+        # option lookup to its visible popover.
+        try:
+            controls = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                ".right-filter-box .filter-box, .select-filter-box .filter-box",
+            )
+            control = next((el for el in controls if el.is_displayed()), None)
+            if control is None or not native_click(control):
+                return False
+        except Exception:
+            return False
+
+        def visible_popover():
+            try:
+                return next(
+                    (el for el in self.driver.find_elements(By.CSS_SELECTOR, ".hy-filter-popover")
+                     if el.is_displayed()),
+                    None,
+                )
+            except Exception:
+                return None
+
+        popover = None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and popover is None:
+            popover = visible_popover()
+            if popover is None:
+                time.sleep(.1)
+        if popover is None:
+            return False
+
+        def activate_exact(labels):
+            for label in labels:
+                if not label:
+                    continue
+                current_popover = visible_popover()
+                if current_popover is None:
+                    return False
+                try:
+                    options = current_popover.find_elements(
+                        By.XPATH, f".//*[normalize-space()={json.dumps(label)}]"
+                    )
+                    option = next((el for el in options if el.is_displayed()), None)
+                    if option is None:
+                        continue
+                    option_class = str(option.get_attribute("class") or "")
+                    if "act-item" not in option_class.split() and not native_click(option):
+                        continue
+                    time.sleep(.25)
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        # Keep the popover open while setting both values. Selecting New in one
+        # menu visit and Krea 2 in a later visit can silently restore Recommended.
+        if not activate_exact([sort_label]):
+            return False
+
+        selected = False
+        selected = activate_exact(aliases)
+        if not selected:
+            return False
+
+        # The waterfall is replaced column-by-column.  Its first changed set can
+        # still contain cards from the previous architecture, so do not accept a
+        # transition frame.  Require the complete ID set to remain unchanged for
+        # four consecutive observations before catalog collection begins.
+        deadline = time.monotonic() + 7.0
+        last_ids = ()
+        stable_observations = 0
+        while time.monotonic() < deadline:
+            current_ids = tuple(self._catalog_grid_model_ids())
+            if current_ids and current_ids != before_ids:
+                if current_ids == last_ids:
+                    stable_observations += 1
+                else:
+                    last_ids = current_ids
+                    stable_observations = 1
+                if stable_observations >= 4:
+                    return True
+            else:
+                stable_observations = 0
+            time.sleep(.3)
+        return bool(last_ids or self._catalog_grid_model_ids())
+
+    @staticmethod
+    def _bidi_headers_to_dict(headers):
+        """Normalize WebDriver BiDi request headers to ordinary strings.
+
+        Firefox/Selenium versions have exposed this as either the W3C list of
+        ``{name, value}`` objects or a mapping-like object.  Accept both so a
+        harmless binding-shape change cannot disable SeaArt scanning.
+        """
+        result = {}
+        if isinstance(headers, dict):
+            iterable = ({"name": key, "value": value} for key, value in headers.items())
+        else:
+            iterable = headers or []
+        for item in iterable:
+            if not isinstance(item, dict):
                 continue
-        return False
+            name = str(item.get("name") or "").strip()
+            value = item.get("value")
+            if isinstance(value, dict):
+                value = value.get("value")
+            if not name or value in (None, ""):
+                continue
+            result[name] = str(value)
+        return result
+
+    def _capture_catalog_request_headers(self):
+        """Capture SeaArt's own signed catalog headers through WebDriver BiDi.
+
+        Listen broadly and filter in Python rather than asking Firefox to apply
+        URL-pattern matching in the intercept.  This is intentionally a little
+        noisier for a few seconds, but avoids browser-specific URLPattern quirks.
+        Every intercepted request is immediately released.
+        """
+        if self.driver is None:
+            return {}
+
+        captured = {}
+        network = None
+        callback_id = None
+        capture_error = ""
+        matched_catalog_request = False
+        try:
+            network = self.driver.network
+
+            def on_request(request):
+                nonlocal matched_catalog_request, capture_error
+                try:
+                    url = str(getattr(request, "url", "") or "")
+                    if (
+                        "/api/v1/square/v3/model/list" in url
+                        or "/api/v1/square/v3/model/recommend" in url
+                    ):
+                        matched_catalog_request = True
+                        headers = self._bidi_headers_to_dict(getattr(request, "headers", None))
+                        if headers and not captured:
+                            captured.update(headers)
+                except Exception as exc:
+                    capture_error = str(exc or type(exc).__name__)
+                finally:
+                    # add_request_handler() intercepts beforeRequestSent, so every
+                    # request must be released whether it is interesting or not.
+                    try:
+                        request.continue_request()
+                    except Exception:
+                        pass
+
+            # Do not pass url_patterns here. Firefox BiDi builds have differed in
+            # URLPattern handling; broad interception plus a cheap URL test above
+            # is much more reliable and lasts only for this short page load.
+            callback_id = network.add_request_handler("before_request", on_request)
+            self.driver.get("https://www.seaart.ai/model")
+
+            deadline = time.time() + 4.5
+            while not captured and time.time() < deadline:
+                time.sleep(.10)
+
+            # SeaArt can hydrate the first catalog from cached app data.  Scrolling
+            # the catalog forces the next page and therefore a fresh signed list
+            # request that BiDi can observe.
+            if not captured:
+                try:
+                    self.driver.execute_script(
+                        "window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));"
+                    )
+                except Exception:
+                    pass
+                deadline = time.time() + 4.0
+                while not captured and time.time() < deadline:
+                    time.sleep(.10)
+        except Exception as exc:
+            capture_error = str(exc or type(exc).__name__)
+        finally:
+            if network is not None and callback_id is not None:
+                try:
+                    network.remove_request_handler("before_request", callback_id)
+                except Exception:
+                    pass
+
+        # Keep a diagnostic for catalog_models(); never expose signed values.
+        if captured and not any(str(k).casefold() == "x-sign" for k in captured):
+            capture_error = "catalog request was observed but X-Sign was not exposed by WebDriver BiDi"
+            captured = {}
+        elif not captured and not capture_error:
+            capture_error = (
+                "catalog request was observed but no headers were exposed"
+                if matched_catalog_request
+                else "no SeaArt catalog request was observed by WebDriver BiDi"
+            )
+        self._last_catalog_capture_error = capture_error
+        return captured
+
+    def _signed_browser_post(self, url, payload, signed_headers):
+        """Replay a catalog request inside SeaArt using its captured signed headers."""
+        if self.driver is None:
+            raise RuntimeError("SeaArt live browser is not open")
+
+        allowed = {}
+        for name, value in (signed_headers or {}).items():
+            lname = str(name or "").casefold()
+            if lname.startswith("x-") or lname in {"accept", "accept-language", "content-type"}:
+                allowed[str(name)] = str(value)
+        # SeaArt treats request IDs as per-request values.  Keep the signed
+        # identity headers but refresh this non-signing correlation id.
+        for key in list(allowed):
+            if key.casefold() == "x-request-id":
+                allowed[key] = str(uuid.uuid4())
+        if not any(k.casefold() == "content-type" for k in allowed):
+            allowed["Content-Type"] = "application/json"
+        if not any(k.casefold() == "accept" for k in allowed):
+            allowed["Accept"] = "application/json, text/plain, */*"
+
+        script = r"""
+            const done = arguments[arguments.length - 1];
+            const url = arguments[0], payload = arguments[1], headers = arguments[2];
+            window.fetch.call(window, url, {
+                method: 'POST',
+                credentials: 'include',
+                headers,
+                body: JSON.stringify(payload)
+            }).then(async r => {
+                const text = await r.text();
+                done({ok:r.ok, status:r.status, text});
+            }).catch(e => done({ok:false, status:0, text:String(e)}));
+        """
+        result = self.driver.execute_async_script(script, str(url), payload, allowed)
+        if not isinstance(result, dict):
+            raise RuntimeError("SeaArt signed browser request returned no response")
+        status = int(result.get("status") or 0)
+        text = str(result.get("text") or "")
+        if status >= 400 or not result.get("ok"):
+            raise RuntimeError(f"SeaArt signed catalog HTTP {status}: {text[:240]}")
+        try:
+            data = json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(f"SeaArt signed catalog returned invalid JSON: {text[:180]}") from exc
+        api_status = data.get("status") if isinstance(data, dict) else None
+        if isinstance(api_status, dict) and api_status.get("code") not in (None, 0, 10000, "10000"):
+            raise RuntimeError(api_status.get("msg") or f"SeaArt API code {api_status.get('code')}")
+        return data
+
+    @staticmethod
+    def _catalog_response_cards(payload):
+        """Extract model cards defensively from SeaArt list/recommend wrappers."""
+        data = payload.get("data") if isinstance(payload, dict) else payload
+        out, seen = [], set()
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                yield obj
+                for value in obj.values():
+                    yield from walk(value)
+            elif isinstance(obj, list):
+                for value in obj:
+                    yield from walk(value)
+
+        for node in walk(data):
+            model_id = node.get("id") or node.get("model_id") or node.get("model_no")
+            name = node.get("name") or node.get("title")
+            if not model_id or not name:
+                continue
+            if not any(k in node for k in (
+                "model_ver_no", "model_type", "type", "base_model",
+                "base_model_title", "author", "cover", "cover_v2",
+            )):
+                continue
+            key = str(model_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(node)
+        return out
+
+    @staticmethod
+    def _catalog_response_offset(payload):
+        data = payload.get("data") if isinstance(payload, dict) else payload
+        if isinstance(data, dict):
+            for key in ("offset", "next_offset", "nextOffset"):
+                value = data.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        if isinstance(payload, dict):
+            for key in ("offset", "next_offset", "nextOffset"):
+                value = payload.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return ""
+
+    @staticmethod
+    def _catalog_card_matches_base(card, base_model):
+        wanted = str(base_model or "").strip().casefold()
+        aliases = {
+            "krea image": ("krea image", "krea 2", "krea2"),
+            "minimax h3 open": ("minimax h3 open", "minimax h3", "minimax-h3"),
+        }.get(wanted, (wanted,))
+        values = []
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                yield obj
+                for value in obj.values():
+                    yield from walk(value)
+            elif isinstance(obj, list):
+                for value in obj:
+                    yield from walk(value)
+
+        for node in walk(card):
+            for key in ("base_model", "base_model_title", "base_model_name", "baseModel"):
+                value = node.get(key)
+                if value not in (None, ""):
+                    values.append(str(value).casefold())
+        text = " ".join(values)
+        return bool(text and any(alias and alias in text for alias in aliases))
+
+    def _catalog_models_via_signed_api(self, base_model, max_results, sort, signed_headers):
+        requested = str(sort or "newest").strip().lower()
+        recommended = requested == "recommended"
+        endpoint = (
+            "https://www.seaart.ai/api/v1/square/v3/model/recommend"
+            if recommended
+            else "https://www.seaart.ai/api/v1/square/v3/model/list"
+        )
+        page_size = min(24, max_results)
+        collected, known = [], set()
+        page, offset = 1, ""
+
+        while len(collected) < max_results and page <= 60 and not _STOP.is_set():
+            requested_count = min(page_size, max_results - len(collected))
+            if recommended:
+                payload = {
+                    "offset": offset,
+                    "page": page,
+                    "page_size": requested_count,
+                    "canary_for_other": "sku",
+                }
+            else:
+                payload = {
+                    "scene": "scene_ai_search_list_order_by_hot",
+                    "offset": offset,
+                    "page": page,
+                    "page_size": requested_count,
+                    "base_models": [base_model],
+                    "model_types": [],
+                    "model_category": "all",
+                    "order_by": "hot" if requested == "hot" else "scope_b",
+                    "canary_for_other": "sku",
+                    "ss": 54,
+                }
+
+            response = self._signed_browser_post(endpoint, payload, signed_headers)
+            items = self._catalog_response_cards(response)
+            if not items:
+                break
+
+            raw_added = 0
+            for item in items:
+                key = str(item.get("id") or item.get("model_id") or item.get("model_no") or "").strip()
+                if not key or key in known:
+                    continue
+                known.add(key)
+                raw_added += 1
+                if recommended and not self._catalog_card_matches_base(item, base_model):
+                    continue
+                collected.append(item)
+                if len(collected) >= max_results:
+                    break
+
+            next_offset = self._catalog_response_offset(response)
+            if not raw_added:
+                break
+            offset = next_offset
+            if len(items) < requested_count and not next_offset:
+                break
+            page += 1
+
+        return collected[:max_results]
+
+    def model_catalog_page_ready(self):
+        """Verify that the saved browser session can open SeaArt's Models page.
+
+        Connection health must not depend on a particular sort/filter selector. A
+        SeaArt UI copy/layout change should fail an individual scan with a useful
+        scanner error, not mark the entire saved session as disconnected.
+        """
+        if self.driver is None:
+            return False
+        try:
+            self.driver.get("https://www.seaart.ai/model")
+            time.sleep(2.0)
+            current = str(getattr(self.driver, "current_url", "") or "")
+            if not current.startswith("https://www.seaart.ai"):
+                return False
+            if self._model_ids_from_dom():
+                return True
+            body_text = str(self.driver.execute_script("return document.body ? document.body.innerText : '';") or "")
+            return "Base Model" in body_text or "Upload Model" in body_text
+        except Exception:
+            return False
+
+    def catalog_models(self, base_model, max_results=100, sort="newest"):
+        """Browse SeaArt's real Models catalog with a structured Base Model filter.
+
+        SeaArt virtualizes the Models page, so preserve complete cards from its own
+        successful ``model/list`` responses while scrolling.  The current API schema
+        uses ``data.items[*].id`` as the public model id; keeping the whole card also
+        preserves architecture/type/date metadata for retention and diagnostics.
+        """
+        if self.driver is None:
+            raise RuntimeError("SeaArt live browser is not open")
+        try:
+            limit = max(1, int(max_results))
+        except Exception:
+            limit = 100
+
+        self.driver.get("https://www.seaart.ai/model")
+        time.sleep(2.0)
+        if not self._try_base_model(base_model, sort=sort):
+            raise RuntimeError(
+                f"SeaArt combined sort/base-model filter was not found for {sort!r} / {base_model!r}"
+            )
+        time.sleep(1.0)
+
+        found = []
+        seen = set()
+
+        def collect_current():
+            cards = [
+                {"id": model_id, "model_id": model_id}
+                for model_id in self._catalog_grid_model_ids()
+            ]
+
+            added = 0
+            for card in cards:
+                if not isinstance(card, dict):
+                    continue
+                model_id = str(card.get("id") or card.get("model_id") or card.get("model_no") or "").strip()
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
+                normalized = dict(card)
+                normalized["id"] = model_id
+                normalized["model_id"] = model_id
+                found.append(normalized)
+                added += 1
+                if len(found) >= limit:
+                    break
+            return added
+
+        collect_current()
+        stagnant = 0
+        for _ in range(60):
+            if _STOP.is_set() or len(found) >= limit:
+                break
+            before = len(found)
+            self._scroll_catalog_surface()
+            time.sleep(.55)
+            collect_current()
+            if len(found) == before:
+                stagnant += 1
+            else:
+                stagnant = 0
+            if stagnant >= 10:
+                break
+
+        label = {"newest": "New", "new": "New", "hot": "Hot", "recommended": "Recommended"}.get(
+            str(sort or "newest").strip().lower(), "New"
+        )
+        print(
+            f"SeaArt live catalog: {base_model} / {label} -> {len(found[:limit])} candidate(s) "
+            f"(limit {limit}, scoped filtered grid)"
+        )
+        return found[:limit]
 
     def search_models(self, query, max_results=100):
         """Use SeaArt's real search page and collect model IDs from rendered cards.
@@ -962,9 +2011,11 @@ class SeaArtLiveSession:
     def post_json(self, url, payload, referer=None):
         """POST from the authenticated SeaArt page context.
 
-        Detail/account/download endpoints observed in SeaArt do not require the volatile
-        X-Sign discovery header set, so a same-origin browser fetch is sufficient and
-        automatically uses the current browser profile's live cookies/session state.
+        SeaArt's detail/account endpoints do not use the volatile X-Sign catalog
+        signature, but current browser requests do carry stable browser-context
+        headers derived from the isolated profile. Recreate those headers from the
+        live page's own cookies so detail enrichment matches SeaArt's frontend more
+        closely without persisting or printing any token values.
         """
         if self.driver is None:
             raise RuntimeError("SeaArt live browser is not open")
@@ -975,23 +2026,77 @@ class SeaArtLiveSession:
             const done = arguments[arguments.length - 1];
             const url = arguments[0];
             const payload = arguments[1];
-            fetch(url, {
+            const requestedReferer = arguments[2] || '';
+            const readCookie = (name) => {
+                try {
+                    const prefix = name + '=';
+                    for (const part of String(document.cookie || '').split(';')) {
+                        const value = part.trim();
+                        if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length));
+                    }
+                } catch (_) {}
+                return '';
+            };
+            const requestId = (() => {
+                try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (_) {}
+                return String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+            })();
+            const headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/json',
+                'X-Request-Id': requestId,
+                'X-Platform': 'web',
+                'X-Project-Id': 'seaart',
+                'X-App-Id': 'web_global_seaart',
+                'X-Timezone': (() => {
+                    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+                    catch (_) { return 'UTC'; }
+                })()
+            };
+            const optional = {
+                'X-Device-Id': readCookie('deviceId'),
+                'X-Gray-Tag': readCookie('grayTag'),
+                'X-Browser-Id': readCookie('browserId'),
+                'X-Page-Id': readCookie('pageId')
+            };
+            for (const [name, value] of Object.entries(optional)) {
+                if (value) headers[name] = value;
+            }
+            let restoreUrl = '';
+            try {
+                if (requestedReferer) {
+                    const target = new URL(requestedReferer, location.href);
+                    if (target.origin === location.origin && target.href !== location.href) {
+                        restoreUrl = location.href;
+                        history.replaceState(history.state, '', target.pathname + target.search + target.hash);
+                    }
+                }
+            } catch (_) {}
+            window.fetch.call(window, url, {
                 method: 'POST',
                 credentials: 'include',
-                headers: {
-                    'Accept': 'application/json, text/plain, */*',
-                    'Content-Type': 'application/json',
-                    'X-Platform': 'web',
-                    'X-Project-Id': 'seaart',
-                    'X-App-Id': 'web_global_seaart'
-                },
+                headers,
                 body: JSON.stringify(payload)
             }).then(async r => {
                 const text = await r.text();
+                try {
+                    if (restoreUrl) {
+                        const back = new URL(restoreUrl);
+                        history.replaceState(history.state, '', back.pathname + back.search + back.hash);
+                    }
+                } catch (_) {}
                 done({ok: r.ok, status: r.status, text});
-            }).catch(e => done({ok:false, status:0, text:String(e)}));
+            }).catch(e => {
+                try {
+                    if (restoreUrl) {
+                        const back = new URL(restoreUrl);
+                        history.replaceState(history.state, '', back.pathname + back.search + back.hash);
+                    }
+                } catch (_) {}
+                done({ok:false, status:0, text:String(e)});
+            });
         """
-        result = self.driver.execute_async_script(script, str(url), payload)
+        result = self.driver.execute_async_script(script, str(url), payload, str(referer or ""))
         if not isinstance(result, dict):
             raise RuntimeError("SeaArt browser request returned no response")
         status = int(result.get("status") or 0)
@@ -1006,6 +2111,139 @@ class SeaArtLiveSession:
         if isinstance(api_status, dict) and api_status.get("code") not in (None, 0, 10000, "10000"):
             raise RuntimeError(api_status.get("msg") or f"SeaArt API code {api_status.get('code')}")
         return data
+
+    def post_json_many(self, url, payloads, referers=None, max_concurrency=6):
+        """POST several independent API payloads through one live page call.
+
+        SeaArt detail enrichment does not need DOM navigation. Running a small
+        worker pool inside the already-open page preserves its cookies/browser
+        identity while avoiding one Selenium round trip per model.
+        """
+        if self.driver is None:
+            raise RuntimeError("SeaArt live browser is not open")
+        payloads = list(payloads or [])
+        if not payloads:
+            return []
+        referers = list(referers or [])
+        try:
+            concurrency = max(1, min(8, int(max_concurrency or 6)))
+        except Exception:
+            concurrency = 6
+        if not str(getattr(self.driver, "current_url", "") or "").startswith("https://www.seaart.ai"):
+            self.driver.get("https://www.seaart.ai/model")
+            time.sleep(1.0)
+
+        script = r"""
+            const done = arguments[arguments.length - 1];
+            const url = arguments[0], payloads = arguments[1];
+            const referers = arguments[2] || [], concurrency = arguments[3] || 6;
+            const readCookie = (name) => {
+                try {
+                    const prefix = name + '=';
+                    for (const part of String(document.cookie || '').split(';')) {
+                        const value = part.trim();
+                        if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length));
+                    }
+                } catch (_) {}
+                return '';
+            };
+            const requestId = () => {
+                try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (_) {}
+                return String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+            };
+            const makeHeaders = () => {
+                const headers = {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Content-Type': 'application/json',
+                    'X-Request-Id': requestId(),
+                    'X-Platform': 'web',
+                    'X-Project-Id': 'seaart',
+                    'X-App-Id': 'web_global_seaart',
+                    'X-Timezone': (() => {
+                        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+                        catch (_) { return 'UTC'; }
+                    })()
+                };
+                const optional = {
+                    'X-Device-Id': readCookie('deviceId'),
+                    'X-Gray-Tag': readCookie('grayTag'),
+                    'X-Browser-Id': readCookie('browserId'),
+                    'X-Page-Id': readCookie('pageId')
+                };
+                for (const [name, value] of Object.entries(optional)) if (value) headers[name] = value;
+                return headers;
+            };
+            const results = new Array(payloads.length);
+            let next = 0;
+            const worker = async () => {
+                while (true) {
+                    const index = next++;
+                    if (index >= payloads.length) return;
+                    try {
+                        const options = {
+                            method: 'POST', credentials: 'include',
+                            headers: makeHeaders(), body: JSON.stringify(payloads[index])
+                        };
+                        const referrer = String(referers[index] || '');
+                        if (referrer) options.referrer = referrer;
+                        const response = await window.fetch.call(window, url, options);
+                        results[index] = {
+                            ok: response.ok, status: response.status,
+                            text: await response.text()
+                        };
+                    } catch (error) {
+                        results[index] = {ok:false, status:0, text:String(error)};
+                    }
+                }
+            };
+            Promise.all(Array.from({length: Math.min(concurrency, payloads.length)}, worker))
+                .then(() => done(results))
+                .catch(error => done([{ok:false, status:0, text:String(error)}]));
+        """
+        raw_results = self.driver.execute_async_script(
+            script, str(url), payloads, referers, concurrency
+        )
+        if not isinstance(raw_results, list) or len(raw_results) != len(payloads):
+            raise RuntimeError("SeaArt detail batch returned an incomplete response")
+
+        results = []
+        failure_counts = {}
+        first_failure = ""
+        for item in raw_results:
+            if not isinstance(item, dict):
+                failure_counts["invalid"] = failure_counts.get("invalid", 0) + 1
+                results.append(None)
+                continue
+            status = int(item.get("status") or 0)
+            text = str(item.get("text") or "")
+            if status >= 400 or not item.get("ok"):
+                label = f"HTTP {status}" if status else "network"
+                failure_counts[label] = failure_counts.get(label, 0) + 1
+                if not first_failure:
+                    first_failure = " ".join(text.split())[:160]
+                results.append(None)
+                continue
+            try:
+                data = json.loads(text)
+            except Exception:
+                failure_counts["invalid JSON"] = failure_counts.get("invalid JSON", 0) + 1
+                results.append(None)
+                continue
+            api_status = data.get("status") if isinstance(data, dict) else None
+            if isinstance(api_status, dict) and api_status.get("code") not in (None, 0, 10000, "10000"):
+                label = f"API {api_status.get('code')}"
+                failure_counts[label] = failure_counts.get(label, 0) + 1
+                if not first_failure:
+                    first_failure = " ".join(str(api_status.get("msg") or "").split())[:160]
+                results.append(None)
+                continue
+            results.append(data)
+        self._last_post_json_many_diagnostic = {
+            "failures": failure_counts,
+            "first_failure": first_failure,
+        }
+        return results
+
 
 
 def live_session():
