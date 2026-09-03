@@ -60,9 +60,39 @@ document.addEventListener("DOMContentLoaded", () => {
     const searchLabel = document.querySelector(".collection-search-label");
     const searchRow = document.querySelector(".collection-search-row");
     const alphaButtons = Array.from(document.querySelectorAll(".collection-alpha-button"));
+    const sortButtons = Array.from(document.querySelectorAll(".collection-sort-button"));
+    const familyGrid = document.getElementById("collectionFamilyGrid");
     const cards = Array.from(document.querySelectorAll(".collection-child-card"));
+    const originalOrder = new Map(cards.map((card, index) => [card, index]));
     let changedOnlyActive = false;
     let activeAlpha = "all";
+    let activeSort = "alpha";
+
+    function timestampValue(value){
+        const parsed = Date.parse(String(value || ""));
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function sortCards(){
+        if(!familyGrid || cards.length < 2) return;
+        const ordered = [...cards].sort((left, right) => {
+            if(activeSort === "new"){
+                const difference = timestampValue(right.dataset.familyFirstSeen) - timestampValue(left.dataset.familyFirstSeen);
+                if(difference) return difference;
+            }else if(activeSort === "updated"){
+                const difference = timestampValue(right.dataset.familyUpdatedAt) - timestampValue(left.dataset.familyUpdatedAt);
+                if(difference) return difference;
+            }
+            return (originalOrder.get(left) ?? 0) - (originalOrder.get(right) ?? 0);
+        });
+        ordered.forEach(card => familyGrid.appendChild(card));
+    }
+
+    function syncSortButtons(){
+        sortButtons.forEach(button => {
+            button.setAttribute("aria-pressed", button.dataset.sort === activeSort ? "true" : "false");
+        });
+    }
 
     function visibleCards(){
         return cards.filter(card => !card.hidden);
@@ -127,6 +157,19 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
     syncAlphaButtons();
+
+    sortButtons.forEach(button => {
+        button.addEventListener("click", () => {
+            const requestedSort = String(button.dataset.sort || "alpha");
+            if(activeSort === requestedSort) return;
+            activeSort = requestedSort;
+            syncSortButtons();
+            sortCards();
+            updateExpandAllState();
+        });
+    });
+    syncSortButtons();
+    sortCards();
 
     function setChangedOnly(active, {jump=false} = {}){
         changedOnlyActive = !!active;

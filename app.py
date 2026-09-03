@@ -7707,6 +7707,10 @@ def collection_page(model_id):
         model_id,
         [group.get("family_id") for group in groups],
     )
+    family_activity_lookup = database.get_collection_family_activity(
+        model_id,
+        [group.get("family_id") for group in groups],
+    )
     downloaded_fingerprints = {
         str(row.get("file_fingerprint") or "")
         for row in database.get_download_history_for_model(model_id)
@@ -7734,7 +7738,11 @@ def collection_page(model_id):
         "new_variants": 0,
     }
     for group in groups:
-        group["favorite"] = str(group.get("family_id") or "") in favorite_family_ids
+        family_id = str(group.get("family_id") or "")
+        group["favorite"] = family_id in favorite_family_ids
+        family_activity = family_activity_lookup.get(family_id, {})
+        group["first_seen"] = str(family_activity.get("first_seen") or "")
+        group["updated_at"] = str(family_activity.get("updated_at") or "")
         group["size_display"] = _format_download_size({"size_bytes": group.get("total_size_bytes", 0)}, source)
         for file_data in group.get("files", []):
             file_data["size_display"] = _format_download_size(file_data, source)
@@ -9004,6 +9012,7 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
     # Downloaded models are always protected from age-based cleanup/retention.
     downloaded_keys = database.downloaded_model_keys()
     downloaded_ids = database.downloaded_model_ids()
+    waiting_access_ids = database.waiting_access_model_ids()
 
     selected_architectures = {
         str(value).strip().casefold()
@@ -9049,6 +9058,8 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
             protected_ids.add(row["id"])
         if row["id"] in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys:
             protected_ids.add(row["id"])
+        if row["id"] in waiting_access_ids:
+            protected_ids.add(row["id"])
 
     # Unknown-age models are deliberately excluded unless the user explicitly opts in.
     # When included, favorites and favorite creators remain protected exactly like dated models.
@@ -9072,6 +9083,9 @@ def _library_cleanup_candidates(days, architectures=None, include_unknown=False,
                 protected_ids.add(model_id)
                 unknown_protected.append(model_id)
             if model_id in downloaded_ids or (str(row["source"] or "").lower(), str(row["model_key"] or "")) in downloaded_keys:
+                protected_ids.add(model_id)
+                unknown_protected.append(model_id)
+            if model_id in waiting_access_ids:
                 protected_ids.add(model_id)
                 unknown_protected.append(model_id)
 

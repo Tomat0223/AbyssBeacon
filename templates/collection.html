@@ -137,13 +137,21 @@
                     {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
                     <button type="button" class="collection-alpha-button" data-alpha="{{ letter }}" aria-pressed="false">{{ letter }}</button>
                     {% endfor %}
+                    {% if source == 'huggingface' %}
+                    <span class="collection-sort-divider" aria-hidden="true"></span>
+                    <div class="collection-family-sort" aria-label="Sort Collection families">
+                        <button type="button" class="collection-sort-button" data-sort="new" aria-pressed="false" title="Newest families first">New</button>
+                        <button type="button" class="collection-sort-button" data-sort="updated" aria-pressed="false" title="Recently changed families first">Updated</button>
+                        <button type="button" class="collection-sort-button" data-sort="alpha" aria-pressed="true" title="Alphabetical order">A–Z</button>
+                    </div>
+                    {% endif %}
                 </div>
                 {% endif %}
             </div>
 
             <div class="collection-grid" id="collectionFamilyGrid">
                 {% for group in groups %}
-                <details id="{{ group.dom_id }}" class="collection-child-card" data-family-search="{{ group.search_text|e }}" data-family-alpha="{{ group.alpha_buckets|join(' ') }}" data-family-changed="{{ 'true' if group.change_badges else 'false' }}">
+                <details id="{{ group.dom_id }}" class="collection-child-card" data-family-search="{{ group.search_text|e }}" data-family-alpha="{{ group.alpha_buckets|join(' ') }}" data-family-changed="{{ 'true' if group.change_badges else 'false' }}" data-family-first-seen="{{ group.first_seen|e }}" data-family-updated-at="{{ group.updated_at|e }}">
                     <summary>
                         <div class="collection-child-main">
                             <div class="collection-child-title">{{ group.name }}</div>

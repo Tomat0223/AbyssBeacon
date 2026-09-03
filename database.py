@@ -3077,6 +3077,32 @@ def get_collection_family_changes(model_id, family_ids=None):
     return result
 
 
+def get_collection_family_activity(model_id, family_ids=None):
+    """Return stable first-seen and latest-change timestamps for Collection families."""
+    model_id = int(model_id)
+    ids = {str(value).strip() for value in (family_ids or []) if str(value).strip()}
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT family_id,first_seen,change_detected_at "
+            "FROM collection_families WHERE model_id=?",
+            (model_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result = {}
+    for row in rows:
+        family_id = str(row["family_id"])
+        if ids and family_id not in ids:
+            continue
+        result[family_id] = {
+            "first_seen": str(row["first_seen"] or ""),
+            "updated_at": str(row["change_detected_at"] or ""),
+        }
+    return result
+
+
 def set_collection_family_favorite(model_id, family_id, favorite):
     model_id = int(model_id)
     family_id = str(family_id or "").strip()
@@ -3833,6 +3859,29 @@ def downloaded_model_ids():
         SELECT DISTINCT model_id FROM download_history WHERE model_id IS NOT NULL
         UNION
         SELECT DISTINCT model_id FROM installed_files WHERE model_id IS NOT NULL
+        """
+    ).fetchall()
+    conn.close()
+    return {int(row[0]) for row in rows if row[0] is not None}
+
+
+def waiting_access_model_ids():
+    """Return card IDs that must survive retention while access is being watched.
+
+    Early Access queue entries remain protected until they complete or the user
+    removes them. Paid/waiting watchlist entries remain protected until the user
+    explicitly removes the watch item, including after availability is detected.
+    """
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT model_id
+        FROM download_queue
+        WHERE model_id IS NOT NULL AND status <> 'completed'
+        UNION
+        SELECT DISTINCT model_id
+        FROM download_watchlist
+        WHERE model_id IS NOT NULL
         """
     ).fetchall()
     conn.close()

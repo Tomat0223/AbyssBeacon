@@ -13,7 +13,7 @@ DEBUG_SCANNERS = False
 # parallel. Database writes remain serialized in the coordinator thread to keep
 # SQLite predictable. Searches/aliases within one source stay sequential for
 # now so ModelRadar does not accidentally hammer a single provider.
-MAX_PARALLEL_SOURCES = 4
+MAX_PARALLEL_SOURCES = 6
 
 # v2: ModelScope is the current long pole, so only it gets bounded
 # intra-source alias concurrency for now. This targets the measured bottleneck
