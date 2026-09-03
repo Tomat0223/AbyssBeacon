@@ -118,14 +118,20 @@ def _item_rating(item):
     return 0.0
 
 
-def _fetch_model_pages(label, base_params, max_items):
-    """Fetch one CivitAI discovery path and follow its advertised pagination."""
+def _fetch_model_pages(label, base_params, max_items, *, timeout=30, return_status=False):
+    """Fetch one CivitAI discovery path and follow its advertised pagination.
+
+    ``return_status`` is used by explicit Search Sources lookups to distinguish
+    a legitimate zero-result response from a provider/network failure. Normal
+    discovery callers keep the historical list-only return value.
+    """
     collected = []
     next_url = API
     next_params = dict(base_params)
     page_number = 0
     page_size = min(100, max_items) if max_items else 100
     next_params["limit"] = page_size
+    request_succeeded = False
 
     while next_url and len(collected) < max_items:
         if scan_control.should_stop():
@@ -143,7 +149,7 @@ def _fetch_model_pages(label, base_params, max_items):
                 session, next_url, provider="CivitAI",
                 label=f"{label} page {page_number}",
                 pace_key="CivitAI.com", min_interval=1.25,
-                params=next_params, timeout=30
+                params=next_params, timeout=timeout
             )
         except Exception as exc:
             print(f"CivitAI {label} connection error:", exc)
@@ -162,6 +168,11 @@ def _fetch_model_pages(label, base_params, max_items):
         except Exception:
             print(f"CivitAI {label} returned invalid JSON")
             break
+
+        # A successful JSON response counts even when it contains zero items.
+        # Explicit search uses this bit to decide whether a no-base-model retry
+        # is meaningful or would merely repeat a failed request.
+        request_succeeded = True
 
         page_items = payload.get("items") or []
         if not isinstance(page_items, list):
@@ -203,13 +214,20 @@ def _fetch_model_pages(label, base_params, max_items):
             next_params = None
         elif len(page_items) < page_size:
             break
+        elif base_params.get("query"):
+            # Current CivitAI full-text search requires cursor pagination and
+            # explicitly rejects page=... when query is present. If a search
+            # response omits nextCursor there is no safe next page to invent.
+            break
         else:
-            # Defensive legacy fallback if the server supplies neither cursor
-            # nor a nextPage URL.
+            # Defensive legacy fallback for non-search browse requests if the
+            # server supplies neither cursor nor a nextPage URL.
             next_url = API
             next_params = dict(base_params)
             next_params["page"] = page_number + 1
 
+    if return_status:
+        return collected, request_succeeded
     return collected
 
 
@@ -1626,13 +1644,62 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         print(f"CivitAI creator results inspected: {len(items)}")
     else:
         # Architecture scans should use CivitAI's real Base Model field rather
-        # than fuzzy name/tag matching. CivitAI's official MCP server uses the
-        # same public /models endpoint with baseModels + cursor pagination.
+        # than fuzzy name/tag matching. CivitAI's official public API now uses
+        # full-text search for query= and supports baseModels alongside it.
         configured_architecture = str(scan_settings.get("_architecture") or "").strip()
         architecture_context = str(scan_settings.get("_architecture_context") or "").strip()
         configured_type = str(scan_settings.get("_model_type") or "").strip()
+        external_search = bool(scan_settings.get("_external_search"))
+        external_architectures = [
+            str(value).strip()
+            for value in (scan_settings.get("_external_architectures") or [])
+            if str(value).strip()
+        ]
 
-        if configured_architecture or architecture_context:
+        if external_search and str(term or "").strip():
+            # Search Sources must use the provider's actual text-search lane.
+            # Previously architecture selection was applied only after fetching
+            # a generic candidate pool, and Red/CivitAI browser search could
+            # therefore find a model that AbyssBeacon never received. Push the
+            # architecture into the supported structured field while keeping the
+            # user's words in query=.
+            search_params = {
+                "sort": api_sort,
+                "query": str(term or "").strip(),
+            }
+            if configured_type:
+                search_params["types"] = configured_type
+            if external_architectures:
+                search_params["baseModels"] = external_architectures
+            items, search_succeeded = _fetch_model_pages(
+                "external search",
+                search_params,
+                max_results,
+                timeout=12,
+                return_status=True,
+            )
+            if not items and external_architectures and search_succeeded:
+                # Defensive retry only after a real zero-result response. If the
+                # provider timed out or failed, immediately repeating almost the
+                # same request can double the user's wait without adding signal.
+                query_only_params = dict(search_params)
+                query_only_params.pop("baseModels", None)
+                print("CivitAI external search: no structured matches; retrying query without base-model prefilter")
+                items = _fetch_model_pages(
+                    "external search fallback",
+                    query_only_params,
+                    max_results,
+                    timeout=12,
+                )
+            elif not items and external_architectures and not search_succeeded:
+                builtins.print("CivitAI search request failed; skipped redundant fallback.")
+            arch_label = ", ".join(external_architectures) if external_architectures else "Any"
+            print(
+                f'CivitAI external search results inspected: {len(items)} '
+                f'(query={str(term or "").strip()!r}, base model={arch_label})'
+            )
+
+        elif configured_architecture or architecture_context:
             resolved_architecture = configured_architecture or architecture_context
 
             items = _models_v9_discovery(

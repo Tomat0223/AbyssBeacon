@@ -277,12 +277,12 @@
 
     <label>Depth
       <select id="sourceSearchDepth">
-        <option value="recent" selected>Recent · up to 100 per source</option>
+        <option value="recent" selected>Quick · up to 100 per source</option>
         <option value="deep">Deep · up to 200 per source</option>
         <option value="all">Broad · up to 1000 per source</option>
         <option value="maximum">Everything available from each source</option>
       </select>
-      <small id="sourceSearchDepthHelp" class="discovery-field-help">Result limits are per source. Providers search in parallel; deeper searches can take substantially longer.</small>
+      <small id="sourceSearchDepthHelp" class="discovery-field-help">Depth controls how many matches each provider is allowed to inspect. Search is all-time at every depth; providers run in parallel.</small>
     </label>
 
     <div id="sourceSearchStatus" class="source-search-status"></div>

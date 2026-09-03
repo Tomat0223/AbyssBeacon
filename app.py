@@ -4746,7 +4746,11 @@ def search_sources_external():
         return {"status": "error", "message": "A scan is already running."}, 409
 
     max_results = {"recent": 100, "deep": 200, "all": 1000, "maximum": 100000}.get(depth, 200)
-    search_days = 30 if depth == "recent" else 36500
+    # Search Sources is an explicit lookup, not a normal discovery window.
+    # Result depth controls how many provider matches we inspect, but an exact
+    # keyword match must not disappear merely because the model is older than
+    # 30 days. Use an effectively all-time source window for every depth.
+    search_days = 36500
     plan = {source: [] for source in sources}
 
     for source in sources:
@@ -4764,7 +4768,13 @@ def search_sources_external():
             job["creator"] = query
         plan[source].append(job)
 
-    print(f'EXTERNAL SEARCH: "{query}" ({intent}, {depth})')
+    depth_label = {
+        "recent": "Quick",
+        "deep": "Deep",
+        "all": "Broad",
+        "maximum": "Everything",
+    }.get(depth, depth)
+    print(f'EXTERNAL SEARCH: "{query}" ({intent}, {depth_label})')
     if selected_architectures:
         print("Architecture filter:", ", ".join(selected_architectures))
     else:
@@ -4784,6 +4794,7 @@ def search_sources_external():
                     "_external_search": True,
                     "_external_maximum": depth == "maximum",
                 },
+                selected_architectures=selected_architectures,
             )
         except Exception as exc:
             scan_status.update_status(status="error", message=str(exc))

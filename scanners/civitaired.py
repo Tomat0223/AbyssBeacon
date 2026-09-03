@@ -1,4 +1,5 @@
 from scan_logging import verbose_print as print
+import builtins
 NAME = "civitaired"
 DISPLAY = "CivitAI Red"
 ENABLED = True
@@ -18,11 +19,13 @@ import database
 import scan_control
 from scanners.common.model import Model
 from scanners.common import processors
-from secrets_manager import get_civitaired_credentials
+from secrets_manager import get_civitaired_credentials, get_civitai_search_key
 from utils.loader import load_model_types
 
 BASE_URL = "https://civitai.red"
 LIST_API = BASE_URL + "/api/trpc/model.getAll"
+MODEL_LIST_API = BASE_URL + "/api/v1/models"
+MODEL_SEARCH_API = "https://search-new.civitai.com/multi-search"
 VERSION_API = BASE_URL + "/api/v1/model-versions/{version_id}"
 CIVITAI_MODEL_DETAIL_API = "https://civitai.com/api/v1/models/{model_id}"
 IMAGE_BASE = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
@@ -297,6 +300,386 @@ def _request_page(base_model="", model_type="", query="", sort_mode="newest", se
             raise RuntimeError(f"HTTP {response.status_code}: {detail}") from exc
         raise
     return _decode_response(response)
+
+
+def _normalize_rest_search_item(item, preferred_base_models=None):
+    """Adapt Red's public /api/v1/models record to the existing Red builder.
+
+    A model-level search can match because *any* historical revision uses the
+    requested base model, while ``modelVersions[0]`` may belong to a different
+    architecture. Preserve the newest revision that actually matches the
+    Search Sources architecture before the normal Red builder hydrates it.
+    """
+    if not isinstance(item, dict):
+        return None
+    versions = [dict(v) for v in (item.get("modelVersions") or []) if isinstance(v, dict)]
+
+    wanted_architectures = {
+        processors.classify_architecture(value).casefold()
+        for value in (preferred_base_models or [])
+        if processors.classify_architecture(value) != "Other"
+    }
+
+    def _version_time(record):
+        values = [
+            _parse_date(record.get("updatedAt")),
+            _parse_date(record.get("publishedAt")),
+            _parse_date(record.get("createdAt")),
+        ]
+        values = [value for value in values if value is not None]
+        return max(values) if values else datetime.min
+
+    matching_versions = []
+    if wanted_architectures:
+        matching_versions = [
+            record for record in versions
+            if processors.classify_architecture(record.get("baseModel")).casefold()
+            in wanted_architectures
+        ]
+
+    candidates = matching_versions or versions
+    version = max(candidates, key=_version_time) if candidates else {}
+    creator = item.get("creator") if isinstance(item.get("creator"), dict) else {}
+    stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
+
+    out = dict(item)
+    out["version"] = version
+    out["user"] = {"username": str(creator.get("username") or "")}
+    out["rank"] = dict(stats)
+    out["lastVersionAt"] = _latest_date(
+        item.get("updatedAt"),
+        item.get("publishedAt"),
+        version.get("updatedAt"),
+        version.get("publishedAt"),
+        version.get("createdAt"),
+    )
+    if not out.get("publishedAt"):
+        out["publishedAt"] = version.get("publishedAt") or version.get("createdAt") or ""
+    if not out.get("baseModels"):
+        base_models = []
+        seen = set()
+        for record in versions:
+            base = str(record.get("baseModel") or "").strip()
+            if base and base.casefold() not in seen:
+                seen.add(base.casefold())
+                base_models.append(base)
+        out["baseModels"] = base_models
+    out["_rest_search_hit"] = True
+    return out
+
+
+def _normalize_meili_search_hit(hit, preferred_base_models=None):
+    """Adapt a models_v9 search hit to the normal Red listing shape.
+
+    The website search index keeps a compact current ``version`` plus a
+    ``versions`` history.  Select the newest revision matching the requested
+    AbyssBeacon architecture before the normal Red enrichment path runs.
+    """
+    if not isinstance(hit, dict) or hit.get("id") is None:
+        return None
+
+    versions = []
+    for value in (hit.get("versions") or []):
+        if isinstance(value, dict):
+            versions.append(dict(value))
+    for value in (hit.get("modelVersions") or []):
+        if isinstance(value, dict) and str(value.get("id") or "") not in {
+            str(existing.get("id") or "") for existing in versions
+        }:
+            versions.append(dict(value))
+    current = hit.get("version") if isinstance(hit.get("version"), dict) else {}
+    if current and str(current.get("id") or "") not in {
+        str(existing.get("id") or "") for existing in versions
+    }:
+        versions.append(dict(current))
+
+    wanted_architectures = {
+        processors.classify_architecture(value).casefold()
+        for value in (preferred_base_models or [])
+        if processors.classify_architecture(value) != "Other"
+    }
+
+    def _version_time(record):
+        values = [
+            _parse_date(record.get("updatedAt")),
+            _parse_date(record.get("publishedAt")),
+            _parse_date(record.get("createdAt")),
+        ]
+        values = [value for value in values if value is not None]
+        return max(values) if values else datetime.min
+
+    if wanted_architectures:
+        matching = [
+            record for record in versions
+            if processors.classify_architecture(record.get("baseModel")).casefold()
+            in wanted_architectures
+        ]
+        if not matching:
+            return None
+        version = max(matching, key=_version_time)
+    else:
+        version = max(versions, key=_version_time) if versions else dict(current)
+
+    out = dict(hit)
+    out["version"] = dict(version or {})
+    if not out.get("baseModels"):
+        bases = []
+        seen = set()
+        for record in versions:
+            base = str(record.get("baseModel") or "").strip()
+            if base and base.casefold() not in seen:
+                seen.add(base.casefold())
+                bases.append(base)
+        out["baseModels"] = bases
+
+    user = out.get("user") if isinstance(out.get("user"), dict) else {}
+    creator = out.get("creator") if isinstance(out.get("creator"), dict) else {}
+    if not user:
+        out["user"] = {"username": str(creator.get("username") or "")}
+    if not isinstance(out.get("rank"), dict):
+        out["rank"] = dict(out.get("stats") or {}) if isinstance(out.get("stats"), dict) else {}
+
+    if not out.get("lastVersionAt"):
+        unix_value = out.get("lastVersionAtUnix")
+        try:
+            if unix_value is not None:
+                out["lastVersionAt"] = datetime.utcfromtimestamp(float(unix_value)).isoformat() + "Z"
+        except Exception:
+            pass
+    if not out.get("lastVersionAt"):
+        out["lastVersionAt"] = _latest_date(
+            out.get("updatedAt"), out.get("publishedAt"),
+            version.get("updatedAt"), version.get("publishedAt"), version.get("createdAt"),
+        )
+    if not out.get("publishedAt"):
+        out["publishedAt"] = version.get("publishedAt") or version.get("createdAt") or ""
+    out["_meili_search_hit"] = True
+    return out
+
+
+def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=100):
+    """Search the same models_v9 lane used by CivitAI/Red's website search.
+
+    This endpoint is deliberately used only for an explicit user Search
+    Sources action.  Normal Red discovery continues to use Red's authenticated
+    browsing APIs.
+    """
+    query = str(query or "").strip()
+    if not query:
+        return []
+    try:
+        max_items = max(1, int(max_items))
+    except (TypeError, ValueError):
+        max_items = 100
+
+    base_models = [str(value).strip() for value in (base_models or []) if str(value).strip()]
+    filters = [
+        "availability != Private",
+        "(nsfwLevel = 1 OR nsfwLevel = 2 OR nsfwLevel = 4 OR nsfwLevel = 8 OR nsfwLevel = 16)",
+    ]
+    # Match the website's base-model facet when possible, then still verify the
+    # selected revision locally before hydration.  models_v9 exposes both the
+    # current version and the historical versions collection as filterable.
+    if base_models:
+        clauses = []
+        for value in base_models:
+            quoted = json.dumps(_red_base_model(value), ensure_ascii=False)
+            clauses.append(f"versions.baseModel = {quoted}")
+            clauses.append(f"version.baseModel = {quoted}")
+        filters.append("(" + " OR ".join(clauses) + ")")
+    if model_type:
+        filters.append(f"type = {json.dumps(str(model_type), ensure_ascii=False)}")
+
+    collected = []
+    seen_ids = set()
+    offset = 0
+    while len(collected) < max_items:
+        if scan_control.should_stop():
+            break
+        limit = min(100, max_items - len(collected))
+        payload = {
+            "queries": [{
+                "q": query,
+                "indexUid": "models_v9",
+                "attributesToHighlight": ["*"],
+                "highlightPreTag": "__ais-highlight__",
+                "highlightPostTag": "__/ais-highlight__",
+                "limit": limit,
+                "offset": offset,
+                "filter": [" AND ".join(filters)],
+            }]
+        }
+        search_key = get_civitai_search_key()
+        if not search_key:
+            debug_print("CivitAI Red website search key is not configured")
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {search_key}",
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "Origin": BASE_URL,
+            "Referer": f"{BASE_URL}/",
+            "X-Meilisearch-Client": (
+                "Meilisearch instant-meilisearch (v0.13.5) ; "
+                "Meilisearch JavaScript (v0.34.0)"
+            ),
+            "User-Agent": session.headers.get("User-Agent", "Mozilla/5.0"),
+        }
+
+        debug_print("CivitAI Red website search request:", MODEL_SEARCH_API, payload)
+        try:
+            response = session.post(MODEL_SEARCH_API, json=payload, headers=headers, timeout=12)
+        except requests.RequestException as exc:
+            debug_print("CivitAI Red website search request failed:", repr(exc))
+            return None
+        if response.status_code == 429:
+            debug_print("CivitAI Red website search rate limited")
+            return None
+        if response.status_code < 200 or response.status_code >= 300:
+            debug_print(
+                "CivitAI Red website search HTTP failure:",
+                response.status_code,
+                re.sub(r"\\s+", " ", response.text or "")[:240],
+            )
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            debug_print("CivitAI Red website search returned non-JSON data")
+            return None
+        results = data.get("results") if isinstance(data, dict) else None
+        first = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+        hits = first.get("hits") if isinstance(first, dict) else []
+        if not isinstance(hits, list):
+            return None
+
+        accepted_this_page = 0
+        for hit in hits:
+            normalized = _normalize_meili_search_hit(hit, preferred_base_models=base_models)
+            if not normalized:
+                continue
+            model_id = str(normalized.get("id") or "")
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            collected.append(normalized)
+            accepted_this_page += 1
+            if len(collected) >= max_items:
+                break
+
+        debug_print(
+            f"CivitAI Red website search page offset {offset}: "
+            f"{len(hits)} hit(s), {accepted_this_page} architecture match(es)"
+        )
+        if len(hits) < limit:
+            break
+        offset += len(hits)
+
+    return collected
+
+
+def _fetch_rest_search_pages(query, base_models=None, model_type="", sort_mode="newest", max_items=100):
+    """Use CivitAI Red's public model API for explicit full-text searches.
+
+    Red's browsing tRPC feed is useful for normal discovery, but query= on that
+    feed is not the website's full-text search lane. The public /api/v1/models
+    endpoint is the supported automated-search interface and accepts query plus
+    baseModels with cursor pagination.
+    """
+    cookies = _credentials()
+    if not cookies.get("__Secure-civ-token"):
+        raise PermissionError("CivitAI Red connection is not configured")
+
+    try:
+        max_items = max(1, int(max_items))
+    except (TypeError, ValueError):
+        max_items = 100
+
+    base_models = [str(value).strip() for value in (base_models or []) if str(value).strip()]
+    params_base = {
+        "query": str(query or "").strip(),
+        "sort": _sort_label(sort_mode),
+        "period": "AllTime",
+        "nsfw": "true",
+        "earlyAccess": "true",
+    }
+    if base_models:
+        params_base["baseModels"] = [_red_base_model(value) for value in base_models]
+    if model_type:
+        params_base["types"] = model_type
+
+    collected = []
+    cursor = ""
+    page = 0
+    seen_cursors = set()
+    while len(collected) < max_items:
+        if scan_control.should_stop():
+            break
+        page += 1
+        remaining = max_items - len(collected)
+        params = dict(params_base)
+        params["limit"] = min(100, remaining)
+        if cursor:
+            params["cursor"] = cursor
+
+        request_headers = {
+            "Cookie": _cookie_header(cookies),
+            "x-client-date": str(int(time.time() * 1000)),
+            "Referer": f"{BASE_URL}/search/models",
+            "Accept": "application/json",
+        }
+        debug_print("CivitAI Red public search request:", MODEL_LIST_API, params)
+        response = get_with_backoff(
+            session, MODEL_LIST_API, provider="CivitAI Red",
+            label=f"public search page {page}",
+            pace_key="CivitAI Red", min_interval=0.75,
+            params=params, headers=request_headers, timeout=45,
+        )
+
+        if response.status_code == 429:
+            raise RuntimeError("HTTP 429 after 3 retries")
+        if response.status_code in (401, 403):
+            detail = re.sub(r"\s+", " ", response.text or "").strip()[:240]
+            raise PermissionError(
+                f"CivitAI Red rejected the public model search (HTTP {response.status_code})."
+                + (f" Red said: {detail}" if detail else "")
+            )
+        if response.status_code in (404, 405):
+            return None
+        if response.status_code != 200:
+            detail = re.sub(r"\s+", " ", response.text or "").strip()[:240]
+            raise RuntimeError(
+                f"CivitAI Red public model search HTTP {response.status_code}"
+                + (f": {detail}" if detail else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError("CivitAI Red public model search returned invalid JSON") from exc
+
+        page_items = payload.get("items") or [] if isinstance(payload, dict) else []
+        if not isinstance(page_items, list):
+            page_items = []
+        for raw in page_items[:remaining]:
+            normalized = _normalize_rest_search_item(raw, preferred_base_models=base_models)
+            if normalized is not None:
+                collected.append(normalized)
+        print(f"CivitAI Red public search page {page}: {len(page_items)} results")
+
+        metadata = payload.get("metadata") or {} if isinstance(payload, dict) else {}
+        raw_next = metadata.get("nextCursor") if isinstance(metadata, dict) else None
+        next_cursor = "" if raw_next in (None, "", -1, "-1", False) else str(raw_next)
+        if not page_items or len(collected) >= max_items or not next_cursor:
+            break
+        if next_cursor in seen_cursors:
+            print("CivitAI Red public search stopped: repeated cursor")
+            break
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    return collected
 
 
 def _fetch_pages(base_model="", model_type="", query="", sort_mode="newest", search_days=7, max_items=100, tagname="", username=""):
@@ -1841,15 +2224,74 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     print(f"CivitAI Red search: {query or base_model or term}")
     print(f"CivitAI Red maximum results: {max_results} (cursor pagination)")
 
+    external_search = bool(scan_settings.get("_external_search"))
+    external_architectures = [
+        str(value).strip()
+        for value in (scan_settings.get("_external_architectures") or [])
+        if str(value).strip()
+    ]
+
     try:
-        items = _fetch_pages(
-            base_model=base_model,
-            model_type=configured_type,
-            query=query,
-            sort_mode=sort_mode,
-            search_days=search_days,
-            max_items=max_results,
-        )
+        if external_search and query:
+            # Use the same models_v9 full-text lane as Red's website first.
+            # Red's /api/v1/models route can return a valid empty result even
+            # while the website search shows matching Red-only models.
+            items = _fetch_meili_search_pages(
+                query=query,
+                base_models=external_architectures,
+                model_type=configured_type,
+                max_items=max_results,
+            )
+            search_lane = "website"
+            if not items:
+                if items is None:
+                    builtins.print("CivitAI Red website search unavailable; using REST search fallback")
+                else:
+                    builtins.print("CivitAI Red website search returned 0 matches; using REST search fallback")
+                items = _fetch_rest_search_pages(
+                    query=query,
+                    base_models=external_architectures,
+                    model_type=configured_type,
+                    sort_mode=sort_mode,
+                    max_items=max_results,
+                )
+                search_lane = "REST"
+                if items is None:
+                    print("CivitAI Red public search endpoint unavailable; using legacy browse fallback")
+                    items = _fetch_pages(
+                        base_model=base_model,
+                        model_type=configured_type,
+                        query=query,
+                        sort_mode=sort_mode,
+                        search_days=search_days,
+                        max_items=max_results,
+                    )
+                    search_lane = "browse fallback"
+                elif not items and external_architectures:
+                    # Retry text-only if Red changes a BaseModel enum/alias.
+                    # The central architecture guard still rejects non-selected models.
+                    print("CivitAI Red external search: no structured matches; retrying query without base-model prefilter")
+                    items = _fetch_rest_search_pages(
+                        query=query,
+                        base_models=[],
+                        model_type=configured_type,
+                        sort_mode=sort_mode,
+                        max_items=max_results,
+                    ) or []
+            arch_label = ", ".join(external_architectures) if external_architectures else "Any"
+            builtins.print(
+                f'CivitAI Red search candidates: {len(items)} via {search_lane} '
+                f'(query={query!r}, base model={arch_label})'
+            )
+        else:
+            items = _fetch_pages(
+                base_model=base_model,
+                model_type=configured_type,
+                query=query,
+                sort_mode=sort_mode,
+                search_days=search_days,
+                max_items=max_results,
+            )
     except PermissionError as exc:
         print("CivitAI Red authentication error:", exc)
         return []

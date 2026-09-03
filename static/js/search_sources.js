@@ -65,7 +65,7 @@
     const mode=String(depth?.value||'recent');
     depthHelp.textContent=mode==='maximum'
       ? 'No practical AbyssBeacon result cap is applied. Each provider is searched toward its available end; this can take a long time.'
-      : 'Result limits are per source. Providers search in parallel; deeper searches can take substantially longer.';
+      : 'Depth controls how many matches each provider may inspect. Search is all-time at every depth; providers run in parallel.';
   }
   intent?.addEventListener('change',updateIntentHelp);
   depth?.addEventListener('change',updateDepthHelp);

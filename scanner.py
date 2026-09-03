@@ -377,7 +377,8 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
         # uploader name. Anything mode intentionally keeps provider relevance.
         if source_settings.get("_external_search") and source_settings.get("_external_intent") == "models":
             query_text = str(source_settings.get("_external_query") or "").casefold().strip()
-            if query_text:
+            query_terms = [term for term in query_text.split() if term]
+            if query_terms:
                 kept = []
                 for model in models:
                     fields = [
@@ -388,7 +389,11 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
                         getattr(model, "model_type", ""), getattr(model, "pipeline", ""),
                     ]
                     haystack = " ".join(str(value or "") for value in fields).casefold()
-                    if query_text in haystack:
+                    # Treat a multi-word query like the normal feed search: all
+                    # words must be present, but they need not form one exact
+                    # contiguous phrase. Provider relevance still decides the
+                    # candidate set before this final model-only guard.
+                    if all(term in haystack for term in query_terms):
                         kept.append(model)
                 models = kept
 
@@ -413,6 +418,15 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
                         f"{source_name} external architecture filter: "
                         f"kept {len(models)}/{before_architecture_filter}"
                     )
+
+            # Search Sources can intentionally import old models. Give newly
+            # inserted search results the same explicit-scan retention clock as
+            # Creator / Discovery Scan results so a 7-day normal retention rule
+            # cannot immediately delete a model the user just searched for.
+            explicit_added_at = datetime.now(timezone.utc).isoformat()
+            for model in models:
+                model.retention_mode = "creator_added"
+                model.creator_discovered_at = explicit_added_at
 
         duration = time.perf_counter() - job_start
         if verbose_enabled():
