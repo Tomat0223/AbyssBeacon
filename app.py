@@ -6768,6 +6768,206 @@ def _local_source_tags(source, query="", limit=30):
     return [{"id": name, "name": name, "count": count} for name, count in ordered]
 
 
+_SEARCH_TAG_BANK_CACHE = {"expires": 0.0, "items": []}
+
+
+def _search_tag_autocomplete_key(value):
+    """Normalize a tag/metadata value for autocomplete-only comparisons."""
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _search_tag_metadata_aliases(value):
+    """Return common aliases for a dedicated Base Model/Architecture value.
+
+    Providers often store a full repository-style value such as
+    ``krea/Krea-2-Raw`` while the corresponding tag is only ``Krea-2-Raw``.
+    Autocomplete can safely treat both as the same structural metadata.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    values = {text}
+    if "/" in text:
+        values.add(text.rsplit("/", 1)[-1].strip())
+    return {
+        key for key in (_search_tag_autocomplete_key(item) for item in values)
+        if key
+    }
+
+
+def _search_tag_is_redundant_metadata(value, metadata_aliases):
+    """Hide structural/noisy metadata from suggestions without changing search.
+
+    ``tag:`` remains able to search every stored tag. This only keeps the
+    autocomplete menu focused on descriptive tags instead of values already
+    represented by dedicated AbyssBeacon metadata or provider pipeline labels.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return True
+
+    prefix = text.split(":", 1)[0].strip() if ":" in text else ""
+    prefix_key = _search_tag_autocomplete_key(prefix)
+    if prefix_key in {"basemodel", "architecture", "modelarchitecture", "template"}:
+        return True
+
+    key = _search_tag_autocomplete_key(text)
+    if key in {"basemodel", "architecture", "modelarchitecture"}:
+        return True
+    if key in metadata_aliases:
+        return True
+
+    # Provider task/pipeline labels are useful source metadata, but they crowd
+    # descriptive autocomplete with repeated modality synonyms. Keep them fully
+    # searchable via tag:, while omitting only these exact/common task forms.
+    task_keys = {
+        "texttoimage", "texttoimagesynthesis", "text2image", "t2i",
+        "texttovideo", "text2video", "t2v",
+        "texttoaudio", "text2audio", "t2a",
+        "texttoaudioimage", "texttoimageaudio",
+        "texttoaudioimagevideo", "texttoaudioandvideo", "texttoaudiovideo",
+        "imagetovideo", "image2video", "i2v",
+        "imagetotext", "image2text", "i2t",
+        "imagetotexttovideo", "imagetexttovideo",
+        "imagetotexttoaudio", "imagetexttoaudio",
+        "imagetotexttoaudioandvideo", "imagetexttoaudioandvideo",
+        "imagetotexttoaudiovideo", "imagetexttoaudiovideo",
+        "imagetoaudio", "image2audio", "i2a",
+        "imagetoaudiovideo", "imagetoaudioandvideo",
+        "videogeneration", "video",
+        "videotovideo", "video2video", "v2v",
+        "videotoaudio", "video2audio", "v2a",
+        "videotoaudiovideo", "videotoaudioandvideo",
+        "audiotovideo", "audio2video", "a2v",
+        "audiotoimage", "audio2image", "a2i",
+        "tool",
+    }
+    if key in task_keys:
+        return True
+
+    # Precision/quantization labels are technical metadata rather than
+    # descriptive content tags. They stay searchable even when not suggested.
+    if re.fullmatch(r"(?:u?int|fp|float|bf|bfloat)[0-9]{1,3}", key):
+        return True
+
+    return False
+
+
+def _search_tag_bank():
+    """Return normalized tags across the entire local AbyssBeacon library.
+
+    Counts are per merged model, not per provider snapshot, so a CivitAI + Red
+    mirror does not make a tag look twice as popular. Dedicated Base Model and
+    Architecture values are omitted from autocomplete because AbyssBeacon
+    already exposes those concepts separately; the underlying tags remain
+    searchable with ``tag:``. The short cache keeps navbar autocomplete cheap
+    while scans can still refresh the results soon.
+    """
+    now = time.monotonic()
+    if _SEARCH_TAG_BANK_CACHE["items"] and now < _SEARCH_TAG_BANK_CACHE["expires"]:
+        return _SEARCH_TAG_BANK_CACHE["items"]
+
+    per_model = {}
+    metadata_aliases = set()
+    conn = database.connect()
+    try:
+        rows = conn.execute(
+            "SELECT id,source,tags,display_tags,card_data,base_model,architecture FROM models"
+        ).fetchall()
+        source_rows = conn.execute(
+            "SELECT model_id,source,source_data FROM model_sources"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    def add_metadata(value):
+        metadata_aliases.update(_search_tag_metadata_aliases(value))
+
+    def add_values(model_id, source, raw_tags="", display_tags=None, card_data=None):
+        try:
+            model_id = int(model_id)
+        except Exception:
+            return
+        bucket = per_model.setdefault(model_id, {})
+        values = _normalized_model_tags(source, raw_tags, card_data)
+        if isinstance(display_tags, str):
+            try:
+                parsed = json.loads(display_tags or "[]")
+                display_tags = parsed if isinstance(parsed, list) else []
+            except Exception:
+                display_tags = []
+        if isinstance(display_tags, list):
+            values.extend(str(value).strip() for value in display_tags if str(value).strip())
+        for value in values:
+            text = str(value or "").strip()
+            if not text or len(text) > 100:
+                continue
+            key = text.casefold()
+            bucket.setdefault(key, text)
+
+    for row in rows:
+        add_metadata(row["base_model"])
+        add_metadata(row["architecture"])
+        add_values(
+            row["id"], row["source"], row["tags"] or "",
+            row["display_tags"], row["card_data"],
+        )
+
+    for row in source_rows:
+        try:
+            snapshot = json.loads(row["source_data"] or "{}")
+        except Exception:
+            snapshot = {}
+        if not isinstance(snapshot, dict):
+            continue
+        add_metadata(snapshot.get("base_model"))
+        add_metadata(snapshot.get("architecture"))
+        add_values(
+            row["model_id"], row["source"], snapshot.get("tags") or "",
+            snapshot.get("display_tags"), snapshot.get("card_data"),
+        )
+
+    counts = {}
+    display_names = {}
+    for values in per_model.values():
+        for key, text in values.items():
+            if _search_tag_is_redundant_metadata(text, metadata_aliases):
+                continue
+            counts[key] = counts.get(key, 0) + 1
+            display_names.setdefault(key, text)
+
+    items = [
+        {"name": display_names[key], "count": count}
+        for key, count in counts.items()
+    ]
+    items.sort(key=lambda item: (-int(item["count"]), str(item["name"]).casefold()))
+    _SEARCH_TAG_BANK_CACHE["items"] = items
+    _SEARCH_TAG_BANK_CACHE["expires"] = now + 15.0
+    return items
+
+
+@app.route("/search/tag-suggestions")
+def search_tag_suggestions():
+    query = str(request.args.get("q") or "").strip().casefold()
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 10), 25))
+    except Exception:
+        limit = 10
+
+    bank = _search_tag_bank()
+    if not query:
+        matches = bank[:limit]
+    else:
+        prefix = [item for item in bank if str(item["name"]).casefold().startswith(query)]
+        contains = [
+            item for item in bank
+            if query in str(item["name"]).casefold()
+            and not str(item["name"]).casefold().startswith(query)
+        ]
+        matches = (prefix + contains)[:limit]
+    return {"success": True, "tags": matches}
+
+
 @app.route("/discover/tags")
 def discover_tags():
     source = str(request.args.get("source") or "tensorhub").strip().lower()

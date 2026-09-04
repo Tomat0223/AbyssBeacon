@@ -10,6 +10,10 @@ let dismissedAutocompleteValue = null;
 let autocompleteSelection = -1;
 let navbarCountTimer = null;
 let navbarCountRequestId = 0;
+let tagAutocompleteTimer = null;
+let tagAutocompleteAbort = null;
+let tagAutocompleteRequestKey = null;
+let tagAutocompleteSuggestions = [];
 let lastNavbarCountSignature = "";
 let lastNavbarCountData = null;
 let favoriteCreatorNames = new Set();
@@ -70,7 +74,8 @@ function ensureSearchUI(){
         <div class="search-help-tooltip" role="tooltip">
             Type anything and press Enter to pin it as a filter.<br>
             Try <strong>search</strong> to find models or creators not currently in AbyssBeacon, or <strong>discover</strong> to find models by tags not currently in AbyssBeacon.<br>
-            Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>sha:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>downloaded:</strong> <strong>update:</strong> <strong>favorite:</strong> <strong>sort:</strong>
+            Precise filters: <strong>exclude:</strong> <strong>author:</strong> <strong>arch:</strong> <strong>type:</strong> <strong>source:</strong> <strong>tag:</strong> <strong>sha:</strong> <strong>status:</strong> <strong>access:</strong> <strong>mature:</strong> <strong>media:</strong> <strong>downloaded:</strong> <strong>update:</strong> <strong>favorite:</strong> <strong>sort:</strong><br>
+            Click <strong>×</strong> to clear active filters.
         </div>`;
 
     navbar.insertBefore(area, cluster);
@@ -161,10 +166,14 @@ function initializeFilters(){
     modelSearch?.addEventListener("input", () => {
         dismissedAutocompleteValue = null;
         autocompleteSelection = -1;
+        scheduleTagAutocompleteLookup();
         updateSearchAutocomplete();
         filterCards();
         savePreferences();
         scheduleSearchFeedReset();
+    });
+    modelSearch?.addEventListener("focus", () => {
+        scheduleTagAutocompleteLookup(true);
     });
     modelSearch?.addEventListener("keydown", event => {
         const suggestions = getSearchAutocompleteSuggestions();
@@ -298,6 +307,74 @@ function initializeFilters(){
     document.body.classList.remove("loading");
 }
 
+function getTagAutocompleteContext(){
+    const input = document.getElementById("modelSearch");
+    const raw = String(input?.value || "");
+    if(raw !== raw.trim() || raw.includes(" ")) return null;
+    const match = raw.match(/^tag:([^\s]*)$/i);
+    if(!match) return null;
+    return {
+        raw,
+        query:String(match[1] || "").replace(/^"|"$/g, "").trim().toLowerCase()
+    };
+}
+
+function formatTagSearchSuggestion(tag){
+    const value = String(tag || "").trim();
+    if(!value) return null;
+    const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return /\s/.test(value) ? `tag:"${escaped}"` : `tag:${value}`;
+}
+
+function scheduleTagAutocompleteLookup(immediate=false){
+    const context = getTagAutocompleteContext();
+    clearTimeout(tagAutocompleteTimer);
+
+    if(!context){
+        tagAutocompleteRequestKey = null;
+        tagAutocompleteSuggestions = [];
+        tagAutocompleteAbort?.abort();
+        tagAutocompleteAbort = null;
+        return;
+    }
+
+    const requestKey = context.query;
+    if(tagAutocompleteRequestKey === requestKey && tagAutocompleteSuggestions.length) return;
+    if(tagAutocompleteRequestKey !== requestKey){
+        tagAutocompleteSuggestions = [];
+        tagAutocompleteAbort?.abort();
+        tagAutocompleteAbort = null;
+    }
+
+    tagAutocompleteTimer = setTimeout(async () => {
+        const current = getTagAutocompleteContext();
+        if(!current || current.query !== requestKey) return;
+
+        tagAutocompleteAbort?.abort();
+        tagAutocompleteAbort = new AbortController();
+        try{
+            const response = await fetch(`/search/tag-suggestions?q=${encodeURIComponent(requestKey)}&limit=10`, {
+                signal:tagAutocompleteAbort.signal,
+                headers:{"Accept":"application/json"}
+            });
+            const data = await response.json();
+            if(!response.ok || !data?.success) throw new Error(data?.error || `HTTP ${response.status}`);
+
+            const latest = getTagAutocompleteContext();
+            if(!latest || latest.query !== requestKey) return;
+            tagAutocompleteRequestKey = requestKey;
+            tagAutocompleteSuggestions = (data.tags || []).map(item => ({
+                text:formatTagSearchSuggestion(item.name),
+                label:`tag · ${Number(item.count || 0).toLocaleString()} model${Number(item.count || 0) === 1 ? "" : "s"}`
+            })).filter(item => item.text);
+            autocompleteSelection = -1;
+            updateSearchAutocomplete();
+        }catch(error){
+            if(error?.name !== "AbortError") console.warn("Unable to load tag suggestions:", error);
+        }
+    }, immediate ? 0 : 140);
+}
+
 function getDynamicSearchValues(command){
     if(command === "source:") {
         return Array.from(document.querySelectorAll('input[name="sources"]')).map(input=>[
@@ -326,6 +403,11 @@ function getSearchAutocompleteSuggestions(){
     if(dismissedAutocompleteValue === raw) return [];
 
     const matches=[];
+    if(/^tag:/i.test(value)) {
+        tagAutocompleteSuggestions.forEach(item => {
+            if(item?.text) matches.push(item);
+        });
+    }
     for(const command of SEARCH_COMMANDS) {
         if(!(command.startsWith(value) || value.startsWith(command))) continue;
         const valueOptions=getDynamicSearchValues(command);
@@ -386,6 +468,7 @@ function acceptSearchAutocomplete(index=0){
     input.value=choice.text;
     dismissedAutocompleteValue=null;
     autocompleteSelection=-1;
+    scheduleTagAutocompleteLookup(true);
     updateSearchAutocomplete();
     filterCards();
     input.focus();
