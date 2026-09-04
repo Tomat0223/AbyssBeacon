@@ -278,13 +278,19 @@ def _search_items(payload):
 
 def _search_profile(settings, term):
     watch = str(settings.get("_watch_architecture") or "").casefold()
-    term_cf = str(term or "").casefold()
+    term_value = str(term or settings.get("_watch_architecture") or "").strip()
+    term_cf = term_value.casefold()
     if "krea" in watch or "krea" in term_cf:
         return "krea 2", ["Krea Image"]
     if "h3" in watch or "minimax" in watch or "h3" in term_cf or "minimax" in term_cf:
         return "h3", ["Minimax H3 Open"]
-    # Future/custom watches still work as literal SeaArt model search terms.
-    return str(term or settings.get("_watch_architecture") or "").strip(), []
+    if str(settings.get("_search_mode") or "").strip().casefold() == "base_model" and term_value:
+        # Architecture definitions already provide SeaArt's exact Base Model
+        # labels. Honor that structured intent instead of downgrading every
+        # family except Krea/MiniMax to a noisy literal keyword search.
+        return term_value, [term_value]
+    # Explicit/custom text searches keep the literal keyword-search path.
+    return term_value, []
 
 
 def _response_offset(payload):
