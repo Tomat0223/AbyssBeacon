@@ -745,6 +745,14 @@ def scan(
     media_files = 0
 
     scan_settings = scan_settings or {}
+    progress_callback = scan_settings.get("_progress_callback")
+
+    def _progress(current, total, stage="Scanning models", finalize=False):
+        if callable(progress_callback):
+            try:
+                progress_callback(current, total, stage, finalize)
+            except Exception:
+                pass
 
     SEARCH_DAYS = int(scan_settings.get("search_days", 7))
     MAX_RESULTS = max(1, int(scan_settings.get("max_results", 100)))
@@ -784,6 +792,8 @@ def scan(
     # Hugging Face pagination is followed via the API's Link header.
     per_request = 1000
     target_results = 10000 if creator else MAX_RESULTS
+    if not creator:
+        _progress(0, target_results, "Finding models")
     params = {
         "limit": min(per_request, target_results),
         "sort": api_sort,
@@ -830,6 +840,8 @@ def scan(
 
         remaining = target_results - len(items)
         items.extend(page_items[:remaining])
+        if not creator:
+            _progress(min(len(items), target_results), target_results, "Finding models")
         print(f"Hugging Face page {page_number}: {len(page_items)} results")
 
         if len(items) >= target_results or not page_items:
@@ -854,9 +866,18 @@ def scan(
         next_url = next_link
         next_params = None
 
+    if not creator and not scan_control.should_stop():
+        found_total = len(items)
+        _progress(found_total, found_total if found_total < target_results else target_results, "Finding models", True)
+
     print(f"Hugging Face results inspected: {len(items)}")
 
-    for item in items:
+    if not creator and items:
+        _progress(0, len(items), "Checking models")
+
+    for item_index, item in enumerate(items, start=1):
+        if not creator:
+            _progress(item_index - 1, len(items), "Checking models")
 
         if scan_control.should_stop():
             print("Hugging Face scan stopped")
@@ -1275,6 +1296,9 @@ def scan(
             processed_model
         )
 
+
+    if not creator and items and not scan_control.should_stop():
+        _progress(len(items), len(items), "Checking models", True)
 
     elapsed = time.perf_counter() - start_time
 

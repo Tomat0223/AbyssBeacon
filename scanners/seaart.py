@@ -1,4 +1,4 @@
-from scan_logging import verbose_print as print
+from scan_logging import verbose_enabled, verbose_print as print
 
 import html
 import builtins
@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 
 import database
 import scan_control
+import scan_status
 from secrets_manager import (
     get_seaart_scan_session,
     get_seaart_download_session,
@@ -35,6 +36,47 @@ ACCOUNT_MY_API = BASE + "/api/v1/account/my"
 TAG_LIST_API = BASE + "/api/v1/square/v3/model/list"
 RECOMMEND_API = BASE + "/api/v1/square/v3/model/recommend"
 CREATOR_LIST_API = BASE + "/api/v1/square/v3/model/account_list"
+
+
+def _report_scan_progress(label, current, total, stage="Scanning models", finalize=False):
+    """Publish SeaArt candidate progress to the shared scan status.
+
+    Normal single-source terminal scans reuse one line in place; verbose or
+    multi-source scans keep normal line-oriented logging so worker output never
+    fights over the cursor.
+    """
+    try:
+        current = max(0, int(current or 0))
+        total = max(0, int(total or 0))
+    except Exception:
+        current, total = 0, 0
+    label = str(label or "SeaArt").strip()
+    stage = str(stage or "Scanning models").strip()
+    scan_status.update_source_progress(
+        NAME,
+        progress_current=current,
+        progress_total=total,
+        progress_stage=stage,
+        progress_label=label,
+    )
+
+    percent = int(round((current / total) * 100)) if total else 0
+    text = f"SeaArt · {label} · {stage}: {current}/{total}"
+    if total:
+        text += f" ({percent}%)"
+
+    # Normal terminal progress is intentionally reserved for one-source scans.
+    # With multiple source workers, the browser owns live progress so concurrent
+    # providers never fill the terminal with per-stage status lines. Verbose mode
+    # keeps only completed stage markers as ordinary lines alongside its existing
+    # diagnostic output; it never uses cursor rewriting.
+    if verbose_enabled():
+        if finalize:
+            builtins.print(text)
+        return
+    if not scan_status.single_source_active(NAME):
+        return
+    scan_status.write_terminal_progress(text, finalize=finalize)
 
 
 _CURL = shutil.which("curl.exe") or shutil.which("curl")
@@ -724,7 +766,7 @@ def _fetch_empty_query_catalog(seaart_base, settings, requested_sort, live=None)
     )
     return collected[:max_results]
 
-def _fetch_catalog(base_model, settings, live=None):
+def _fetch_catalog(base_model, settings, live=None, progress_callback=None):
     """Read SeaArt's real Models catalog for one watched base model.
 
     Normal architecture scanning must not be implemented as a keyword search.
@@ -757,6 +799,7 @@ def _fetch_catalog(base_model, settings, live=None):
             seaart_base,
             max_results=max_results,
             sort=requested_sort,
+            progress_callback=progress_callback,
         )
 
     recommended = requested_sort == "recommended"
@@ -809,6 +852,11 @@ def _fetch_catalog(base_model, settings, live=None):
                 break
 
         next_offset = _response_offset(response)
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(collected), max_results), max_results)
+            except Exception:
+                pass
         if not raw_added:
             break
         offset = next_offset
@@ -859,7 +907,7 @@ def _detail(model_id, live=None):
     return _post(DETAIL_API, payload, BASE + f"/models/detail/{model_id}").get("data") or {}
 
 
-def _detail_many(model_ids, live, max_concurrency=6):
+def _detail_many(model_ids, live, max_concurrency=6, progress_callback=None):
     """Fetch aligned detail payloads through the live browser worker pool."""
     ids = [str(model_id) for model_id in (model_ids or []) if str(model_id).strip()]
     if not ids or live is None or not hasattr(live, "post_json_many"):
@@ -884,6 +932,11 @@ def _detail_many(model_ids, live, max_concurrency=6):
                 detail = response.get("data") or {}
                 if isinstance(detail, dict) and detail:
                     details[model_id] = detail
+        if callable(progress_callback):
+            try:
+                progress_callback(min(start + len(chunk_ids), len(ids)), len(ids))
+            except Exception:
+                pass
     return details
 
 
@@ -1121,8 +1174,39 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         live = live_ctx.__enter__()
     # Browser-session discovery is preferred because SeaArt now signs its
         # listing/search requests inside the frontend. Manual cURL remains a fallback.
+    progress_label = str(settings.get("_watch_architecture") or term or "SeaArt").strip()
     if not external_search and search_mode == "base_model":
-        cards = _fetch_catalog(term, settings, live=live)
+        max_results = int(settings.get("max_results") or 100)
+        catalog_progress = {"current": 0, "total": max_results}
+
+        def _catalog_progress(current, total):
+            catalog_progress["current"] = max(0, int(current or 0))
+            catalog_progress["total"] = max(0, int(total or 0))
+            _report_scan_progress(
+                progress_label,
+                catalog_progress["current"],
+                catalog_progress["total"],
+                "Finding models",
+            )
+
+        _report_scan_progress(progress_label, 0, max_results, "Finding models")
+        cards = _fetch_catalog(
+            term,
+            settings,
+            live=live,
+            progress_callback=_catalog_progress,
+        )
+        # Discovery and detail hydration have different totals. Finish the
+        # discovery line before starting the detail stage so a transition such
+        # as 200/200 -> 0/128 reads as a new stage rather than a shrinking scan.
+        if not scan_control.should_stop():
+            _report_scan_progress(
+                progress_label,
+                catalog_progress["current"],
+                catalog_progress["total"],
+                "Finding models",
+                finalize=True,
+            )
         discovery_kind = "Live browser structured search" if live else "Structured model search"
     else:
         cards = _fetch_search(term, settings, live=live)
@@ -1180,7 +1264,15 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 candidate_ids.append(candidate_id)
         batch_started = time.perf_counter()
         try:
-            prefetched_details = _detail_many(candidate_ids, live, max_concurrency=6)
+            _report_scan_progress(progress_label, 0, len(candidate_ids), "Checking models")
+            prefetched_details = _detail_many(
+                candidate_ids,
+                live,
+                max_concurrency=6,
+                progress_callback=lambda current, total: _report_scan_progress(
+                    progress_label, current, total, "Checking models"
+                ),
+            )
         except Exception as exc:
             print(f"SeaArt concurrent detail fallback: {type(exc).__name__}")
             prefetched_details = {}
@@ -1327,7 +1419,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
 
     detail_elapsed = time.perf_counter() - detail_started
     if not external_search and search_mode == "base_model":
-        builtins.print(
+        print(
             "SeaArt candidate stage: "
             f"{len(cards)} candidate(s) · "
             f"{unchanged_precheck} safe unchanged-precheck · "
@@ -1366,6 +1458,11 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         print(f"  Detail/media/files : {detail_elapsed:.2f}s")
         print(f"  Kept               : {len(results)}")
         print(f"  Total              : {catalog_elapsed + detail_elapsed:.2f}s")
+    if not external_search and search_mode == "base_model":
+        if scan_control.should_stop():
+            scan_status.finish_terminal_progress()
+        else:
+            _report_scan_progress(progress_label, len(cards), len(cards), "Checking models", finalize=True)
     if live_ctx is not None:
         live_ctx.__exit__(None, None, None)
     return results

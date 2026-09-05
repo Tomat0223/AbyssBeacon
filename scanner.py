@@ -42,6 +42,55 @@ def _source_scan_summary(display_name, source_stats, duration):
         f"{unchanged} unchanged in {duration:.2f}s"
     )
 
+
+def _make_source_progress_reporter(source_name, display_name, watch, *, terminal_enabled=True, browser_enabled=True):
+    """Create one generic live-progress callback for provider scanners.
+
+    Provider modules only report stage/current/total. The coordinator owns the
+    user-facing formatting so every source behaves consistently. Normal
+    multi-source scans keep progress in the browser only; a single sequential
+    source may rewrite one terminal line in place. Verbose mode keeps completed
+    stage markers as ordinary log lines instead of cursor rewriting.
+    """
+    source_name = str(source_name or "")
+    display_name = str(display_name or source_name)
+    watch = str(watch or "Models").strip()
+
+    def report(current=0, total=0, stage="Scanning models", finalize=False):
+        try:
+            current_value = max(0, int(current or 0))
+            total_value = max(0, int(total or 0))
+        except (TypeError, ValueError):
+            current_value, total_value = 0, 0
+        stage_text = str(stage or "Scanning models").strip()
+
+        if browser_enabled:
+            scan_status.update_source_progress(
+                source_name,
+                status="scanning",
+                progress_current=current_value,
+                progress_total=total_value,
+                progress_stage=stage_text,
+                progress_label=watch,
+            )
+
+        text = f"{display_name} · {watch} · {stage_text}: {current_value}/{total_value}"
+        if total_value:
+            percent = int(round((current_value / total_value) * 100))
+            percent = max(0, min(100, percent))
+            text += f" ({percent}%)"
+
+        if verbose_enabled():
+            if finalize:
+                print(text)
+            return
+
+        if not terminal_enabled or not scan_status.single_source_active(source_name):
+            return
+        scan_status.write_terminal_progress(text, finalize=bool(finalize))
+
+    return report
+
 def get_search_terms():
     settings = load_settings()
     value = settings.get("search_terms", [])
@@ -248,7 +297,7 @@ def _apply_shared_retention_tombstones(source_name, models, source_settings):
 
 
 
-def _run_one_source_job(source_name, source, job, source_seen_models, search_settings):
+def _run_one_source_job(source_name, source, job, source_seen_models, search_settings, terminal_progress_enabled=True, browser_progress_enabled=True):
     """Execute one source discovery job and return its models + timing.
 
     The shared seen-set is only an optimization. Returned models are also
@@ -282,6 +331,13 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
     source_settings["_external_architectures"] = [str(value).strip() for value in (job.get("external_architectures") or []) if str(value).strip()]
     source_settings["_search_mode"] = mode
     source_settings["_blocked_creators"] = list(database.get_blocked_creator_set(source_name))
+    source_settings["_progress_callback"] = _make_source_progress_reporter(
+        source_name,
+        display_name,
+        watch,
+        terminal_enabled=terminal_progress_enabled,
+        browser_enabled=browser_progress_enabled,
+    )
     current_settings = load_settings()
     prefs = current_settings.get("preferences", {})
 
@@ -443,6 +499,7 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
     except Exception as exc:
         import traceback
         duration = time.perf_counter() - job_start
+        scan_status.finish_terminal_progress()
         print(f"{source_name} failed while scanning {watch} / {term}:")
         traceback.print_exc()
         return {
@@ -506,7 +563,9 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
             if scan_control.should_stop():
                 break
             result = _run_one_source_job(
-                source_name, source, job, source_seen_models, search_settings
+                source_name, source, job, source_seen_models, search_settings,
+                terminal_progress_enabled=True,
+                browser_progress_enabled=True,
             )
             discovered.extend(result.pop("models"))
             job_results.append(result)
@@ -525,6 +584,8 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
                     job,
                     source_seen_models,
                     search_settings,
+                    False,
+                    False,
                 ): job
                 for job in jobs
                 if not scan_control.should_stop()
@@ -756,6 +817,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
         )
         total += source_stats["processed"]
         if not verbose_enabled():
+            scan_status.finish_terminal_progress()
             display_name = _source_display_name(source_name, source)
             print(_source_scan_summary(display_name, source_stats, result["duration"]))
         scan_status.update_status(

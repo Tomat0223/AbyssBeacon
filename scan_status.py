@@ -1,6 +1,10 @@
+import sys
 import threading
 
 _status_lock = threading.RLock()
+_terminal_lock = threading.RLock()
+_terminal_width = 0
+_terminal_active = False
 
 scan_running = False
 
@@ -80,6 +84,10 @@ def initialize_sources(source_names):
                 "images": 0,
                 "videos": 0,
                 "message": "",
+                "progress_current": 0,
+                "progress_total": 0,
+                "progress_stage": "",
+                "progress_label": "",
             }
             for name in source_names
         }
@@ -94,6 +102,10 @@ def update_source_progress(
     images=None,
     videos=None,
     message=None,
+    progress_current=None,
+    progress_total=None,
+    progress_stage=None,
+    progress_label=None,
 ):
     with _status_lock:
         sources = scan_progress.setdefault("sources", {})
@@ -105,6 +117,10 @@ def update_source_progress(
             "images": 0,
             "videos": 0,
             "message": "",
+            "progress_current": 0,
+            "progress_total": 0,
+            "progress_stage": "",
+            "progress_label": "",
         })
         if status is not None:
             item["status"] = status
@@ -120,11 +136,66 @@ def update_source_progress(
             item["videos"] = videos
         if message is not None:
             item["message"] = message
+        if progress_current is not None:
+            item["progress_current"] = max(0, int(progress_current or 0))
+        if progress_total is not None:
+            item["progress_total"] = max(0, int(progress_total or 0))
+        if progress_stage is not None:
+            item["progress_stage"] = str(progress_stage or "")
+        if progress_label is not None:
+            item["progress_label"] = str(progress_label or "")
+
+
+def single_source_active(source=None):
+    with _status_lock:
+        sources = scan_progress.get("sources", {}) or {}
+        if len(sources) != 1:
+            return False
+        if source is None:
+            return True
+        return str(source) in sources
+
+
+def write_terminal_progress(text, finalize=False):
+    """Rewrite one terminal line in place without creating log spam.
+
+    This is intentionally a single-line primitive. Callers should only use it
+    when one source is active; concurrent source scans keep ordinary line logs.
+    """
+    global _terminal_width, _terminal_active
+    text = str(text or "")
+    with _terminal_lock:
+        width = max(_terminal_width, len(text))
+        try:
+            sys.stdout.write("\r" + text.ljust(width))
+            if finalize:
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            return
+        _terminal_width = 0 if finalize else width
+        _terminal_active = not finalize
+
+
+def finish_terminal_progress():
+    """Terminate an active in-place progress line before normal line output."""
+    global _terminal_width, _terminal_active
+    with _terminal_lock:
+        if not _terminal_active:
+            return
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        _terminal_width = 0
+        _terminal_active = False
 
 
 def reset_status():
     global scan_progress
 
+    finish_terminal_progress()
     with _status_lock:
         scan_progress = {
             "status": "idle",

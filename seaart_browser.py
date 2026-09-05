@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from settings_manager import load_settings, save_settings
+from scan_logging import verbose_print
 
 _ROOT = Path(__file__).resolve().parent
 _PROFILE_ROOT = _ROOT / "browser_profiles" / "seaart"
@@ -1885,7 +1886,7 @@ class SeaArtLiveSession:
         except Exception:
             return False
 
-    def catalog_models(self, base_model, max_results=100, sort="newest"):
+    def catalog_models(self, base_model, max_results=100, sort="newest", progress_callback=None):
         """Browse SeaArt's real Models catalog with a structured Base Model filter.
 
         SeaArt virtualizes the Models page, so preserve complete cards from its own
@@ -1932,6 +1933,11 @@ class SeaArtLiveSession:
                 added += 1
                 if len(found) >= limit:
                     break
+            if added and callable(progress_callback):
+                try:
+                    progress_callback(min(len(found), limit), limit)
+                except Exception:
+                    pass
             return added
 
         collect_current()
@@ -1953,7 +1959,7 @@ class SeaArtLiveSession:
         label = {"newest": "New", "new": "New", "hot": "Hot", "recommended": "Recommended"}.get(
             str(sort or "newest").strip().lower(), "New"
         )
-        print(
+        verbose_print(
             f"SeaArt live catalog: {base_model} / {label} -> {len(found[:limit])} candidate(s) "
             f"(limit {limit}, scoped filtered grid)"
         )

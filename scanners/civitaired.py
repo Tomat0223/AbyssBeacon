@@ -457,7 +457,7 @@ def _normalize_meili_search_hit(hit, preferred_base_models=None):
     return out
 
 
-def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=100, sort_mode="", allow_empty_query=False):
+def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=100, sort_mode="", allow_empty_query=False, progress_callback=None):
     """Read CivitAI/Red's website ``models_v9`` index.
 
     Explicit Search Sources calls keep relevance ordering and require a query.
@@ -579,6 +579,11 @@ def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=
             f"{len(hits)} hit(s), {accepted_this_page} architecture match(es)"
         )
         debug_print(page_message)
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(collected), max_items), max_items)
+            except Exception:
+                pass
         if len(hits) < limit:
             break
         offset += len(hits)
@@ -586,7 +591,7 @@ def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=
     return collected
 
 
-def _fetch_rest_search_pages(query, base_models=None, model_type="", sort_mode="newest", max_items=100):
+def _fetch_rest_search_pages(query, base_models=None, model_type="", sort_mode="newest", max_items=100, progress_callback=None):
     """Use CivitAI Red's public model API for explicit full-text searches.
 
     Red's browsing tRPC feed is useful for normal discovery, but query= on that
@@ -674,6 +679,11 @@ def _fetch_rest_search_pages(query, base_models=None, model_type="", sort_mode="
             if normalized is not None:
                 collected.append(normalized)
         print(f"CivitAI Red public search page {page}: {len(page_items)} results")
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(collected), max_items), max_items)
+            except Exception:
+                pass
 
         metadata = payload.get("metadata") or {} if isinstance(payload, dict) else {}
         raw_next = metadata.get("nextCursor") if isinstance(metadata, dict) else None
@@ -689,7 +699,7 @@ def _fetch_rest_search_pages(query, base_models=None, model_type="", sort_mode="
     return collected
 
 
-def _fetch_pages(base_model="", model_type="", query="", sort_mode="newest", search_days=7, max_items=100, tagname="", username=""):
+def _fetch_pages(base_model="", model_type="", query="", sort_mode="newest", search_days=7, max_items=100, tagname="", username="", progress_callback=None):
     collected = []
     cursor = ""
     page = 0
@@ -715,6 +725,11 @@ def _fetch_pages(base_model="", model_type="", query="", sort_mode="newest", sea
         remaining = max_items - len(collected)
         collected.extend(items[:remaining])
         print(f"CivitAI Red batch {page} returned: {len(items)}")
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(collected), max_items), max_items)
+            except Exception:
+                pass
 
         raw_next_cursor = payload.get("nextCursor") if isinstance(payload, dict) else None
         next_cursor = "" if raw_next_cursor in (None, "", -1, "-1", False) else str(raw_next_cursor)
@@ -2225,6 +2240,15 @@ def test_connection():
 
 def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     scan_settings = scan_settings or {}
+    progress_callback = scan_settings.get("_progress_callback")
+
+    def _progress(current, total, stage="Scanning models", finalize=False):
+        if callable(progress_callback):
+            try:
+                progress_callback(current, total, stage, finalize)
+            except Exception:
+                pass
+
     search_days = int(scan_settings.get("search_days", 7))
     max_results = max(1, int(scan_settings.get("max_results", 100)))
     sort_mode = scan_settings.get("sort", "newest")
@@ -2252,6 +2276,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     print(f"CivitAI Red maximum results: {max_results} (cursor pagination)")
 
     external_search = bool(scan_settings.get("_external_search"))
+    _progress(0, max_results, "Finding models")
     external_architectures = [
         str(value).strip()
         for value in (scan_settings.get("_external_architectures") or [])
@@ -2268,6 +2293,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 base_models=external_architectures,
                 model_type=configured_type,
                 max_items=max_results,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             )
             search_lane = "website"
             if not items:
@@ -2281,6 +2307,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     model_type=configured_type,
                     sort_mode=sort_mode,
                     max_items=max_results,
+                    progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                 )
                 search_lane = "REST"
                 if items is None:
@@ -2292,6 +2319,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         sort_mode=sort_mode,
                         search_days=search_days,
                         max_items=max_results,
+                        progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                     )
                     search_lane = "browse fallback"
                 elif not items and external_architectures:
@@ -2304,6 +2332,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         model_type=configured_type,
                         sort_mode=sort_mode,
                         max_items=max_results,
+                        progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                     ) or []
             arch_label = ", ".join(external_architectures) if external_architectures else "Any"
             builtins.print(
@@ -2322,6 +2351,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 max_items=max_results,
                 sort_mode=sort_mode,
                 allow_empty_query=True,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             )
             discovery_lane = "models_v9"
             if items is None:
@@ -2336,6 +2366,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     sort_mode=sort_mode,
                     search_days=search_days,
                     max_items=max_results,
+                    progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                 )
                 discovery_lane = "browse fallback"
             debug_print(
@@ -2348,6 +2379,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         print("CivitAI Red search failed:", exc)
         debug_print(repr(exc))
         return []
+
+    if not scan_control.should_stop():
+        found_total = len(items or [])
+        _progress(found_total, found_total if found_total < max_results else max_results, "Finding models", True)
 
     # Anything mode means both lanes. Red exposes creator catalogs through an
     # exact `username` filter on model.getAll, so try the query as a creator
@@ -2416,6 +2451,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     workers = min(4, len(hydration_candidates))
     if hydration_candidates:
         hydration_started = time.perf_counter()
+        hydration_done = 0
+        _progress(0, len(hydration_candidates), "Checking models")
         debug_print(
             f"CivitAI Red hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
         )
@@ -2439,6 +2476,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         f"CivitAI Red skip: build failed: {item.get('id')} "
                         f"{item.get('name', '')}: {exc!r}"
                     )
+                hydration_done += 1
+                _progress(hydration_done, len(hydration_candidates), "Checking models")
+        if not scan_control.should_stop():
+            _progress(len(hydration_candidates), len(hydration_candidates), "Checking models", True)
         debug_print(
             f"CivitAI Red hydration complete: {len(hydration_candidates)} model(s) in "
             f"{time.perf_counter() - hydration_started:.2f}s"

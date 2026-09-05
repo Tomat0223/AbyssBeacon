@@ -119,7 +119,7 @@ def _item_rating(item):
     return 0.0
 
 
-def _fetch_model_pages(label, base_params, max_items, *, timeout=30, return_status=False):
+def _fetch_model_pages(label, base_params, max_items, *, timeout=30, return_status=False, progress_callback=None):
     """Fetch one CivitAI discovery path and follow its advertised pagination.
 
     ``return_status`` is used by explicit Search Sources lookups to distinguish
@@ -180,6 +180,11 @@ def _fetch_model_pages(label, base_params, max_items, *, timeout=30, return_stat
             page_items = []
 
         collected.extend(page_items[:remaining])
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(collected), max_items), max_items)
+            except Exception:
+                pass
         print(f"CivitAI {label} page {page_number}: {len(page_items)} results")
 
         metadata = payload.get("metadata") or {}
@@ -246,7 +251,7 @@ def _configured_model_type_label(label):
 
 
 
-def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type=""):
+def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type="", progress_callback=None):
     """TEST: use CivitAI's live website models_v9 index for architecture discovery.
 
     The saved CivitAI token is used only for the search request. Search hits are
@@ -351,6 +356,11 @@ def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type=""
 
         hits.extend(page_hits[:request_limit])
         offset += len(page_hits)
+        if callable(progress_callback):
+            try:
+                progress_callback(min(len(hits), max_items), max_items)
+            except Exception:
+                pass
 
         estimated_total = result.get("estimatedTotalHits")
         if len(page_hits) < request_limit:
@@ -410,7 +420,7 @@ def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type=""
     return items
 
 
-def _structured_discovery(base_model, max_items, api_sort="Newest", model_type="", query=""):
+def _structured_discovery(base_model, max_items, api_sort="Newest", model_type="", query="", progress_callback=None):
     """Use CivitAI's current structured REST discovery fields.
 
     CivitAI's official MCP search_models tool uses /api/v1/models with
@@ -433,7 +443,7 @@ def _structured_discovery(base_model, max_items, api_sort="Newest", model_type="
     if model_type:
         pieces.append(f"type={model_type}")
     print("CivitAI structured discovery:" + (" " + ", ".join(pieces) if pieces else ""))
-    return _fetch_model_pages(label, params, max_items)
+    return _fetch_model_pages(label, params, max_items, progress_callback=progress_callback)
 
 
 def _model_type(api_type, text):
@@ -1625,6 +1635,15 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     _DETAIL_ENRICHMENT_DISABLED = False
     _apply_auth()
     scan_settings = scan_settings or {}
+    progress_callback = scan_settings.get("_progress_callback")
+
+    def _progress(current, total, stage="Scanning models", finalize=False):
+        if callable(progress_callback):
+            try:
+                progress_callback(current, total, stage, finalize)
+            except Exception:
+                pass
+
     search_days = int(scan_settings.get("search_days", 7))
     max_results = max(1, int(scan_settings.get("max_results", 100)))
     sort_mode = scan_settings.get("sort", "newest")
@@ -1639,6 +1658,9 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     print(f"CivitAI {'creator' if creator else 'search'}: {creator or term}")
     print(f"CivitAI maximum results: {'all available' if creator else max_results} (automatic pagination)")
     print(f"CivitAI expanded media scan: {'enabled' if include_mature_media else 'standard'}")
+
+    if not creator:
+        _progress(0, max_results, "Finding models")
 
     if creator:
         # Creator scans are exact-owner scans. Walk the catalog until the source
@@ -1685,6 +1707,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 max_results,
                 timeout=12,
                 return_status=True,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             )
             if not items and external_architectures and search_succeeded:
                 # Defensive retry only after a real zero-result response. If the
@@ -1698,6 +1721,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     query_only_params,
                     max_results,
                     timeout=12,
+                    progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                 )
             elif not items and external_architectures and not search_succeeded:
                 builtins.print("CivitAI search request failed; skipped redundant fallback.")
@@ -1715,6 +1739,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 max_results,
                 api_sort=api_sort,
                 model_type=configured_type,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             )
 
             if items is None:
@@ -1724,6 +1749,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     api_sort=api_sort,
                     model_type=configured_type,
                     query=str(term or "").strip() if architecture_context else "",
+                    progress_callback=lambda current, total: _progress(current, total, "Finding models"),
                 )
                 print(f"CivitAI structured fallback results inspected: {len(items)}")
         else:
@@ -1734,11 +1760,13 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 "name",
                 {"sort": api_sort, "query": term},
                 path_limit,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             ) if term else []
             tag_items = _fetch_model_pages(
                 "tag",
                 {"sort": api_sort, "tag": term},
                 path_limit,
+                progress_callback=lambda current, total: _progress(current, total, "Finding models"),
             ) if term else []
 
             unique = {}
@@ -1774,6 +1802,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     }
                     for item in items[:20]
                 ])
+
+    if not creator and not scan_control.should_stop():
+        found_total = len(items)
+        _progress(found_total, found_total if found_total < max_results else max_results, "Finding models", True)
 
     processed = []
     duplicates = 0
@@ -1902,6 +1934,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     workers = min(4, len(hydration_candidates))
     if hydration_candidates:
         hydration_started = time.perf_counter()
+        hydration_done = 0
+        _progress(0, len(hydration_candidates), "Checking models")
         debug_print(
             f"CivitAI hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
         )
@@ -1922,6 +1956,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     v9_detail_fetches += detail_fetched
                 except Exception as exc:
                     debug_print("CivitAI hydration failed:", repr(exc))
+                hydration_done += 1
+                _progress(hydration_done, len(hydration_candidates), "Checking models")
+        if not scan_control.should_stop():
+            _progress(len(hydration_candidates), len(hydration_candidates), "Checking models", True)
         debug_print(
             f"CivitAI hydration complete: {len(hydration_candidates)} model(s) in "
             f"{time.perf_counter() - hydration_started:.2f}s"

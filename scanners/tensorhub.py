@@ -2671,7 +2671,7 @@ def _extract_general_search_models(body, blocked_creators):
     return list(model_items.values())
 
 
-def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, retention_days, max_results, result_unlimited=False):
+def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, retention_days, max_results, result_unlimited=False, progress_callback=None):
     """Fetch TensorHub's real search page for one structured base model.
 
     Automatic Retention supplies the date boundary. A finite centralized
@@ -2745,6 +2745,11 @@ def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, 
             f"TensorHub search page {page}: {len(page_items)} result(s), "
             f"{kept} new matching project(s)"
         )
+        if callable(progress_callback) and not result_unlimited:
+            try:
+                progress_callback(min(len(collected), int(max_results or 0)), int(max_results or 0))
+            except Exception:
+                pass
 
         # Website pagination advances by the number requested, not by how many
         # AbyssBeacon kept after local verification/de-duplication.
@@ -3159,6 +3164,14 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     _apply_auth()
     scan_seen_models = scan_seen_models if scan_seen_models is not None else set()
     scan_settings = scan_settings or {}
+    progress_callback = scan_settings.get("_progress_callback")
+
+    def _progress(current, total, stage="Scanning models", finalize=False):
+        if callable(progress_callback):
+            try:
+                progress_callback(current, total, stage, finalize)
+            except Exception:
+                pass
 
     try:
         max_results = max(1, int(scan_settings.get("max_results", 100)))
@@ -3530,6 +3543,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     unique_items = {}
     discovery_lanes = {}
 
+    if not normal_result_unlimited:
+        _progress(0, max_results, "Finding models")
     search_items, search_pages = _fetch_architecture_search(
         structured_base,
         blocked_creators,
@@ -3537,7 +3552,15 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         normal_retention_days,
         max_results,
         normal_result_unlimited,
+        progress_callback=(
+            (lambda current, total: _progress(current, total, "Finding models"))
+            if not normal_result_unlimited else None
+        ),
     )
+    if not scan_control.should_stop():
+        found_total = len(search_items)
+        final_total = found_total if (normal_result_unlimited or found_total < max_results) else max_results
+        _progress(found_total, final_total, "Finding models", True)
     for item in search_items:
         project_id = str(item.get("id") or "").strip()
         if not project_id:
@@ -3591,6 +3614,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     if creator_expansion_enabled and creator_probe_results > 0 and eligible_owner_map and not scan_control.should_stop():
         creator_started_at = time.perf_counter()
         workers = min(3, len(eligible_owner_map))
+        _progress(0, len(eligible_owner_map), "Checking creators")
         print(
             f"TensorHub creator expansion: {len(eligible_owner_map)}/{len(owner_map)} creators eligible, "
             f"{workers} workers, 1 page/creator, {creator_recheck_hours}h cooldown"
@@ -3613,6 +3637,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     break
                 owner_id, nickname = futures[future]
                 creator_checked += 1
+                _progress(creator_checked, len(eligible_owner_map), "Checking creators")
                 if creator_checked == 1 or creator_checked % 25 == 0 or creator_checked == len(eligible_owner_map):
                     print(f"TensorHub creator expansion progress: {creator_checked}/{len(eligible_owner_map)}")
                 try:
@@ -3633,6 +3658,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         discovery_lanes.setdefault(project_id, []).append(f"creator:{owner_id}")
         creator_seconds = time.perf_counter() - creator_started_at
         _save_creator_probe_state(creator_state)
+        if not scan_control.should_stop():
+            _progress(len(eligible_owner_map), len(eligible_owner_map), "Checking creators", True)
 
     print("TensorHub discovery summary")
     print(f"  Search pages     : {search_pages}")
@@ -3711,6 +3738,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
 
     if retention_preflight_candidates and not scan_control.should_stop():
         workers = min(8, len(retention_preflight_candidates))
+        _progress(0, len(retention_preflight_candidates), "Checking dates")
         print(f"\nTensorHub retention preflight")
         print(f"  Missing source date : {len(retention_preflight_candidates)}")
         print(f"  Probing             : {len(retention_preflight_candidates)} with {workers} workers")
@@ -3727,10 +3755,16 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 except Exception:
                     retention_preflight[project_id] = None
                 checked += 1
+                _progress(checked, len(futures), "Checking dates")
                 if checked == len(futures) or checked % 100 == 0:
                     print(f"  Progress            : {checked}/{len(futures)}")
+        if not scan_control.should_stop():
+            _progress(len(futures), len(futures), "Checking dates", True)
 
-    for project_id, item in unique_items.items():
+    if unique_items:
+        _progress(0, len(unique_items), "Checking models")
+    for item_index, (project_id, item) in enumerate(unique_items.items(), start=1):
+        _progress(item_index - 1, len(unique_items), "Checking models")
         if scan_control.should_stop():
             break
         if not _matches_base_model(item, structured_base):
@@ -3876,6 +3910,9 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         scan_seen_models.add(project_id)
         models.append(model)
 
+    if unique_items and not scan_control.should_stop():
+        _progress(len(unique_items), len(unique_items), "Checking models", True)
+
     # Summarize persistent detail state from the DB cache.
     cached_enriched = 0
     cached_failed_cooldown = 0
@@ -3897,6 +3934,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
 
     if detail_candidates and not scan_control.should_stop():
         chosen = sorted(detail_candidates, key=lambda entry: entry[0])
+        _progress(0, len(chosen), "Loading details")
+        detail_done = 0
         model_by_id = {str(model.model_key or ""): model for model in models}
         workers = min(DETAIL_WORKERS, len(chosen))
         print(f"  Processing       : {len(chosen)} with {workers} workers")
@@ -3920,6 +3959,11 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 else:
                     failures.append((project_id, enriched_model, lane, reason))
                     print(f"TensorHub detail FAILED {project_id}: {reason}")
+                detail_done += 1
+                _progress(detail_done, len(chosen), "Loading details")
+
+        if not scan_control.should_stop():
+            _progress(len(chosen), len(chosen), "Loading details", True)
 
         recovered, failed = _retry_detail_failures(
             failures,

@@ -960,6 +960,14 @@ def scan(
     _apply_auth()
 
     scan_settings = scan_settings or {}
+    progress_callback = scan_settings.get("_progress_callback")
+
+    def _progress(current, total, stage="Scanning models", finalize=False):
+        if callable(progress_callback):
+            try:
+                progress_callback(current, total, stage, finalize)
+            except Exception:
+                pass
 
     start_time = time.perf_counter()
 
@@ -1001,6 +1009,8 @@ def scan(
     results = []
     models = []
 
+    if not creator:
+        _progress(0, target_results, "Finding models")
 
     for page_number in range(1, max_page + 1):
 
@@ -1069,6 +1079,8 @@ def scan(
         if remaining <= 0:
             break
         models.extend(page_models[:remaining])
+        if not creator:
+            _progress(min(len(models), target_results), target_results, "Finding models")
 
         if len(models) >= target_results:
             break
@@ -1083,14 +1095,24 @@ def scan(
             break
 
 
+    if not creator and not scan_control.should_stop():
+        found_total = len(models)
+        _progress(found_total, found_total if found_total < target_results else target_results, "Finding models", True)
+
     print(f"ModelScope results inspected: {len(models)}")
+
+    if not creator and models:
+        _progress(0, len(models), "Checking models")
 
     if models:
         debug_print("FIRST RESULT ID:")
         debug_print(models[0].get("id"))
 
 
-    for item in models:
+    for item_index, item in enumerate(models, start=1):
+
+        if not creator:
+            _progress(item_index - 1, len(models), "Checking models")
 
         if scan_control.should_stop():
             print("SCAN STOP REQUESTED")
@@ -1596,6 +1618,8 @@ def scan(
             continue            
 
 
+    if not creator and models and not scan_control.should_stop():
+        _progress(len(models), len(models), "Checking models", True)
 
     elapsed = time.perf_counter() - start_time
 

@@ -256,6 +256,49 @@ function scanSourceLabel(source){
     return labels[String(source || "").toLowerCase()] || String(source || "");
 }
 
+function scanLiveStageText(label, stage){
+    const cleanLabel = String(label || "").trim();
+    const cleanStage = String(stage || "").trim();
+    if(!cleanStage) return cleanLabel ? `Scanning ${cleanLabel}` : "Scanning models";
+
+    if(cleanLabel){
+        const stageMap = {
+            "finding models": `Finding ${cleanLabel} models`,
+            "checking models": `Checking ${cleanLabel} models`,
+            "loading details": `Loading ${cleanLabel} details`,
+            "checking dates": `Checking ${cleanLabel} dates`,
+            "checking creators": `Checking ${cleanLabel} creators`
+        };
+        const friendly = stageMap[cleanStage.toLowerCase()];
+        if(friendly) return friendly;
+        return `${cleanStage} · ${cleanLabel}`;
+    }
+    return cleanStage;
+}
+
+function activeLiveScanProgress(data){
+    const sources = data?.sources && typeof data.sources === "object" ? data.sources : {};
+    const entries = Object.entries(sources).filter(([, state]) => {
+        const status = String(state?.status || "scanning").toLowerCase();
+        return status === "scanning" && Number(state?.progress_total || 0) > 0;
+    });
+
+    if(entries.length === 1) return entries[0][1];
+
+    // When several providers are active at once, each source row owns its live
+    // progress. Avoid making the shared subtitle jump between whichever worker
+    // happened to report most recently.
+    if(entries.length > 1) return null;
+
+    const currentSource = String(data?.source || "");
+    if(currentSource && sources[currentSource]){
+        const state = sources[currentSource];
+        const status = String(state?.status || "scanning").toLowerCase();
+        if(status === "scanning" && Number(state?.progress_total || 0) > 0) return state;
+    }
+    return null;
+}
+
 function renderScanSourceGrid(data){
     const grid = document.getElementById("scanSourceGrid");
     if(!grid) return;
@@ -286,9 +329,19 @@ function renderScanSourceGrid(data){
 
         const status = String(state?.status || "scanning").toLowerCase();
         const processed = Number(state?.processed || 0);
+        const progressCurrent = Number(state?.progress_current || 0);
+        const progressTotal = Number(state?.progress_total || 0);
+        const progressLabel = String(state?.progress_label || "").trim();
+        const progressStage = String(state?.progress_stage || "").trim();
+        const hasLiveProgress = status === "scanning" && progressTotal > 0;
+        const progressPercent = hasLiveProgress
+            ? Math.max(0, Math.min(100, Math.round((progressCurrent / progressTotal) * 100)))
+            : 0;
 
         const strong = document.createElement("strong");
-        strong.textContent = String(processed);
+        strong.textContent = hasLiveProgress
+            ? `${progressCurrent}/${progressTotal}`
+            : String(processed);
 
         if(status === "error") strong.classList.add("scan-source-error");
         else if(status === "stopped") strong.classList.add("scan-source-stopped");
@@ -298,10 +351,34 @@ function renderScanSourceGrid(data){
         else if(status === "error") small.textContent = "error";
         else if(status === "stopped") small.textContent = "stopped";
         else if(status === "skipped") small.textContent = "skipped";
-        else small.textContent = "scanning";
+        else if(hasLiveProgress){
+            small.textContent = progressLabel
+                ? `${progressLabel} · ${progressPercent}%`
+                : `${progressPercent}%`;
+            row.title = progressStage
+                ? `${progressStage}: ${progressCurrent}/${progressTotal}`
+                : `${progressCurrent}/${progressTotal}`;
+        }else small.textContent = "scanning";
 
         result.append(strong, small);
         row.append(label, result);
+
+        if(hasLiveProgress){
+            const track = document.createElement("div");
+            track.className = "scan-source-progress-track";
+            track.setAttribute("role", "progressbar");
+            track.setAttribute("aria-valuemin", "0");
+            track.setAttribute("aria-valuemax", "100");
+            track.setAttribute("aria-valuenow", String(progressPercent));
+            track.setAttribute("aria-label", `${scanSourceLabel(sourceName)} ${progressPercent}%`);
+
+            const fill = document.createElement("span");
+            fill.className = "scan-source-progress-fill";
+            fill.style.width = `${progressPercent}%`;
+            track.appendChild(fill);
+            row.appendChild(track);
+        }
+
         fragment.appendChild(row);
     });
 
@@ -320,7 +397,25 @@ function renderScanStatus(data){
     const videos = document.getElementById("scanVideos");
     const title = document.getElementById("scanTitleText");
 
-    if(message && data.message !== undefined) message.textContent = data.message || "";
+    if(message){
+        const sourceStates = data?.sources && typeof data.sources === "object"
+            ? Object.values(data.sources)
+            : [];
+        const runningSources = sourceStates.filter(state =>
+            String(state?.status || "scanning").toLowerCase() === "scanning"
+        ).length;
+        const liveProgress = activeLiveScanProgress(data);
+        if(runningSources > 1){
+            message.textContent = `Scanning ${runningSources} sources in parallel`;
+        }else if(liveProgress){
+            message.textContent = scanLiveStageText(
+                liveProgress.progress_label,
+                liveProgress.progress_stage
+            );
+        }else if(data.message !== undefined){
+            message.textContent = data.message || "";
+        }
+    }
     if(source && data.source !== undefined) source.textContent = data.source || "";
     if(processed && data.processed !== undefined) processed.textContent = data.processed || 0;
     if(added && data.added !== undefined) added.textContent = data.added || 0;
