@@ -13,13 +13,13 @@ from datetime import datetime, timedelta
 
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff
+from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff, get_cached_json_with_backoff
 
 import database
 import scan_control
 from scanners.common.model import Model
 from scanners.common import processors
-from secrets_manager import get_civitaired_credentials, get_civitai_search_key
+from secrets_manager import get_civitaired_credentials, get_civitai_search_key, get_source_token
 from utils.loader import load_model_types
 
 BASE_URL = "https://civitai.red"
@@ -457,15 +457,16 @@ def _normalize_meili_search_hit(hit, preferred_base_models=None):
     return out
 
 
-def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=100):
-    """Search the same models_v9 lane used by CivitAI/Red's website search.
+def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=100, sort_mode="", allow_empty_query=False):
+    """Read CivitAI/Red's website ``models_v9`` index.
 
-    This endpoint is deliberately used only for an explicit user Search
-    Sources action.  Normal Red discovery continues to use Red's authenticated
-    browsing APIs.
+    Explicit Search Sources calls keep relevance ordering and require a query.
+    Normal Red discovery opts into an empty query plus a deterministic sort,
+    giving AbyssBeacon offset pagination without depending on Red's private
+    ``model.getAll`` cursor feed.
     """
     query = str(query or "").strip()
-    if not query:
+    if not query and not allow_empty_query:
         return []
     try:
         max_items = max(1, int(max_items))
@@ -497,18 +498,23 @@ def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=
         if scan_control.should_stop():
             break
         limit = min(100, max_items - len(collected))
-        payload = {
-            "queries": [{
-                "q": query,
-                "indexUid": "models_v9",
-                "attributesToHighlight": ["*"],
-                "highlightPreTag": "__ais-highlight__",
-                "highlightPostTag": "__/ais-highlight__",
-                "limit": limit,
-                "offset": offset,
-                "filter": [" AND ".join(filters)],
-            }]
+        query_spec = {
+            "q": query,
+            "indexUid": "models_v9",
+            "attributesToHighlight": ["*"] if query else [],
+            "highlightPreTag": "__ais-highlight__",
+            "highlightPostTag": "__/ais-highlight__",
+            "limit": limit,
+            "offset": offset,
+            "filter": [" AND ".join(filters)],
         }
+        if sort_mode:
+            query_spec["sort"] = {
+                "newest": ["createdAt:desc"],
+                "downloads": ["metrics.downloadCount:desc"],
+                "highest_rated": ["metrics.thumbsUpCount:desc"],
+            }.get(str(sort_mode).strip().casefold(), ["createdAt:desc"])
+        payload = {"queries": [query_spec]}
         search_key = get_civitai_search_key()
         if not search_key:
             debug_print("CivitAI Red website search key is not configured")
@@ -568,10 +574,14 @@ def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=
             if len(collected) >= max_items:
                 break
 
-        debug_print(
-            f"CivitAI Red website search page offset {offset}: "
+        page_message = (
+            f"CivitAI Red models_v9 page offset {offset}: "
             f"{len(hits)} hit(s), {accepted_this_page} architecture match(es)"
         )
+        if allow_empty_query:
+            builtins.print(page_message)
+        else:
+            debug_print(page_message)
         if len(hits) < limit:
             break
         offset += len(hits)
@@ -1013,18 +1023,22 @@ def _fetch_mirror_model_detail(model_id):
     if not model_id:
         return {}
     try:
-        response = get_with_backoff(
+        civitai_token = get_source_token("civitai")
+        auth_scope = "auth" if civitai_token else "public"
+        request_headers = {"Authorization": f"Bearer {civitai_token}"} if civitai_token else None
+        status_code, payload, _cache_hit = get_cached_json_with_backoff(
             session,
             CIVITAI_MODEL_DETAIL_API.format(model_id=model_id),
+            cache_key=("civitai-model-detail", auth_scope, str(model_id)),
             provider="CivitAI Red",
             label=f"mirror model detail {model_id}",
             pace_key="CivitAI.com", min_interval=1.25,
+            headers=request_headers,
             timeout=30,
         )
-        if response.status_code == 200:
-            payload = response.json()
+        if status_code == 200:
             return payload if isinstance(payload, dict) else {}
-        debug_print("CivitAI Red mirror detail status:", response.status_code)
+        debug_print("CivitAI Red mirror detail status:", status_code)
     except Exception as exc:
         debug_print("CivitAI Red mirror detail failed:", exc)
     return {}
@@ -2284,13 +2298,35 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 f'(query={query!r}, base model={arch_label})'
             )
         else:
-            items = _fetch_pages(
-                base_model=base_model,
+            # Normal Red discovery uses the same signed-in ``models_v9`` index
+            # as the website, but with an empty query and explicit sort. Offset
+            # pagination avoids the private model.getAll cursor that began
+            # returning long 429 Retry-After windows after its first page.
+            items = _fetch_meili_search_pages(
+                query="",
+                base_models=[base_model] if base_model else [],
                 model_type=configured_type,
-                query=query,
-                sort_mode=sort_mode,
-                search_days=search_days,
                 max_items=max_results,
+                sort_mode=sort_mode,
+                allow_empty_query=True,
+            )
+            discovery_lane = "models_v9"
+            if items is None:
+                builtins.print(
+                    "CivitAI Red models_v9 discovery unavailable; "
+                    "using authenticated browse fallback"
+                )
+                items = _fetch_pages(
+                    base_model=base_model,
+                    model_type=configured_type,
+                    query=query,
+                    sort_mode=sort_mode,
+                    search_days=search_days,
+                    max_items=max_results,
+                )
+                discovery_lane = "browse fallback"
+            builtins.print(
+                f"CivitAI Red discovery candidates: {len(items or [])} via {discovery_lane}"
             )
     except PermissionError as exc:
         print("CivitAI Red authentication error:", exc)
@@ -2318,6 +2354,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     invalid_models = 0
     already_seen = 0
     build_errors = 0
+    hydration_candidates = []
 
     for item in items:
         if scan_control.should_stop():
@@ -2357,11 +2394,40 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 duplicates += 1
                 continue
 
-        try:
-            model = _build_model(item, enrich=True)
-        except Exception as exc:
-            build_errors += 1
-            debug_print(f"CivitAI Red skip: build failed: {model_id} {item.get('name', '')}: {exc!r}")
+        # Network-heavy enrichment is deferred until all cheap DB/date checks
+        # have completed. Normal Red scans can then overlap response latency
+        # without increasing the CivitAI/Red request-start rate.
+        hydration_candidates.append(item)
+
+    hydrated = [None] * len(hydration_candidates)
+    workers = min(4, len(hydration_candidates))
+    if hydration_candidates:
+        builtins.print(
+            f"CivitAI Red hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
+        )
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="civitai-red-hydration") as executor:
+            futures = {
+                executor.submit(_build_model, item, True): index
+                for index, item in enumerate(hydration_candidates)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                if scan_control.should_stop():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                try:
+                    hydrated[index] = future.result()
+                except Exception as exc:
+                    build_errors += 1
+                    item = hydration_candidates[index]
+                    debug_print(
+                        f"CivitAI Red skip: build failed: {item.get('id')} "
+                        f"{item.get('name', '')}: {exc!r}"
+                    )
+
+    for model in hydrated:
+        if model is None:
             continue
         processed.append(model)
         media_count += len(model.media)

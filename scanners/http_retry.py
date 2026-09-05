@@ -7,6 +7,7 @@ returned to the caller so each source can preserve its existing handling.
 from __future__ import annotations
 
 import email.utils
+import json
 import time
 import threading
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ _RETRY_STATS = {}
 _PACE_LOCK = threading.RLock()
 _PACE_LAST = {}
 _PACE_STATS = {}
+_PACE_BLOCKED_UNTIL = {}
 _CACHE_LOCK = threading.RLock()
 _SCAN_CACHE = {}
 _CACHE_KEY_LOCKS = {}
@@ -36,6 +38,7 @@ def reset_retry_stats():
     with _PACE_LOCK:
         _PACE_LAST.clear()
         _PACE_STATS.clear()
+        _PACE_BLOCKED_UNTIL.clear()
     with _CACHE_LOCK:
         _SCAN_CACHE.clear()
         _CACHE_KEY_LOCKS.clear()
@@ -49,28 +52,44 @@ def get_pacing_stats():
         return {k: dict(v) for k, v in _PACE_STATS.items()}
 
 def _pace_request(key, min_interval):
-    if not key or not min_interval or min_interval <= 0:
+    if not key:
         return
+    min_interval = max(0.0, float(min_interval or 0.0))
+    waited = 0.0
     while True:
         with _PACE_LOCK:
             now = time.monotonic()
             last = _PACE_LAST.get(key)
-            remaining = 0.0 if last is None else float(min_interval) - (now - last)
+            interval_remaining = 0.0 if last is None else min_interval - (now - last)
+            cooldown_remaining = float(_PACE_BLOCKED_UNTIL.get(key, 0.0) or 0.0) - now
+            remaining = max(0.0, interval_remaining, cooldown_remaining)
             if remaining <= 0:
                 _PACE_LAST[key] = now
                 item = _PACE_STATS.setdefault(key, {"requests": 0, "wait_seconds": 0.0, "cache_hits": 0})
                 item["requests"] += 1
+                item["wait_seconds"] += waited
                 return
-        deadline = time.monotonic() + remaining
-        while time.monotonic() < deadline:
-            if scan_control.should_stop():
-                return
-            step = min(0.10, max(0.0, deadline - time.monotonic()))
-            if step:
-                time.sleep(step)
-        with _PACE_LOCK:
-            item = _PACE_STATS.setdefault(key, {"requests": 0, "wait_seconds": 0.0, "cache_hits": 0})
-            item["wait_seconds"] += max(0.0, remaining)
+        if scan_control.should_stop():
+            return
+        step = min(0.10, remaining)
+        time.sleep(step)
+        waited += step
+
+
+def _register_pace_cooldown(key, seconds):
+    """Share a provider-declared 429 cooldown with sibling scan requests."""
+    if not key:
+        return
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if seconds <= 0:
+        return
+    with _PACE_LOCK:
+        until = time.monotonic() + seconds
+        if until > float(_PACE_BLOCKED_UNTIL.get(key, 0.0) or 0.0):
+            _PACE_BLOCKED_UNTIL[key] = until
 
 def _cache_lock_for(key):
     with _CACHE_LOCK:
@@ -120,6 +139,61 @@ def get_cached_text_with_backoff(
             with _CACHE_LOCK:
                 _SCAN_CACHE[cache_key] = text
         return response.status_code, text, False
+
+def get_cached_json_with_backoff(
+    session: requests.Session,
+    url: str,
+    *,
+    cache_key,
+    provider: str,
+    label: str = "request",
+    max_retries: int = 3,
+    backoff=DEFAULT_BACKOFF,
+    pace_key=None,
+    min_interval: float = 0.0,
+    **kwargs,
+):
+    """Return ``(status_code, payload, cache_hit)`` for scan-local JSON.
+
+    The cached value is the raw response text rather than a mutable dict/list,
+    so concurrent CivitAI/CivitAI Red workers always receive their own parsed
+    payload. Per-key locking also coalesces identical in-flight detail requests.
+    """
+    lock = _cache_lock_for(cache_key)
+    with lock:
+        with _CACHE_LOCK:
+            cached = _SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            if pace_key:
+                with _PACE_LOCK:
+                    item = _PACE_STATS.setdefault(pace_key, {"requests": 0, "wait_seconds": 0.0, "cache_hits": 0})
+                    item["cache_hits"] += 1
+            try:
+                return 200, json.loads(cached), True
+            except Exception:
+                # A corrupt/obsolete cache entry should never poison a scan.
+                with _CACHE_LOCK:
+                    _SCAN_CACHE.pop(cache_key, None)
+
+        response = get_with_backoff(
+            session, url, provider=provider, label=label, max_retries=max_retries,
+            backoff=backoff, pace_key=pace_key, min_interval=min_interval, **kwargs
+        )
+        text = response.text or ""
+        payload = {}
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except Exception:
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    payload = {}
+            if isinstance(payload, (dict, list)):
+                with _CACHE_LOCK:
+                    _SCAN_CACHE[cache_key] = text
+        return response.status_code, payload, False
+
 
 def _record_retry(provider, recovered=False, failed=False):
     with _RETRY_LOCK:
@@ -192,6 +266,10 @@ def get_with_backoff(
 
         fallback = backoff[min(attempts, len(backoff) - 1)] if backoff else 3
         wait_seconds = _retry_after_seconds(response, fallback)
+        # A Retry-After applies to the destination, not only this thread. Share
+        # that cooldown with sibling CivitAI/Red requests so concurrent detail
+        # hydration cannot immediately walk into the same 429 window.
+        _register_pace_cooldown(pace_key, wait_seconds)
         attempts += 1
         _record_retry(provider)
 

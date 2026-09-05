@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import database
 import scan_control
@@ -28,7 +29,7 @@ from scanners.common.model import Model
 from scanners.common import processors
 from utils.loader import load_model_types
 from secrets_manager import get_source_token, get_civitai_search_key
-from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff
+from scanners.http_retry import get_with_backoff, get_cached_text_with_backoff, get_cached_json_with_backoff
 
 API = "https://civitai.com/api/v1/models"
 MODEL_DETAIL_API = "https://civitai.com/api/v1/models/{model_id}"
@@ -687,19 +688,20 @@ def _fetch_model_detail(model_id):
     if not model_id or _DETAIL_ENRICHMENT_DISABLED:
         return {}
     try:
-        response = get_with_backoff(
+        auth_scope = "auth" if session.headers.get("Authorization") else "public"
+        status_code, payload, _cache_hit = get_cached_json_with_backoff(
             session,
             MODEL_DETAIL_API.format(model_id=model_id),
+            cache_key=("civitai-model-detail", auth_scope, str(model_id)),
             provider="CivitAI",
             label=f"model detail {model_id}",
             pace_key="CivitAI.com", min_interval=1.25,
             timeout=30,
             max_retries=0,
         )
-        if response.status_code == 200:
-            payload = response.json()
+        if status_code == 200:
             return payload if isinstance(payload, dict) else {}
-        if response.status_code == 429:
+        if status_code == 429:
             _DETAIL_ENRICHMENT_DISABLED = True
             print("CivitAI detail enrichment paused for this scan after rate limiting; continuing with browse metadata")
             return {}
@@ -1780,6 +1782,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     v9_precheck_skipped = 0
     v9_detail_fetches = 0
 
+    # Keep all DB/source-activity checks on the scanner thread. Only records
+    # that genuinely need rebuilding enter the network-heavy hydration pool.
+    hydration_candidates = []
+
     for item in items:
         if scan_control.should_stop():
             break
@@ -1796,10 +1802,6 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         if author and author.casefold() in blocked:
             continue
 
-        # IMPORTANT: reject out-of-window browse results from the cheap listing
-        # payload BEFORE any per-model hydration/detail request. This restores
-        # the fast path we previously had: models_v9 is discovery-only and old
-        # records should never cost an API detail request just to be discarded.
         if not creator:
             listing_activity = _item_activity_datetime(item)
             if listing_activity != datetime.min and listing_activity < cutoff:
@@ -1808,14 +1810,6 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     v9_precheck_skipped += 1
                 continue
 
-        # Normal browse scans should stay cheap. If the listing already says an
-        # existing card has the same source activity, do not spend a detail
-        # request rebuilding it. Creator scans may request rich hydration, but
-        # only for records that actually need rebuilding.
-        # Merged cards may keep CivitAI only in model_sources while another
-        # provider (often CivitAI Red) owns the canonical models row. Read the
-        # preserved CivitAI snapshot first so unchanged detection still works
-        # for merged cards.
         existing_source = database.get_model_source_snapshot(NAME, str(model_id))
         source_updated = _source_activity(item)
         source_sha = _listing_version_id(item)
@@ -1833,18 +1827,13 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     and source_updated
                     and db_updated == source_updated
                 )
-                or (
-                    source_updated
-                    and db_updated == source_updated
-                )
+                or (source_updated and db_updated == source_updated)
             ):
                 duplicates += 1
                 if item.get("_models_v9_hit"):
                     v9_precheck_skipped += 1
                 continue
         else:
-            # Compatibility fallback for older/unmerged rows that predate
-            # model_sources membership snapshots.
             existing = database.get_model(str(model_id), NAME)
             if existing:
                 db_updated = str(existing["updated"] or "")
@@ -1859,25 +1848,35 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         and source_updated
                         and db_updated == source_updated
                     )
-                    or (
-                        source_updated
-                        and db_updated == source_updated
-                    )
+                    or (source_updated and db_updated == source_updated)
                 ):
                     duplicates += 1
                     if item.get("_models_v9_hit"):
                         v9_precheck_skipped += 1
                     continue
 
-        # models_v9 is now discovery-only. Hydrate only records that survived
-        # the cheap DB/source-activity precheck so new/changed models still get
-        # the rich REST payload needed for files, media, access and downloads.
+        hydration_candidates.append({
+            "item": item,
+            "model_id": model_id,
+            "source_sha": source_sha,
+            "media_mode_requires_refresh": media_mode_requires_refresh,
+        })
+
+    def _hydrate_candidate(candidate):
+        if scan_control.should_stop():
+            return None, 0
+        item = candidate["item"]
+        model_id = candidate["model_id"]
+        source_sha = candidate["source_sha"]
+        detail_fetched = 0
+
+        # models_v9 remains discovery-only. Hydrate only candidates that made
+        # it through the cheap precheck. Requests are paced globally even while
+        # several workers overlap provider response latency.
         if item.get("_models_v9_hit"):
             detail = _fetch_model_detail(model_id)
             if detail:
-                v9_detail_fetches += 1
-                # Preserve the exact revision selected by website discovery
-                # before the parent detail payload expands to all revisions.
+                detail_fetched = 1
                 item = {
                     **item,
                     **detail,
@@ -1891,10 +1890,37 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
             include_mature_media=include_mature_media,
             media_limit=scan_settings.get("_media_limit", 100),
         )
+        return model, detail_fetched
 
-        # Creator scans are explicit requests for the creator's catalog, so
-        # Search Days never trims them. Discovery scans use newest source
-        # activity (created/updated), matching AbyssBeacon cleanup semantics.
+    hydrated = [None] * len(hydration_candidates)
+    workers = min(4, len(hydration_candidates))
+    if hydration_candidates:
+        builtins.print(
+            f"CivitAI hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
+        )
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="civitai-hydration") as executor:
+            futures = {
+                executor.submit(_hydrate_candidate, candidate): index
+                for index, candidate in enumerate(hydration_candidates)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                if scan_control.should_stop():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                try:
+                    model, detail_fetched = future.result()
+                    hydrated[index] = model
+                    v9_detail_fetches += detail_fetched
+                except Exception as exc:
+                    debug_print("CivitAI hydration failed:", repr(exc))
+
+    # Apply final model/date/DB checks in deterministic discovery order. No DB
+    # access happens inside worker threads.
+    for candidate, model in zip(hydration_candidates, hydrated):
+        if model is None:
+            continue
         if not creator:
             active_date = _parse_date(model.updated) or _parse_date(model.created)
             if active_date and active_date < cutoff:
@@ -1902,7 +1928,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                 continue
 
         existing = database.get_model(model.model_key, NAME)
-        if existing and not media_mode_requires_refresh:
+        if existing and not candidate["media_mode_requires_refresh"]:
             db_updated = str(existing["updated"] or "")
             db_sha = str(existing["sha"] or "")
             if (model.sha and db_sha == model.sha and db_updated == model.updated) or (model.updated and db_updated == model.updated):
