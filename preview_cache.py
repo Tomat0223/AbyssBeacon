@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -45,16 +46,27 @@ def cache_preview_url(url: str) -> str:
         response.raise_for_status()
         if not str(response.headers.get("content-type", "")).lower().startswith("image/"):
             return url
-        with Image.open(io.BytesIO(response.content)) as image:
-            image = ImageOps.exif_transpose(image)
-            if image.mode not in ("RGB", "RGBA"):
-                image = image.convert("RGB")
-            image.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)
-            if image.mode == "RGBA":
-                # WebP supports alpha; keep it when present.
-                image.save(path, "WEBP", quality=QUALITY, method=4)
-            else:
-                image.convert("RGB").save(path, "WEBP", quality=QUALITY, method=4)
+        # Some source previews contain malformed EXIF/TIFF metadata. Pillow can
+        # still decode the image correctly, but emits a noisy UserWarning while
+        # reading that metadata. Hide only that known recoverable warning here;
+        # all other Pillow warnings and actual image failures remain visible.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Corrupt EXIF data\..*",
+                category=UserWarning,
+                module=r"PIL\.TiffImagePlugin",
+            )
+            with Image.open(io.BytesIO(response.content)) as image:
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in ("RGB", "RGBA"):
+                    image = image.convert("RGB")
+                image.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)
+                if image.mode == "RGBA":
+                    # WebP supports alpha; keep it when present.
+                    image.save(path, "WEBP", quality=QUALITY, method=4)
+                else:
+                    image.convert("RGB").save(path, "WEBP", quality=QUALITY, method=4)
         return public
     except Exception:
         try:

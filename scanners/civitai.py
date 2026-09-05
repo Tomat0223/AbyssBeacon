@@ -149,7 +149,7 @@ def _fetch_model_pages(label, base_params, max_items, *, timeout=30, return_stat
             response = get_with_backoff(
                 session, next_url, provider="CivitAI",
                 label=f"{label} page {page_number}",
-                pace_key="CivitAI.com", min_interval=1.25,
+                pace_key="CivitAI.com", min_interval=1.0,
                 params=next_params, timeout=timeout
             )
         except Exception as exc:
@@ -695,7 +695,7 @@ def _fetch_model_detail(model_id):
             cache_key=("civitai-model-detail", auth_scope, str(model_id)),
             provider="CivitAI",
             label=f"model detail {model_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             timeout=30,
             max_retries=0,
         )
@@ -726,7 +726,7 @@ def _fetch_model_version(version_id):
             MODEL_VERSION_API.format(version_id=version_id),
             provider="CivitAI",
             label=f"model version {version_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             timeout=30,
             max_retries=0,
         )
@@ -863,7 +863,7 @@ def _fetch_version_gallery(version_id, max_items=100):
                 provider="CivitAI",
                 label=f"version gallery {version_id}",
                 pace_key="CivitAI.com",
-                min_interval=1.25,
+                min_interval=1.0,
                 params=params,
                 timeout=30,
                 max_retries=0,
@@ -971,7 +971,7 @@ def _fetch_model_page_metadata(model_id):
             cache_key=("civitai-model-page", str(model_id)),
             provider="CivitAI",
             label=f"model page {model_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             timeout=25,
             max_retries=0,
         )
@@ -1048,7 +1048,7 @@ def _fetch_filename_authority_versions(model_id):
             cache_key=("civitai-model-page", str(model_id)),
             provider="CivitAI",
             label=f"filename metadata {model_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             timeout=25,
             max_retries=3,
         )
@@ -1321,11 +1321,17 @@ def _build_model(item, enrich=False, include_mature_media=False, media_limit=100
             _page_versions_without_media(filename_versions),
         )
 
+    # The REST parent detail already carries the complete version/file tree for
+    # ordinary discovery hydration.  Do not fetch the rendered page merely
+    # because a version has multiple files; _fetch_filename_authority_versions
+    # above already handles the only case where that page is needed for normal
+    # multi-file hydration: missing/duplicated filenames across stable file IDs.
+    # Keep the full rendered-page path for explicit reloads and genuinely
+    # incomplete REST metadata.
     needs_page = force_page or (
         enrich and (
             not _plain_text(item.get("description") or "")
             or not versions
-            or (has_multi_file_version and not filename_versions)
         )
     )
     page_metadata = _fetch_model_page_metadata(model_id) if needs_page else {}
@@ -1895,7 +1901,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     hydrated = [None] * len(hydration_candidates)
     workers = min(4, len(hydration_candidates))
     if hydration_candidates:
-        builtins.print(
+        hydration_started = time.perf_counter()
+        debug_print(
             f"CivitAI hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
         )
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="civitai-hydration") as executor:
@@ -1915,6 +1922,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     v9_detail_fetches += detail_fetched
                 except Exception as exc:
                     debug_print("CivitAI hydration failed:", repr(exc))
+        debug_print(
+            f"CivitAI hydration complete: {len(hydration_candidates)} model(s) in "
+            f"{time.perf_counter() - hydration_started:.2f}s"
+        )
 
     # Apply final model/date/DB checks in deterministic discovery order. No DB
     # access happens inside worker threads.

@@ -578,10 +578,7 @@ def _fetch_meili_search_pages(query, base_models=None, model_type="", max_items=
             f"CivitAI Red models_v9 page offset {offset}: "
             f"{len(hits)} hit(s), {accepted_this_page} architecture match(es)"
         )
-        if allow_empty_query:
-            builtins.print(page_message)
-        else:
-            debug_print(page_message)
+        debug_print(page_message)
         if len(hits) < limit:
             break
         offset += len(hits)
@@ -1032,7 +1029,7 @@ def _fetch_mirror_model_detail(model_id):
             cache_key=("civitai-model-detail", auth_scope, str(model_id)),
             provider="CivitAI Red",
             label=f"mirror model detail {model_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             headers=request_headers,
             timeout=30,
         )
@@ -1373,7 +1370,7 @@ def _fetch_civitai_page_versions(model_id):
             cache_key=("civitai-model-page", str(model_id)),
             provider="CivitAI Red",
             label=f"shared filename metadata {model_id}",
-            pace_key="CivitAI.com", min_interval=1.25,
+            pace_key="CivitAI.com", min_interval=1.0,
             timeout=25,
             max_retries=3,
         )
@@ -1760,60 +1757,22 @@ def _build_model(item, enrich=True):
     if not isinstance(listing_version, dict):
         listing_version = {}
     listing_version_id = listing_version.get("id")
-    detail = _fetch_version_detail(listing_version_id) if enrich else {}
-
-    # Red's listing endpoint exposes only the selected version. Hydrate from
-    # the shared model id first; this preserves all versions/files/media even
-    # when Red's own version-detail endpoint only describes one revision.
-    mirror_detail = _fetch_mirror_model_detail(model_id) if enrich else {}
-    mirror_versions = [v for v in (mirror_detail.get("modelVersions") or []) if isinstance(v, dict)]
-
-    # Red's version-detail response can carry entitlement fields that the public
-    # CivitAI mirror omits. Merge the selected listing/detail into the mirror
-    # tree before deciding whether the rendered Red page is required.
-    structured_versions = _merge_version_lists(mirror_versions, [listing_version] if listing_version else [])
-    if isinstance(detail, dict) and detail:
-        detail_version = dict(detail)
-        if not detail_version.get("id") and listing_version_id:
-            detail_version["id"] = listing_version_id
-        structured_versions = _merge_version_lists(structured_versions, [detail_version])
-
-    current_structured = next(
-        (v for v in structured_versions if str(v.get("id")) == str(listing_version_id)),
-        structured_versions[0] if structured_versions else {},
-    )
-    access_requires_red_page = bool(
-        current_structured.get("requireAuth") is True
-        or current_structured.get("canDownload") is False
-        or isinstance(current_structured.get("paidAccess"), dict)
-        or current_structured.get("earlyAccessDeadline")
-    )
 
     listing_tags = _listing_tag_names(item)
-    # Red and regular CivitAI share model ids. The mirror detail request above
-    # is already part of the Red enrichment path and normally carries the
-    # human-readable tag names even when Red's listing gives only numeric ids.
-    # Use it first: this resolves tags without adding another network request.
-    mirror_tags = _tag_names_from_value(mirror_detail.get("tags") or mirror_detail.get("tagNames") or [])
     has_numeric_listing_tags = any(str(tag).strip().isdigit() for tag in listing_tags)
-    # Red-specific information stays authoritative for Red. Fetch the rendered
-    # Red page when it adds something the structured responses cannot safely
-    # provide: the full version picker, Red's own readable tag mapping (including
-    # Red/NSFW-specific tags), or a fallback when mirror detail is unavailable.
-    #
-    # Multi-file status by itself no longer forces this page request.
     force_red_page = bool(item.get("_force_red_page"))
-    # Red's rendered model page is the authoritative source for account/access
-    # state such as paidAccess + canDownload. Those fields are not reliably
-    # exposed by the mirror/detail APIs. We already only reach _build_model for
-    # new/changed records, so paying one Red page request here is preferable to
-    # silently labelling paid models as Downloadable.
-    needs_red_page = bool(enrich)
+
+    # The authenticated Red model page is already required for trustworthy
+    # paid/early-access state. Its hydrated app state normally carries the full
+    # modelVersions tree, files, media, tags and parent metadata too, so make it
+    # the primary hydration source instead of paying for three baseline requests
+    # per model. The old API/mirror routes remain conservative fallbacks below.
     page_metadata = _fetch_model_page_metadata(
         model_id,
         listing_version_id,
-    ) if needs_red_page else {}
+    ) if enrich else {}
     page_versions = [v for v in (page_metadata.get("versions") or []) if isinstance(v, dict)]
+    page_tags = _tag_names_from_value(page_metadata.get("tags") or [])
 
     if force_red_page:
         target_page_version = next(
@@ -1830,9 +1789,63 @@ def _build_model(item, enrich=True):
             f"earlyAccessDeadline={target_page_version.get('earlyAccessDeadline') or '-'}",
         )
 
-    # Merge Red's own rendered data first so we reuse everything already paid
-    # for before considering another request to regular CivitAI.
-    versions = _merge_version_lists(structured_versions, page_versions)
+    # Red page data overrides the compact discovery record whenever both carry
+    # the same revision.
+    versions = _merge_version_lists(
+        [listing_version] if listing_version else [],
+        page_versions,
+    )
+
+    def _selected_version(records):
+        if listing_version_id:
+            for record in records or []:
+                if isinstance(record, dict) and str(record.get("id") or "") == str(listing_version_id):
+                    return record
+        return (records or [{}])[0] if records else {}
+
+    page_selected = _selected_version(page_versions)
+    page_has_selected_files = bool(
+        isinstance(page_selected, dict)
+        and [f for f in (page_selected.get("files") or []) if isinstance(f, dict)]
+    )
+
+    # The regular CivitAI parent detail is now fallback-only. Use it when Red's
+    # rendered state is missing the selected file tree, or when the discovery
+    # hit contains only opaque numeric tag ids that the Red page did not resolve.
+    need_mirror_detail = bool(
+        enrich and (
+            not page_versions
+            or not page_has_selected_files
+            or (has_numeric_listing_tags and not page_tags)
+        )
+    )
+    mirror_detail = _fetch_mirror_model_detail(model_id) if need_mirror_detail else {}
+    mirror_versions = [
+        v for v in (mirror_detail.get("modelVersions") or [])
+        if isinstance(v, dict)
+    ]
+    if mirror_versions:
+        # Mirror data fills gaps; Red's listing/page data stays authoritative.
+        versions = _merge_version_lists(mirror_versions, versions)
+
+    # The selected-version Red API is the final structural fallback rather than
+    # a baseline request. Only use it if page + optional mirror still cannot
+    # supply files for the selected revision.
+    detail = {}
+    selected_before_detail = _selected_version(versions)
+    selected_has_files = bool(
+        isinstance(selected_before_detail, dict)
+        and [f for f in (selected_before_detail.get("files") or []) if isinstance(f, dict)]
+    )
+    if enrich and listing_version_id and not selected_has_files:
+        detail = _fetch_version_detail(listing_version_id)
+        if isinstance(detail, dict) and detail:
+            detail_version = dict(detail)
+            if not detail_version.get("id"):
+                detail_version["id"] = listing_version_id
+            # Existing Red page data wins; version detail only fills holes.
+            versions = _merge_version_lists([detail_version], versions)
+
     if not versions:
         versions = [listing_version] if listing_version else []
 
@@ -1853,31 +1866,36 @@ def _build_model(item, enrich=True):
     # Only make the extra regular-CivitAI rendered-page request when the data
     # still proves ambiguous after all Red information has been reused. This
     # keeps the exact-name fix for cases such as MiniMax H3 while avoiding a
-    # duplicate rendered-page request for every ordinary multi-file Red model.
+    # duplicate rendered-page request for ordinary models.
     needs_shared_filename_page = enrich and _has_ambiguous_multifile_names(versions)
     if needs_shared_filename_page:
         shared_versions = _fetch_civitai_page_versions(model_id)
         if shared_versions:
             versions = _merge_version_lists(versions, shared_versions)
 
-    version = next((v for v in versions if str(v.get("id")) == str(listing_version_id)), versions[0] if versions else listing_version)
+    version = _selected_version(versions)
     version_id = version.get("id")
 
     mirror_user = mirror_detail.get("creator") or mirror_detail.get("user") or {}
-    name = str(item.get("name") or mirror_detail.get("name") or (page_metadata.get("model") or {}).get("name") or f"CivitAI Red {model_id}")
-    author = str((item.get("user") or {}).get("username") or (mirror_user.get("username") if isinstance(mirror_user, dict) else "") or ((page_metadata.get("model") or {}).get("user") or {}).get("username") or "")
+    page_model = page_metadata.get("model") if isinstance(page_metadata.get("model"), dict) else {}
+    name = str(item.get("name") or page_model.get("name") or mirror_detail.get("name") or f"CivitAI Red {model_id}")
+    author = str(
+        (item.get("user") or {}).get("username")
+        or ((page_model.get("user") or {}).get("username") if isinstance(page_model.get("user"), dict) else "")
+        or (mirror_user.get("username") if isinstance(mirror_user, dict) else "")
+        or page_metadata.get("author")
+        or ""
+    )
     base_model = str(version.get("baseModel") or "")
     if not base_model:
         bases = item.get("baseModels") or []
         base_model = str(bases[0]) if bases else ""
 
-    parent_description = item.get("description") or mirror_detail.get("description") or page_metadata.get("description") or ""
+    parent_description = item.get("description") or page_metadata.get("description") or mirror_detail.get("description") or ""
     description = _plain_text(parent_description or detail.get("description") or version.get("description") or "")
     trained_words = detail.get("trainedWords") or version.get("trainedWords") or []
     text = " ".join([name, description, base_model, str(item.get("type") or ""), " ".join(map(str, trained_words))])
 
-    # Prefer complete page-version file metadata. Fall back to the current
-    # version API when page state is unavailable.
     files = []
     for page_version in versions:
         page_detail = {"files": page_version.get("files") or []}
@@ -1922,10 +1940,10 @@ def _build_model(item, enrich=True):
     model.architecture = processors.classify_architecture(base_model) if base_model else "Other"
     model.model_type = _model_type(item.get("type"), text)
     tag_names = list(listing_tags)
-    resolved_page_tags = _tag_names_from_value(page_metadata.get("tags") or [])
+    mirror_tags = _tag_names_from_value(mirror_detail.get("tags") or mirror_detail.get("tagNames") or [])
     resolved_tags = []
     resolved_seen = set()
-    for tag in mirror_tags + resolved_page_tags:
+    for tag in page_tags + mirror_tags:
         text_tag = str(tag or "").strip()
         if not text_tag or text_tag.isdigit() or text_tag.casefold() in resolved_seen:
             continue
@@ -1933,9 +1951,6 @@ def _build_model(item, enrich=True):
         resolved_tags.append(text_tag)
 
     if resolved_tags:
-        # Numeric listing values are opaque tag IDs. Once either the already-
-        # fetched CivitAI mirror payload or Red page state gives readable names,
-        # remove the numeric placeholders and retain the complete readable set.
         tag_names = [tag for tag in tag_names if not str(tag).strip().isdigit()]
         known = {str(tag).casefold() for tag in tag_names}
         for tag in resolved_tags:
@@ -1982,8 +1997,6 @@ def _build_model(item, enrich=True):
     model.format = next((entry.get("format") for entry in files if entry.get("format")), "")
     model.sha = str(version_id or "")
     return model
-
-
 
 
 def _listing_architecture(item):
@@ -2325,7 +2338,7 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                     max_items=max_results,
                 )
                 discovery_lane = "browse fallback"
-            builtins.print(
+            debug_print(
                 f"CivitAI Red discovery candidates: {len(items or [])} via {discovery_lane}"
             )
     except PermissionError as exc:
@@ -2402,7 +2415,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     hydrated = [None] * len(hydration_candidates)
     workers = min(4, len(hydration_candidates))
     if hydration_candidates:
-        builtins.print(
+        hydration_started = time.perf_counter()
+        debug_print(
             f"CivitAI Red hydration: {len(hydration_candidates)} model(s) with {workers} worker(s)"
         )
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="civitai-red-hydration") as executor:
@@ -2425,6 +2439,10 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
                         f"CivitAI Red skip: build failed: {item.get('id')} "
                         f"{item.get('name', '')}: {exc!r}"
                     )
+        debug_print(
+            f"CivitAI Red hydration complete: {len(hydration_candidates)} model(s) in "
+            f"{time.perf_counter() - hydration_started:.2f}s"
+        )
 
     for model in hydrated:
         if model is None:

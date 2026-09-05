@@ -28,6 +28,7 @@ _PACE_LOCK = threading.RLock()
 _PACE_LAST = {}
 _PACE_STATS = {}
 _PACE_BLOCKED_UNTIL = {}
+_PACE_MIN_FLOOR = {}
 _CACHE_LOCK = threading.RLock()
 _SCAN_CACHE = {}
 _CACHE_KEY_LOCKS = {}
@@ -39,6 +40,7 @@ def reset_retry_stats():
         _PACE_LAST.clear()
         _PACE_STATS.clear()
         _PACE_BLOCKED_UNTIL.clear()
+        _PACE_MIN_FLOOR.clear()
     with _CACHE_LOCK:
         _SCAN_CACHE.clear()
         _CACHE_KEY_LOCKS.clear()
@@ -60,7 +62,8 @@ def _pace_request(key, min_interval):
         with _PACE_LOCK:
             now = time.monotonic()
             last = _PACE_LAST.get(key)
-            interval_remaining = 0.0 if last is None else min_interval - (now - last)
+            effective_interval = max(min_interval, float(_PACE_MIN_FLOOR.get(key, 0.0) or 0.0))
+            interval_remaining = 0.0 if last is None else effective_interval - (now - last)
             cooldown_remaining = float(_PACE_BLOCKED_UNTIL.get(key, 0.0) or 0.0) - now
             remaining = max(0.0, interval_remaining, cooldown_remaining)
             if remaining <= 0:
@@ -74,6 +77,21 @@ def _pace_request(key, min_interval):
         step = min(0.10, remaining)
         time.sleep(step)
         waited += step
+
+
+def _raise_pace_floor(key, seconds):
+    """Raise a host's scan-local minimum spacing after a real throttle."""
+    if not key:
+        return
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if seconds <= 0:
+        return
+    with _PACE_LOCK:
+        if seconds > float(_PACE_MIN_FLOOR.get(key, 0.0) or 0.0):
+            _PACE_MIN_FLOOR[key] = seconds
 
 
 def _register_pace_cooldown(key, seconds):
@@ -270,6 +288,12 @@ def get_with_backoff(
         # that cooldown with sibling CivitAI/Red requests so concurrent detail
         # hydration cannot immediately walk into the same 429 window.
         _register_pace_cooldown(pace_key, wait_seconds)
+        # The public CivitAI detail/version endpoints have been stable at our
+        # faster 1.0s test pace, but if the provider actually throttles us,
+        # immediately return to the proven 1.25s spacing for the rest of this
+        # scan instead of repeatedly probing the faster rate.
+        if pace_key == "CivitAI.com" and float(min_interval or 0.0) < 1.25:
+            _raise_pace_floor(pace_key, 1.25)
         attempts += 1
         _record_retry(provider)
 
