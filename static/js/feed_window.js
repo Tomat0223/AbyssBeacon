@@ -13,13 +13,22 @@ function initializeFeedWindowing(){
 
     const chunkSize=80;
     const replaceSize=120;
+    // Keep the mounted Feed deliberately small. The old implementation appended
+    // every visited chunk for the entire page lifetime, so images/videos/cards
+    // accumulated until scrolling itself became expensive.
+    const maxMountedCards=120;
     const feedReturnScrollKey="abyss_feed_return_scroll_v1";
+    const feedReturnWindowStartKey="abyss_feed_return_window_start_v1";
     const feedRestorePendingKey="abyss_feed_restore_pending_v1";
     let scrollSaveQueued=false;
+    let scrollDirection="down";
+    let lastScrollY=Math.max(0,window.scrollY || 0);
+    let adjustingScroll=false;
 
     function saveFeedReturnPosition(){
         try{
             sessionStorage.setItem(feedReturnScrollKey,String(Math.max(0,Math.round(window.scrollY || 0))));
+            sessionStorage.setItem(feedReturnWindowStartKey,String(Math.max(0,windowStart || 0)));
         }catch(_){ }
     }
 
@@ -58,6 +67,56 @@ function initializeFeedWindowing(){
         if(topSentinel){
             topSentinel.classList.toggle("complete", windowStart <= 0);
         }
+    }
+
+    function preserveViewportBy(delta){
+        const amount=Number(delta || 0);
+        if(!Number.isFinite(amount) || Math.abs(amount) < 0.5) return;
+        adjustingScroll=true;
+        window.scrollBy(0,amount);
+        requestAnimationFrame(()=>{
+            lastScrollY=Math.max(0,window.scrollY || 0);
+            adjustingScroll=false;
+        });
+    }
+
+    function releaseCard(card){
+        try{ window.modelRadarReleaseCardVideoPreviews?.(card); }catch(_){ }
+    }
+
+    function removeCards(cards){
+        cards.forEach(card=>{
+            releaseCard(card);
+            card.remove();
+        });
+    }
+
+    // Removing cards above the viewport changes document height. Anchor the
+    // first card that remains so the user sees no visual jump while the old
+    // chunk is discarded.
+    function pruneTopToLimit(){
+        const cards=mountedCards();
+        const overflow=Math.max(0,cards.length-maxMountedCards);
+        if(!overflow) return 0;
+
+        const anchor=cards[overflow] || null;
+        const before=anchor?.getBoundingClientRect().top ?? null;
+        removeCards(cards.slice(0,overflow));
+        windowStart += overflow;
+
+        if(anchor && before !== null && anchor.isConnected){
+            const after=anchor.getBoundingClientRect().top;
+            preserveViewportBy(after-before);
+        }
+        return overflow;
+    }
+
+    function pruneBottomToLimit(){
+        const cards=mountedCards();
+        const overflow=Math.max(0,cards.length-maxMountedCards);
+        if(!overflow) return 0;
+        removeCards(cards.slice(cards.length-overflow));
+        return overflow;
     }
 
     function currentStructuralFilters(){
@@ -127,7 +186,7 @@ function initializeFeedWindowing(){
         const controller=new AbortController();
         activeController=controller;
         loading=true;
-        const activeSentinel=bottomSentinel;
+        const activeSentinel=mode === "prepend" ? topSentinel : bottomSentinel;
         activeSentinel?.classList.add("loading");
         activeSentinel?.classList.remove("error");
 
@@ -153,7 +212,7 @@ function initializeFeedWindowing(){
                 // page load. If the user has already started scrolling, replacing
                 // the server-rendered grid must not yank them back to the top.
                 preservedScrollY=preserveScroll ? Math.max(0,window.scrollY || 0) : null;
-                grid.replaceChildren();
+                removeCards(mountedCards());
                 windowStart=Number(data.offset || 0);
                 if(data.html) grid.appendChild(htmlToFragment(data.html));
             }else if(mode === "append"){
@@ -170,7 +229,24 @@ function initializeFeedWindowing(){
                 }else{
                     marker.remove();
                 }
+                pruneTopToLimit();
+            }else if(mode === "prepend"){
+                const existingCards=mountedCards();
+                const existingIds=new Set(existingCards.map(card=>String(card.dataset.id || "")));
+                const anchor=existingCards[0] || null;
+                const before=anchor?.getBoundingClientRect().top ?? null;
+                const fragment=htmlToFragment(data.html);
+                Array.from(fragment.querySelectorAll?.(".model-card") || []).forEach(card=>{
+                    if(existingIds.has(String(card.dataset.id || ""))) card.remove();
+                });
+                grid.prepend(fragment);
+                windowStart=Number(data.offset || 0);
 
+                if(anchor && before !== null && anchor.isConnected){
+                    const after=anchor.getBoundingClientRect().top;
+                    preserveViewportBy(after-before);
+                }
+                pruneBottomToLimit();
             }
 
             // Publish the new server total before filters.js refreshes the
@@ -211,12 +287,26 @@ function initializeFeedWindowing(){
         return fetchChunk(windowEnd(),{mode:"append",limit:chunkSize});
     }
 
+    async function loadPreviousChunk(){
+        if(loading || windowStart <= 0) return null;
+        const offset=Math.max(0,windowStart-chunkSize);
+        const limit=Math.max(1,windowStart-offset);
+        return fetchChunk(offset,{mode:"prepend",limit});
+    }
+
     async function resetFeedWindow({preserveScroll=false}={}){
         bottomSentinel.classList.remove("complete","error");
         topSentinel?.classList.remove("error");
         const data=await fetchChunk(0,{mode:"replace",limit:replaceSize,preserveScroll});
         syncFeedState();
         return data;
+    }
+
+    async function jumpFeedToTop(){
+        if(windowStart > 0){
+            await fetchChunk(0,{mode:"replace",limit:replaceSize});
+        }
+        window.scrollTo({top:0,behavior:"smooth"});
     }
 
     function reconcileAfterRemoval(removedCount=0){
@@ -230,30 +320,46 @@ function initializeFeedWindowing(){
 
     if("IntersectionObserver" in window){
         const bottomObserver=new IntersectionObserver(entries=>{
-            if(entries.some(entry=>entry.isIntersecting)) loadNextChunk();
+            if(scrollDirection === "down" && entries.some(entry=>entry.isIntersecting)) loadNextChunk();
         },{rootMargin:"1800px 0px",threshold:0.01});
         bottomObserver.observe(bottomSentinel);
+
+        if(topSentinel){
+            const topObserver=new IntersectionObserver(entries=>{
+                if(scrollDirection === "up" && entries.some(entry=>entry.isIntersecting)) loadPreviousChunk();
+            },{rootMargin:"1800px 0px",threshold:0.01});
+            topObserver.observe(topSentinel);
+        }
     }
 
     // Firefox middle-mouse autoscroll can move faster than an observer callback.
-    // Keep a simple downward edge check as a backup. There is intentionally no
-    // upward paging: once cards are loaded they remain mounted until reload or a
-    // structural filter replaces the feed.
+    // Keep simple edge checks as a backup in both directions.
     window.addEventListener("scroll",()=>{
-        if(window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 1800){
+        const currentY=Math.max(0,window.scrollY || 0);
+        if(!adjustingScroll){
+            if(currentY > lastScrollY + 1) scrollDirection="down";
+            else if(currentY < lastScrollY - 1) scrollDirection="up";
+            lastScrollY=currentY;
+        }
+
+        if(scrollDirection === "down" && window.innerHeight + currentY >= document.documentElement.scrollHeight - 1800){
             loadNextChunk();
+        }
+        if(scrollDirection === "up" && windowStart > 0 && currentY <= 1800){
+            loadPreviousChunk();
         }
     },{passive:true});
 
     window.modelRadarLoadNextFeedChunk=loadNextChunk;
+    window.modelRadarLoadPreviousFeedChunk=loadPreviousChunk;
     window.modelRadarResetFeedWindow=resetFeedWindow;
     window.modelRadarReconcileFeedWindow=reconcileAfterRemoval;
+    window.modelRadarJumpFeedToTop=jumpFeedToTop;
 
     syncFeedState();
 
-    // A browser reload should always restart AbyssBeacon at the top. Loaded cards
-    // are deliberately kept for the life of the page, so reload is the clean
-    // reset point instead of rebuilding old chunks above the user.
+    // A browser reload should always restart AbyssBeacon at the top. The bounded
+    // Feed window is rebuilt from the first 120 cards on a deliberate reload.
     try{
         const navigation=performance.getEntriesByType?.("navigation")?.[0];
         if(navigation?.type === "reload"){
@@ -286,9 +392,11 @@ function initializeFeedWindowing(){
     async function restoreFeedReturnPosition(){
         let shouldRestore=false;
         let target=0;
+        let targetWindowStart=0;
         try{
             shouldRestore=sessionStorage.getItem(feedRestorePendingKey)==="1";
             target=Math.max(0,Number.parseInt(sessionStorage.getItem(feedReturnScrollKey)||"0",10)||0);
+            targetWindowStart=Math.max(0,Number.parseInt(sessionStorage.getItem(feedReturnWindowStartKey)||"0",10)||0);
             if(shouldRestore) sessionStorage.removeItem(feedRestorePendingKey);
         }catch(_){ }
         if(!shouldRestore) return;
@@ -296,20 +404,13 @@ function initializeFeedWindowing(){
         if("scrollRestoration" in history) history.scrollRestoration="manual";
         try{ await initialWindowReady; }catch(_){ }
 
-        // A fallback navigation from a full-page Creator/Collection can rebuild
-        // the home feed from its first chunk. Rehydrate enough lazy chunks to
-        // reach the saved position before scrolling there. BFCache returns are
-        // already tall enough and skip this loop.
-        let attempts=0;
-        const wantedHeight=target + window.innerHeight + 240;
-        while(
-            document.documentElement.scrollHeight < wantedHeight
-            && windowEnd() < total
-            && attempts < 100
-        ){
-            attempts += 1;
-            const loaded=await loadNextChunk();
-            if(!loaded) break;
+        // With a bounded Feed, scrollY is relative to the current 120-card
+        // window. Restore that exact server offset instead of rebuilding every
+        // chunk that once appeared above it.
+        if(targetWindowStart !== windowStart){
+            try{
+                await fetchChunk(targetWindowStart,{mode:"replace",limit:replaceSize});
+            }catch(_){ }
         }
 
         const restore=()=>window.scrollTo(0,Math.min(target,Math.max(0,document.documentElement.scrollHeight-window.innerHeight)));
