@@ -4102,6 +4102,30 @@ def tracked_model_download(model_id, file_index):
 
 
 
+@app.route("/api/active-downloads/events")
+def active_download_events():
+    """Push a tiny wake event only when a download starts or resumes."""
+    def stream():
+        revision = active_downloads.start_revision()
+        # The initial event lets a newly opened/reconnected page reconcile the
+        # current snapshot without any idle polling loop.
+        yield f"event: ready\ndata: {revision}\n\n"
+        while True:
+            next_revision = active_downloads.wait_for_start(revision, timeout=25.0)
+            if next_revision > revision:
+                revision = next_revision
+                yield f"event: started\ndata: {revision}\n\n"
+            else:
+                # Keep the local EventSource connection alive without asking
+                # active_downloads.snapshot() or touching saved .part files.
+                yield ": keepalive\n\n"
+
+    response = Response(stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
 @app.route("/api/active-downloads")
 def active_download_list():
     return {"success": True, **active_downloads.snapshot()}

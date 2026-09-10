@@ -1496,19 +1496,104 @@ document.addEventListener("DOMContentLoaded",()=>{
         });
     };
 
+    // Keep the navbar completely idle when no transfer is moving. Flask
+    // pushes a tiny SSE wake event when a download starts/resumes; only then
+    // do we poll the snapshot once per second for live bytes/progress.
+    let pollInFlight=false;
+    let pollAgain=false;
+    let activePolling=false;
+    let terminalCleanupDelay=0;
+    let eventSource=null;
+    const movingStatuses=new Set([
+        "starting","downloading","installing","canceling","pausing"
+    ]);
+
+    const clearPollTimer=()=>{
+        if(timer){
+            clearTimeout(timer);
+            timer=null;
+        }
+    };
+
+    const scheduleNextPoll=()=>{
+        clearPollTimer();
+        if(document.hidden)return;
+        if(activePolling){
+            timer=setTimeout(poll,1000);
+        }else if(terminalCleanupDelay>0){
+            // Complete/canceled rows intentionally linger for a few seconds.
+            // Reconcile once after their backend TTL instead of polling idle.
+            timer=setTimeout(poll,terminalCleanupDelay);
+        }
+    };
+
     const poll=async()=>{
+        clearPollTimer();
+        if(pollInFlight){
+            pollAgain=true;
+            return;
+        }
+
+        pollInFlight=true;
         try{
             const response=await fetch("/api/active-downloads",{cache:"no-store"});
             const data=await response.json();
             if(!response.ok||!data.success)return;
+
             const signature=JSON.stringify(data);
             if(signature!==lastSignature){lastSignature=signature;render(data);}
-        }catch(_){}
+
+            const items=Array.isArray(data.items)?data.items:[];
+            activePolling=items.some(item=>movingStatuses.has(String(item.status||"")));
+            terminalCleanupDelay=0;
+            if(!activePolling){
+                if(items.some(item=>String(item.status||"")==="canceled")) terminalCleanupDelay=6000;
+                if(items.some(item=>String(item.status||"")==="complete")){
+                    terminalCleanupDelay=terminalCleanupDelay?Math.min(terminalCleanupDelay,13000):13000;
+                }
+            }
+        }catch(_){
+            // If Flask briefly disappears during an active transfer, keep the
+            // watcher armed. EventSource will reconnect after a restart.
+        }finally{
+            pollInFlight=false;
+            if(pollAgain){
+                pollAgain=false;
+                poll();
+            }else{
+                scheduleNextPoll();
+            }
+        }
     };
 
     window.modelRadarPollActiveDownloads=poll;
+    window.modelRadarWatchActiveDownloads=poll;
+
+    if(typeof EventSource!=="undefined"){
+        eventSource=new EventSource("/api/active-downloads/events");
+        eventSource.addEventListener("ready",()=>poll());
+        eventSource.addEventListener("started",()=>{
+            activePolling=true;
+            poll();
+        });
+    }
+
+    document.addEventListener("visibilitychange",()=>{
+        if(document.hidden){
+            clearPollTimer();
+        }else{
+            // Reconcile once after returning to the tab. Polling continues only
+            // if the server reports a transfer that is actually moving.
+            poll();
+        }
+    });
+
+    window.addEventListener("beforeunload",()=>eventSource?.close(),{once:true});
+
+    // One startup snapshot restores paused/failed jobs after an AbyssBeacon
+    // restart. If nothing is active, this is the last snapshot request until
+    // a server-side start/resume event arrives.
     poll();
-    timer=setInterval(poll,700);
 });
 
 

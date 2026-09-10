@@ -11,6 +11,8 @@ import uuid
 
 
 _LOCK = threading.RLock()
+_START_CONDITION = threading.Condition(_LOCK)
+_START_REVISION = 0
 _JOBS = OrderedDict()
 _COMPLETE_TTL = 12.0
 _CANCELED_TTL = 5.0
@@ -139,6 +141,36 @@ def _clean_locked():
         _JOBS.pop(key, None)
 
 
+def _signal_start_locked():
+    """Wake browser listeners when a transfer enters an active state."""
+    global _START_REVISION
+    _START_REVISION += 1
+    _START_CONDITION.notify_all()
+
+
+def start_revision():
+    """Return the current start-event revision for the SSE notifier."""
+    with _LOCK:
+        return int(_START_REVISION)
+
+
+def wait_for_start(after_revision, timeout=25.0):
+    """Block until a new download starts/resumes, or until timeout."""
+    try:
+        after = max(0, int(after_revision or 0))
+    except (TypeError, ValueError):
+        after = 0
+    try:
+        wait_seconds = max(0.1, float(timeout))
+    except (TypeError, ValueError):
+        wait_seconds = 25.0
+
+    with _START_CONDITION:
+        if _START_REVISION <= after:
+            _START_CONDITION.wait_for(lambda: _START_REVISION > after, timeout=wait_seconds)
+        return int(_START_REVISION)
+
+
 def create_job(*, model_id, model_name, source, filename, retry_url="", total_bytes=0):
     job_id = uuid.uuid4().hex
     now = _now_iso()
@@ -167,6 +199,7 @@ def create_job(*, model_id, model_name, source, filename, retry_url="", total_by
         }
         _JOBS.move_to_end(job_id)
         _save_locked()
+        _signal_start_locked()
     return job_id
 
 
@@ -209,6 +242,7 @@ def reactivate(job_id):
         job.update(status="starting", stage="Resuming", speed_bps=0.0, error="", updated_at=_now_iso())
         _JOBS.move_to_end(str(job_id))
         _save_locked()
+        _signal_start_locked()
         return True
 
 def update(job_id, *, status=None, stage=None, downloaded_bytes=None, total_bytes=None, error=None, filename=None, part_path=None):
