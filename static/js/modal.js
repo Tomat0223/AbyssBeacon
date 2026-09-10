@@ -269,6 +269,38 @@ function initializeModal(){
     }
 
     let activeGalleryCleanup = null;
+    let modelBackgroundLocked = false;
+    let previousBodyOverflow = "";
+
+    function lockModelBackground(){
+        if(modelBackgroundLocked) return;
+
+        modelBackgroundLocked = true;
+        previousBodyOverflow = document.body.style.overflow;
+        window.modelRadarSetFeedWindowSuspended?.(true);
+
+        // Keep the existing viewport exactly where it is. Feed paging is
+        // suspended before overflow changes so no sentinel can react to the
+        // modal's scroll lock.
+        document.body.style.overflow = "hidden";
+    }
+
+    function unlockModelBackground(){
+        if(!modelBackgroundLocked){
+            window.modelRadarSetFeedWindowSuspended?.(false);
+            return;
+        }
+
+        document.body.style.overflow = previousBodyOverflow;
+        previousBodyOverflow = "";
+        modelBackgroundLocked = false;
+
+        // Resume paging only after the browser has restored normal document
+        // layout. No scrollTo/scrollBy is performed here.
+        requestAnimationFrame(()=>{
+            window.modelRadarSetFeedWindowSuspended?.(false);
+        });
+    }
 
     function cleanupActiveGallery(){
         if(typeof activeGalleryCleanup === "function"){
@@ -298,7 +330,11 @@ function initializeModal(){
         }
         details.scrollTop=0;
         details.replaceChildren();
-        document.body.style.overflow="";
+
+        // Opening a New card updates its Seen state immediately but intentionally
+        // leaves the card mounted until a manual refresh/reload or filter change.
+        // Closing the modal therefore never restructures the Feed.
+        unlockModelBackground();
     }
 
     // Other first-party UI surfaces (for example Download Manager history)
@@ -385,15 +421,36 @@ function initializeModal(){
                             wasNew
                             && typeof window.modelRadarApplySeenState === "function"
                         ) {
-                            window.modelRadarApplySeenState(
-                                [card],
-                                {
-                                    changed:1,
-                                    refreshNewWindow:true
-                                }
-                            ).catch(error => {
-                                console.error("Unable to sync opened card Seen state:", error);
-                            });
+                            const currentStatus = String(
+                                document.getElementById("statusFilter")?.value || "All"
+                            ).toLowerCase();
+
+                            if (currentStatus === "new") {
+                                // /model/<id> already marked the database row viewed.
+                                // Update the live badge/status/count, but deliberately
+                                // keep this card in the current New feed until the user
+                                // refreshes/reloads or changes a filter.
+                                window.modelRadarApplySeenState(
+                                    [card],
+                                    {
+                                        changed:1,
+                                        refreshNewWindow:false,
+                                        preserveInCurrentNewView:true
+                                    }
+                                ).catch(error => {
+                                    console.error("Unable to sync opened card Seen state:", error);
+                                });
+                            } else {
+                                window.modelRadarApplySeenState(
+                                    [card],
+                                    {
+                                        changed:1,
+                                        refreshNewWindow:true
+                                    }
+                                ).catch(error => {
+                                    console.error("Unable to sync opened card Seen state:", error);
+                                });
+                            }
                         }
 
                         // The visible rounded frame belongs to .model-panel,
@@ -1624,6 +1681,11 @@ function initializeModal(){
                         activeGalleryCleanup = initializeGallery() || null;
 
 
+                        // Freeze the bounded Feed before opening the modal.
+                        // Firefox can otherwise report a transient scroll-to-top
+                        // while the document is locked, which wakes upward paging.
+                        lockModelBackground();
+
                         overlay.classList.add(
                             "open"
                         );
@@ -1646,7 +1708,7 @@ function initializeModal(){
                             if (panel) panel.scrollTop = 0;
                         });
 
-                        document.body.style.overflow = "hidden";
+                        // lockModelBackground() owns the page scroll lock.
 
                         // The cyan ↓ on a feed card is a download shortcut:
                         // open the model normally, but enter directly into its

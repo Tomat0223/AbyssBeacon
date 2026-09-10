@@ -24,8 +24,37 @@ function initializeFeedWindowing(){
     let scrollDirection="down";
     let lastScrollY=Math.max(0,window.scrollY || 0);
     let adjustingScroll=false;
+    let feedWindowSuspended=false;
+
+    function isFeedWindowSuspended(){
+        return feedWindowSuspended
+            || Boolean(document.getElementById("modelOverlay")?.classList.contains("open"));
+    }
+
+    function setFeedWindowSuspended(value){
+        feedWindowSuspended=Boolean(value);
+        window.modelRadarFeedWindowSuspended=feedWindowSuspended;
+
+        if(feedWindowSuspended){
+            // A model modal can temporarily change the browser's reported
+            // scroll position while the background is locked. Do not let that
+            // wake upward/downward paging or finish an in-flight chunk.
+            requestGeneration += 1;
+            activeController?.abort();
+            activeController=null;
+            loading=false;
+            topSentinel?.classList.remove("loading");
+            bottomSentinel?.classList.remove("loading");
+            return;
+        }
+
+        lastScrollY=Math.max(0,window.scrollY || 0);
+        adjustingScroll=false;
+        queueFeedReturnPositionSave();
+    }
 
     function saveFeedReturnPosition(){
+        if(isFeedWindowSuspended()) return;
         try{
             sessionStorage.setItem(feedReturnScrollKey,String(Math.max(0,Math.round(window.scrollY || 0))));
             sessionStorage.setItem(feedReturnWindowStartKey,String(Math.max(0,windowStart || 0)));
@@ -283,12 +312,12 @@ function initializeFeedWindowing(){
     }
 
     async function loadNextChunk(){
-        if(loading || windowEnd() >= total) return null;
+        if(isFeedWindowSuspended() || loading || windowEnd() >= total) return null;
         return fetchChunk(windowEnd(),{mode:"append",limit:chunkSize});
     }
 
     async function loadPreviousChunk(){
-        if(loading || windowStart <= 0) return null;
+        if(isFeedWindowSuspended() || loading || windowStart <= 0) return null;
         const offset=Math.max(0,windowStart-chunkSize);
         const limit=Math.max(1,windowStart-offset);
         return fetchChunk(offset,{mode:"prepend",limit});
@@ -320,12 +349,14 @@ function initializeFeedWindowing(){
 
     if("IntersectionObserver" in window){
         const bottomObserver=new IntersectionObserver(entries=>{
+            if(isFeedWindowSuspended()) return;
             if(scrollDirection === "down" && entries.some(entry=>entry.isIntersecting)) loadNextChunk();
         },{rootMargin:"1800px 0px",threshold:0.01});
         bottomObserver.observe(bottomSentinel);
 
         if(topSentinel){
             const topObserver=new IntersectionObserver(entries=>{
+                if(isFeedWindowSuspended()) return;
                 if(scrollDirection === "up" && entries.some(entry=>entry.isIntersecting)) loadPreviousChunk();
             },{rootMargin:"1800px 0px",threshold:0.01});
             topObserver.observe(topSentinel);
@@ -335,6 +366,7 @@ function initializeFeedWindowing(){
     // Firefox middle-mouse autoscroll can move faster than an observer callback.
     // Keep simple edge checks as a backup in both directions.
     window.addEventListener("scroll",()=>{
+        if(isFeedWindowSuspended()) return;
         const currentY=Math.max(0,window.scrollY || 0);
         if(!adjustingScroll){
             if(currentY > lastScrollY + 1) scrollDirection="down";
@@ -352,6 +384,7 @@ function initializeFeedWindowing(){
 
     window.modelRadarLoadNextFeedChunk=loadNextChunk;
     window.modelRadarLoadPreviousFeedChunk=loadPreviousChunk;
+    window.modelRadarSetFeedWindowSuspended=setFeedWindowSuspended;
     window.modelRadarResetFeedWindow=resetFeedWindow;
     window.modelRadarReconcileFeedWindow=reconcileAfterRemoval;
     window.modelRadarJumpFeedToTop=jumpFeedToTop;

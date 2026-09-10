@@ -1289,7 +1289,8 @@ async function applySeenState(
     {
         changed=null,
         all=false,
-        refreshNewWindow=true
+        refreshNewWindow=true,
+        preserveInCurrentNewView=false
     } = {}
 ){
     const normalized = normalizeSeenCards(cards);
@@ -1307,20 +1308,26 @@ async function applySeenState(
         : Math.max(0, Number(changed || 0));
 
     updateWindowedNewTotal(effectiveChanged, {all});
-    filterCards();
 
-    // If the user is currently browsing New, a Seen card no longer belongs in
-    // this SQL window. Replace the batch so the next New card can slide in.
     const status = String(
         document.getElementById("statusFilter")?.value || "All"
     ).toLowerCase();
+    const preserveVisibleNewCards =
+        Boolean(preserveInCurrentNewView)
+        && status === "new";
 
-    if(refreshNewWindow && status === "new"){
-        // Opening a New card used to replace the entire feed with offset 0.
-        // Deep in a lazy-loaded result set that collapsed the document and
-        // threw the user back toward the previous page break. Remove only the
-        // cards that just left the New result set, keep the current viewport,
-        // and let Feed Windowing refill from the current logical offset.
+    // When a model is opened from the New feed, keep that exact card mounted
+    // for the rest of the current view. Its badge/status/count still update,
+    // but the user decides when the visible New result set is rebuilt by
+    // refreshing/reloading or changing filters.
+    if(!preserveVisibleNewCards){
+        filterCards();
+    }
+
+    // For explicit Seen actions (Mark Visible/Mark All), retain the normal
+    // behavior: remove cards that left the New result set and refill the
+    // bounded window. Opening a single card opts out via preserveInCurrentNewView.
+    if(refreshNewWindow && status === "new" && !preserveVisibleNewCards){
         newlySeen.forEach(card => card.remove());
         window.modelRadarReconcileFeedWindow?.(effectiveChanged);
     }
