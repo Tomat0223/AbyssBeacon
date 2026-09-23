@@ -4,5 +4,5 @@ Keep the public release version in one place so diagnostics and future UI/about
 surfaces can report the same value.
 """
 
-ABYSSBEACON_VERSION = "1.3.4"
+ABYSSBEACON_VERSION = "1.3.5"
 __version__ = ABYSSBEACON_VERSION

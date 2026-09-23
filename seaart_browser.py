@@ -139,6 +139,39 @@ def _launch_browser(browser):
     exe = _browser_executable(browser)
     profile = _PROFILE_ROOT / browser
     profile.mkdir(parents=True, exist_ok=True)
+
+    # A failed live scan used to be able to leave the isolated SeaArt browser
+    # profile owned by a headless browser process.  Reconnect is an explicit
+    # fresh browser action, so clear only processes using AbyssBeacon's unique
+    # SeaArt profile before opening the visible window.
+    active = _profile_process_ids(browser, str(profile.resolve()))
+    if active and os.name == "nt":
+        for pid in active:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                )
+            except Exception:
+                pass
+        time.sleep(.7)
+        active = _profile_process_ids(browser, str(profile.resolve()))
+    if active:
+        raise RuntimeError(
+            "AbyssBeacon's isolated SeaArt browser profile is still busy. "
+            "Close the SeaArt window (if visible) and try Connect SeaArt again."
+        )
+
+    for lock_name in ("parent.lock", ".parentlock", "lock", "SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            lock_path = profile / lock_name
+            if lock_path.exists() or lock_path.is_symlink():
+                lock_path.unlink()
+        except OSError:
+            pass
+
     url = "https://www.seaart.ai/?openLoginDialog=1"
     if browser == "firefox":
         # -no-remote + -profile gives AbyssBeacon a completely isolated Firefox session.
@@ -724,6 +757,14 @@ class SeaArtLiveSession:
 
     def __exit__(self, exc_type, exc, tb):
         try:
+            # SeaArt persists Models-page filter state in the authenticated
+            # browser profile. Clear that UI state before closing so the next
+            # architecture starts from a neutral catalog instead of inheriting
+            # the previous Base Model chip.
+            try:
+                self._reset_catalog_filter_state()
+            except Exception:
+                pass
             self.close()
         finally:
             _LIVE_LOCK.release()
@@ -1135,13 +1176,11 @@ class SeaArtLiveSession:
             return {}
 
     def _try_sort(self, sort):
-        """Switch SeaArt's Models-page sort control through its exposed menu.
+        """Switch SeaArt's Models-page sort through the visible sort menu.
 
-        Current SeaArt builds expose the *closed* sort trigger as an
-        ``aria-haspopup="menu"`` control whose visible text is the current sort
-        (for example ``Recommended``).  Prefer that stable semantic control over
-        trying to guess which icon button opens the menu.  The wider toolbar
-        probing remains as a fallback for older layouts.
+        Current SeaArt builds expose a semantic ``aria-haspopup="menu"`` trigger
+        whose text is the active sort (for example ``Hot``).  Select the requested
+        entry and verify that the trigger itself changed before continuing.
         """
         if self.driver is None:
             return False
@@ -1155,233 +1194,175 @@ class SeaArtLiveSession:
         }.get(requested, "New")
 
         try:
-            from selenium.webdriver.common.by import By
             from selenium.webdriver.common.action_chains import ActionChains
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
         except Exception:
-            By = None
-            ActionChains = None
+            return False
 
-        def _text(el):
+        def clean_text(el):
             try:
                 return " ".join(str(el.text or "").split())
             except Exception:
                 return ""
 
-        def _native_click(el):
-            """Use a real WebDriver click first; JS click is only a fallback."""
-            try:
-                el.click()
-                return True
-            except Exception:
-                pass
-            if ActionChains is not None:
-                try:
-                    ActionChains(self.driver).move_to_element(el).click().perform()
-                    return True
-                except Exception:
-                    pass
-            try:
-                self.driver.execute_script(r"""
-                    const el = arguments[0];
-                    el.scrollIntoView({block:'center', inline:'center'});
-                    const opts = {bubbles:true, cancelable:true, view:window};
-                    el.dispatchEvent(new MouseEvent('mousedown', opts));
-                    el.dispatchEvent(new MouseEvent('mouseup', opts));
-                    el.dispatchEvent(new MouseEvent('click', opts));
-                """, el)
-                return True
-            except Exception:
+        def native_click(el):
+            if el is None:
                 return False
-
-        def _menu_target(label):
-            """Find the requested entry inside an actual open menu/listbox."""
-            if By is None:
-                return None
-            xpaths = [
-                f"//*[@role='menu']//*[@role='menuitem' and normalize-space(.)={json.dumps(label)}]",
-                f"//*[@role='menu']//*[normalize-space(.)={json.dumps(label)}]",
-                f"//*[@role='listbox']//*[@role='option' and normalize-space(.)={json.dumps(label)}]",
-                f"//*[@role='listbox']//*[normalize-space(.)={json.dumps(label)}]",
-                f"//*[@role='menuitem' and normalize-space(.)={json.dumps(label)}]",
-                f"//*[@role='option' and normalize-space(.)={json.dumps(label)}]",
-            ]
-            for xpath in xpaths:
-                try:
-                    for el in self.driver.find_elements(By.XPATH, xpath):
-                        if el.is_displayed():
-                            return el
-                except Exception:
-                    continue
-            return None
-
-        # Preferred path: SeaArt currently exposes the closed trigger as, e.g.,
-        # ``Recommended`` + aria-haspopup="menu".  The diagnostic from the live
-        # site reports this as ``Recommended|menu``.
-        if By is not None:
-            triggers = []
             try:
-                triggers.extend(self.driver.find_elements(By.CSS_SELECTOR, '[aria-haspopup="menu"]'))
-            except Exception:
-                pass
-            try:
-                triggers.extend(self.driver.find_elements(By.CSS_SELECTOR, '[role="button"][aria-haspopup]'))
-            except Exception:
-                pass
-
-            seen_ids = set()
-            for trigger in triggers:
-                try:
-                    if not trigger.is_displayed():
-                        continue
-                    key = getattr(trigger, "id", None) or id(trigger)
-                    if key in seen_ids:
-                        continue
-                    seen_ids.add(key)
-                    current = _text(trigger)
-                    if current not in {"Recommended", "Hot", "New", "Newest"}:
-                        continue
-                    if current in {wanted, "Newest" if wanted == "New" else wanted}:
-                        return True
-                    if not _native_click(trigger):
-                        continue
-                    deadline = time.time() + 2.5
-                    while time.time() < deadline:
-                        target = _menu_target(wanted)
-                        if target is not None:
-                            clickable = target
-                            try:
-                                # Prefer the menu item/option ancestor when the
-                                # text itself is a nested span.
-                                clickable = target.find_element(By.XPATH, "ancestor-or-self::*[@role='menuitem' or @role='option'][1]")
-                            except Exception:
-                                pass
-                            if _native_click(clickable):
-                                time.sleep(1.4)
-                                return True
-                        time.sleep(.1)
-                except Exception:
-                    continue
-            # Do not stop here; older layouts may have no semantic trigger.
-
-        # Fallback: when the popup is already open, require the distinctive trio
-        # before selecting anything. This prevents a model-card Hot badge from
-        # being treated as the Hot sort option.
-        menu_script = r"""
-            const wanted = arguments[0];
-            const visible = el => {
-                if (!el) return false;
-                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-            };
-            const exact = label => [...document.querySelectorAll('body *')]
-                .filter(el => visible(el) && (el.textContent || '').trim() === label);
-            const rec = exact('Recommended'), hot = exact('Hot'), fresh = exact('New');
-            if (!rec.length || !hot.length || !fresh.length) return false;
-            for (const r of rec) {
-                const rr = r.getBoundingClientRect();
-                const near = el => {
-                    const x = el.getBoundingClientRect();
-                    return Math.abs(x.left - rr.left) < 260 && Math.abs(x.top - rr.top) < 260;
-                };
-                const h = hot.find(near), n = fresh.find(near);
-                if (!h || !n) continue;
-                const pool = wanted === 'Recommended' ? rec : (wanted === 'Hot' ? hot : fresh);
-                const target = pool.find(near);
-                if (!target) continue;
-                const clickable = target.closest('[role="menuitem"],[role="option"],button,[role="button"]') || target;
-                const opts = {bubbles:true, cancelable:true, view:window};
-                clickable.dispatchEvent(new MouseEvent('mousedown', opts));
-                clickable.dispatchEvent(new MouseEvent('mouseup', opts));
-                clickable.dispatchEvent(new MouseEvent('click', opts));
-                return true;
-            }
-            return false;
-        """
-        try:
-            if bool(self.driver.execute_script(menu_script, wanted)):
-                time.sleep(1.4)
+                ActionChains(self.driver).move_to_element(el).pause(.08).click().perform()
                 return True
-        except Exception:
-            pass
-
-        # Older-layout fallback: probe safe controls on the same toolbar row as
-        # Base Model and accept a candidate only if opening it reveals the real
-        # Recommended/Hot/New menu.
-        candidate_script = r"""
-            const visible = el => {
-                if (!el) return false;
-                const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-            };
-            const all = [...document.querySelectorAll('body *')];
-            const baseText = all.find(el => visible(el) && (el.textContent || '').trim() === 'Base Model');
-            if (!baseText) return [];
-            const baseControl = baseText.closest('button,[role="button"],[aria-haspopup],[data-state]') || baseText;
-            const br = baseControl.getBoundingClientRect();
-            const by = br.top + br.height / 2;
-            const raw = all.filter(el => {
-                if (!visible(el) || el === baseControl || el.contains(baseControl) || baseControl.contains(el)) return false;
-                if (el.closest('a[href]')) return false;
-                const r = el.getBoundingClientRect(), cy = r.top + r.height / 2;
-                if (Math.abs(cy - by) > 48) return false;
-                const role = el.getAttribute('role') || '';
-                const interactive = el.tagName === 'BUTTON' || role === 'button' ||
-                    el.hasAttribute('aria-haspopup') || el.hasAttribute('data-state') ||
-                    (el.querySelector('svg') && getComputedStyle(el).cursor === 'pointer');
-                if (!interactive) return false;
-                const text = (el.innerText || '').trim();
-                if (/^(Create|Upload Model|Base Model)$/i.test(text)) return false;
-                return true;
-            });
-            const unique = raw.filter(el => !raw.some(other => other !== el && other.contains(el)));
-            return unique.map(el => {
-                const r = el.getBoundingClientRect();
-                const text = (el.innerText || '').trim();
-                const semanticSort = /^(Recommended|Hot|New|Newest)$/i.test(text) && el.hasAttribute('aria-haspopup');
-                const iconOnly = !text && !!el.querySelector('svg');
-                const popup = el.hasAttribute('aria-haspopup') || el.hasAttribute('data-state');
-                return {el, semanticSort, iconOnly, popup, x:r.left, area:r.width*r.height};
-            }).sort((a,b) =>
-                (Number(b.semanticSort)-Number(a.semanticSort)) ||
-                (Number(b.popup)-Number(a.popup)) ||
-                (Number(b.iconOnly)-Number(a.iconOnly)) ||
-                (b.x-a.x) ||
-                (a.area-b.area)
-            ).slice(0, 18).map(x => x.el);
-        """
-        try:
-            candidates = self.driver.execute_script(candidate_script) or []
-        except Exception:
-            candidates = []
-
-        for target in candidates:
-            try:
-                current = _text(target)
-                if current in {wanted, "Newest" if wanted == "New" else wanted}:
-                    return True
-                if not _native_click(target):
-                    continue
-                deadline = time.time() + 1.8
-                while time.time() < deadline:
-                    menu_target = _menu_target(wanted)
-                    if menu_target is not None and _native_click(menu_target):
-                        time.sleep(1.4)
-                        return True
-                    try:
-                        if bool(self.driver.execute_script(menu_script, wanted)):
-                            time.sleep(1.4)
-                            return True
-                    except Exception:
-                        pass
-                    time.sleep(.1)
+            except Exception:
                 try:
-                    from selenium.webdriver.common.keys import Keys
-                    self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                    time.sleep(.12)
+                    el.click()
+                    return True
+                except Exception:
+                    try:
+                        return bool(self.driver.execute_script(
+                            r"""
+                            const el=arguments[0];
+                            if(!el) return false;
+                            el.scrollIntoView({block:'center',inline:'center'});
+                            const o={bubbles:true,cancelable:true,view:window};
+                            el.dispatchEvent(new MouseEvent('mousedown',o));
+                            el.dispatchEvent(new MouseEvent('mouseup',o));
+                            el.dispatchEvent(new MouseEvent('click',o));
+                            return true;
+                            """,
+                            el,
+                        ))
+                    except Exception:
+                        return False
+
+        def visible_sort_triggers():
+            result = []
+            seen = set()
+            selectors = [
+                '[aria-haspopup="menu"]',
+                '[role="button"][aria-haspopup]',
+                'button[aria-haspopup]',
+            ]
+            for selector in selectors:
+                try:
+                    candidates = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                except Exception:
+                    candidates = []
+                for el in candidates:
+                    try:
+                        if not el.is_displayed():
+                            continue
+                        text = clean_text(el)
+                        if text not in {"Recommended", "Hot", "New", "Newest"}:
+                            continue
+                        key = getattr(el, "id", None) or id(el)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        result.append(el)
+                    except Exception:
+                        continue
+            return result
+
+        def trigger_is_wanted():
+            acceptable = {wanted}
+            if wanted == "New":
+                acceptable.add("Newest")
+            return any(clean_text(el) in acceptable for el in visible_sort_triggers())
+
+        if trigger_is_wanted():
+            return True
+
+        # The current SeaArt toolbar reports this control as e.g. ``Hot|menu``.
+        # Open it, then choose a newly-visible/menu-like exact label.
+        for trigger in visible_sort_triggers():
+            if not native_click(trigger):
+                continue
+
+            deadline = time.monotonic() + 3.0
+            target = None
+            while time.monotonic() < deadline and target is None:
+                try:
+                    matches = self.driver.find_elements(
+                        By.XPATH, f"//*[normalize-space()={json.dumps(wanted)}]"
+                    )
+                except Exception:
+                    matches = []
+
+                scored = []
+                try:
+                    tr = trigger.rect
+                    tx = float(tr.get("x") or 0)
+                    ty = float(tr.get("y") or 0)
+                except Exception:
+                    tx = ty = 0.0
+
+                for el in matches:
+                    try:
+                        if not el.is_displayed():
+                            continue
+                        if el.find_elements(By.XPATH, "ancestor::a[contains(@href,'/models/detail/')]"):
+                            continue
+                        score = int(self.driver.execute_script(
+                            r"""
+                            const el=arguments[0];
+                            let p=el, depth=0, score=0;
+                            while(p && depth<8){
+                                const role=(p.getAttribute && p.getAttribute('role')) || '';
+                                const cls=(p.className && String(p.className)) || '';
+                                const s=getComputedStyle(p);
+                                if(role==='menuitem' || role==='option') score+=40;
+                                if(role==='menu' || role==='listbox' || role==='dialog') score+=30;
+                                if(/menu|popover|dropdown|select/i.test(cls)) score+=15;
+                                if(s.position==='fixed' || s.position==='absolute') score+=8;
+                                p=p.parentElement; depth++;
+                            }
+                            return score;
+                            """,
+                            el,
+                        ) or 0)
+                        try:
+                            er = el.rect
+                            ex = float(er.get("x") or 0)
+                            ey = float(er.get("y") or 0)
+                            if abs(ex - tx) < 420 and abs(ey - ty) < 520:
+                                score += 10
+                        except Exception:
+                            pass
+                        scored.append((score, el))
+                    except Exception:
+                        continue
+
+                if scored:
+                    scored.sort(key=lambda pair: pair[0], reverse=True)
+                    if scored[0][0] > 0:
+                        target = scored[0][1]
+                        break
+                time.sleep(.1)
+
+            if target is not None:
+                clickable = target
+                try:
+                    clickable = target.find_element(
+                        By.XPATH,
+                        "ancestor-or-self::*[@role='menuitem' or @role='option' "
+                        "or self::button or @role='button'][1]",
+                    )
                 except Exception:
                     pass
+                if native_click(clickable):
+                    verify_deadline = time.monotonic() + 4.0
+                    while time.monotonic() < verify_deadline:
+                        if trigger_is_wanted():
+                            time.sleep(.45)
+                            return True
+                        time.sleep(.1)
+
+            try:
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
             except Exception:
-                continue
+                pass
+            time.sleep(.15)
+
         return False
 
     def _sort_control_debug(self):
@@ -1435,28 +1416,266 @@ class SeaArtLiveSession:
         # Backward-compatible helper used by explicit keyword search.
         return self._try_sort("newest")
 
-    def _try_base_model(self, base_model, sort="newest"):
-        """Apply SeaArt's Models-page sort and Base Model in one open popover.
+    def _reset_catalog_filter_state(self):
+        """Clear SeaArt Models-page Base Model state without knowing its value.
 
-        SeaArt signs the underlying catalog request inside its frontend, so the
-        persistent browser path must let the site perform this interaction rather
-        than replaying or inventing X-Sign values. SeaArt does not reliably retain
-        a selection when this popover is closed and reopened, so both controls must
-        be selected before the menu is dismissed.
+        This deliberately does not special-case Krea, MiniMax, or any other
+        architecture. SeaArt currently represents selected Base Models as chips
+        inside the Base Model selector. Remove every visible selected chip and
+        leave the authenticated profile otherwise untouched.
         """
         if self.driver is None:
             return False
+
         try:
-            from selenium.webdriver.common.action_chains import ActionChains
             from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.action_chains import ActionChains
+            from selenium.webdriver.common.keys import Keys
         except Exception:
             return False
 
-        value = str(base_model or "").strip()
+        try:
+            self.driver.get("https://www.seaart.ai/model")
+            time.sleep(1.35)
+        except Exception:
+            return False
+
+        def visible_exact(label):
+            try:
+                return [
+                    el for el in self.driver.find_elements(
+                        By.XPATH, f"//*[normalize-space()={json.dumps(label)}]"
+                    )
+                    if el.is_displayed()
+                ]
+            except Exception:
+                return []
+
+        def click(el):
+            if el is None:
+                return False
+            try:
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center',inline:'center'});",
+                    el,
+                )
+            except Exception:
+                pass
+            try:
+                ActionChains(self.driver).move_to_element(el).pause(.05).click().perform()
+                return True
+            except Exception:
+                try:
+                    el.click()
+                    return True
+                except Exception:
+                    try:
+                        return bool(self.driver.execute_script(
+                            r"""
+                            const el=arguments[0];
+                            if(!el) return false;
+                            const r=el.getBoundingClientRect();
+                            const x=r.left+r.width/2, y=r.top+r.height/2;
+                            const hit=document.elementFromPoint(x,y)||el;
+                            const o={
+                                bubbles:true,cancelable:true,view:window,
+                                clientX:x,clientY:y,button:0
+                            };
+                            for(const t of ['pointerdown','mousedown','pointerup','mouseup','click']){
+                                const C=t.startsWith('pointer') && window.PointerEvent
+                                    ? PointerEvent : MouseEvent;
+                                hit.dispatchEvent(new C(t,o));
+                            }
+                            return true;
+                            """,
+                            el,
+                        ))
+                    except Exception:
+                        return False
+
+        # Open Filter if needed.
+        body_text = ""
+        try:
+            body_text = str(
+                self.driver.execute_script(
+                    "return document.body ? document.body.innerText : '';"
+                ) or ""
+            )
+        except Exception:
+            pass
+
+        if "Base Model" not in body_text:
+            filters = visible_exact("Filter")
+            filters.sort(
+                key=lambda el: float((el.rect or {}).get("x") or 0),
+                reverse=True,
+            )
+            for candidate in filters:
+                if click(candidate):
+                    time.sleep(.3)
+                    break
+
+        # Find the Base Model heading and the selector immediately below it.
+        try:
+            control = self.driver.execute_script(
+                r"""
+                const visible=el=>{
+                    if(!el) return false;
+                    const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                    return r.width>0 && r.height>0
+                        && s.display!=='none' && s.visibility!=='hidden';
+                };
+                const labels=[...document.querySelectorAll('*')].filter(el=>
+                    visible(el) &&
+                    ((el.innerText||el.textContent||'').trim()==='Base Model')
+                );
+                if(!labels.length) return null;
+
+                const label=labels[0], lr=label.getBoundingClientRect();
+                let best=null, bestScore=-1;
+
+                for(const el of document.querySelectorAll(
+                    'input,[role="combobox"],[aria-haspopup="listbox"],div'
+                )){
+                    if(!visible(el)) continue;
+                    const r=el.getBoundingClientRect();
+                    if(r.top < lr.bottom-8 || r.top > lr.bottom+180) continue;
+                    if(r.width < 250 || r.height < 28 || r.height > 110) continue;
+
+                    let score=0;
+                    if(el.tagName==='INPUT') score+=30;
+                    if(el.getAttribute('role')==='combobox') score+=25;
+                    if(el.getAttribute('aria-haspopup')==='listbox') score+=25;
+                    if(r.width>500) score+=20;
+                    if(score>bestScore){best=el;bestScore=score;}
+                }
+
+                if(!best) return null;
+
+                // Climb to the visible selector box containing chips + arrow.
+                let box=best, p=best.parentElement, depth=0;
+                while(p && depth<6){
+                    const r=p.getBoundingClientRect();
+                    if(
+                        visible(p) &&
+                        r.width>=300 &&
+                        r.height>=38 &&
+                        r.height<=130
+                    ){
+                        box=p;
+                    }
+                    p=p.parentElement; depth++;
+                }
+                return box;
+                """
+            )
+        except Exception:
+            control = None
+
+        if control is None:
+            return False
+
+        # Remove every selected chip. This is intentionally label-agnostic.
+        removed_any = False
+        for _ in range(12):
+            try:
+                remover = self.driver.execute_script(
+                    r"""
+                    const root=arguments[0];
+                    if(!root) return null;
+                    const rr=root.getBoundingClientRect();
+                    const visible=el=>{
+                        if(!el) return false;
+                        const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                        return r.width>0 && r.height>0
+                            && s.display!=='none' && s.visibility!=='hidden';
+                    };
+
+                    const candidates=[];
+                    for(const el of root.querySelectorAll(
+                        'button,[role="button"],[aria-label],[title],svg,span'
+                    )){
+                        if(!visible(el)) continue;
+                        const r=el.getBoundingClientRect();
+                        if(r.width>44 || r.height>44) continue;
+
+                        // Never touch the dropdown arrow at the far right.
+                        const cx=r.left+r.width/2;
+                        if(cx >= rr.left + rr.width*0.80) continue;
+
+                        const label=(
+                            (el.getAttribute?.('aria-label')||'')+' '+
+                            (el.getAttribute?.('title')||'')+' '+
+                            (el.textContent||'')
+                        ).trim().toLowerCase();
+
+                        let score=0;
+                        if(/remove|clear|close|delete/.test(label)) score+=100;
+                        if(/[×✕✖]/.test(label)) score+=90;
+                        if(r.width<=28 && r.height<=28) score+=10;
+
+                        if(score>0) candidates.push([score,el]);
+                    }
+
+                    if(!candidates.length) return null;
+                    candidates.sort((a,b)=>b[0]-a[0]);
+                    const raw=candidates[0][1];
+                    return raw.closest?.('button,[role="button"]') || raw;
+                    """,
+                    control,
+                )
+            except Exception:
+                remover = None
+
+            if remover is None:
+                break
+            if not click(remover):
+                break
+
+            removed_any = True
+            time.sleep(.16)
+
+        # Close any open selector/panel without changing login/session data.
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(.08)
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except Exception:
+            pass
+
+        return True
+
+    def _try_base_model(self, base_model, sort="newest"):
+        """Apply SeaArt's current Models Filter panel.
+
+        Current SeaArt layout:
+            Filter
+              -> Sort By: Recommended / Hot / New / Follow
+              -> Model Type
+              -> Category
+              -> Base Model: searchable dropdown
+
+        The Base Model control is no longer a permanently-visible list, so the
+        automation must open the dropdown before looking for Krea/MiniMax.
+        """
+        if self.driver is None:
+            return False
+
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
+        except Exception:
+            return False
+
+        requested = str(base_model or "").strip()
         aliases = {
             "krea image": ["Krea 2", "Krea Image"],
-            "minimax h3 open": ["MiniMax H3", "Minimax H3 Open", "Minimax H3"],
-        }.get(value.casefold(), [value])
+            "krea 2": ["Krea 2", "Krea Image"],
+            "minimax h3 open": ["Minimax H3 Open", "MiniMax H3", "Minimax H3"],
+            "minimax h3": ["Minimax H3 Open", "MiniMax H3", "Minimax H3"],
+        }.get(requested.casefold(), [requested])
+
         sort_label = {
             "newest": "New",
             "new": "New",
@@ -1464,109 +1683,559 @@ class SeaArtLiveSession:
             "recommended": "Recommended",
         }.get(str(sort or "newest").strip().casefold(), "New")
 
-        def native_click(element):
+        self._last_filter_debug = ""
+
+        def clean_text(el):
+            try:
+                return " ".join(str(el.text or "").split())
+            except Exception:
+                return ""
+
+        def native_click(el):
+            if el is None:
+                return False
             try:
                 self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center',inline:'center'});", element
+                    "arguments[0].scrollIntoView({block:'center',inline:'center'});",
+                    el,
                 )
-                ActionChains(self.driver).move_to_element(element).pause(.12).click().perform()
+            except Exception:
+                pass
+            try:
+                ActionChains(self.driver).move_to_element(el).pause(.08).click().perform()
                 return True
             except Exception:
                 try:
-                    element.click()
+                    el.click()
                     return True
                 except Exception:
-                    return False
+                    try:
+                        return bool(self.driver.execute_script(
+                            r"""
+                            const el=arguments[0];
+                            if(!el) return false;
+                            const o={bubbles:true,cancelable:true,view:window};
+                            el.dispatchEvent(new MouseEvent('mousedown',o));
+                            el.dispatchEvent(new MouseEvent('mouseup',o));
+                            el.dispatchEvent(new MouseEvent('click',o));
+                            return true;
+                            """,
+                            el,
+                        ))
+                    except Exception:
+                        return False
 
-        before_ids = tuple(self._catalog_grid_model_ids())
-
-        # "Base Model" in the horizontal navigation is a category tab, not the
-        # filter menu.  Open the right-side Filter control and constrain all
-        # option lookup to its visible popover.
-        try:
-            controls = self.driver.find_elements(
-                By.CSS_SELECTOR,
-                ".right-filter-box .filter-box, .select-filter-box .filter-box",
-            )
-            control = next((el for el in controls if el.is_displayed()), None)
-            if control is None or not native_click(control):
-                return False
-        except Exception:
-            return False
-
-        def visible_popover():
+        def exact_visible(label, root=None):
             try:
-                return next(
-                    (el for el in self.driver.find_elements(By.CSS_SELECTOR, ".hy-filter-popover")
-                     if el.is_displayed()),
-                    None,
+                scope = root if root is not None else self.driver
+                return [
+                    el for el in scope.find_elements(
+                        By.XPATH, f".//*[normalize-space()={json.dumps(label)}]"
+                        if root is not None
+                        else f"//*[normalize-space()={json.dumps(label)}]"
+                    )
+                    if el.is_displayed()
+                ]
+            except Exception:
+                return []
+
+        def clickable_for(el):
+            if el is None:
+                return None
+            try:
+                return el.find_element(
+                    By.XPATH,
+                    "ancestor-or-self::*[self::button or @role='button' "
+                    "or @role='option' or @role='menuitem' or @aria-haspopup "
+                    "or @data-state][1]",
+                )
+            except Exception:
+                return el
+
+        def filter_panel():
+            # Pick the smallest visible ancestor around "Sort By" that also
+            # contains the other section labels visible in SeaArt's new panel.
+            try:
+                return self.driver.execute_script(
+                    r"""
+                    const visible = el => {
+                        if(!el) return false;
+                        const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                        return r.width>0 && r.height>0
+                            && s.display!=='none' && s.visibility!=='hidden';
+                    };
+                    const exact = (el,t) =>
+                        visible(el) && ((el.innerText||el.textContent||'').trim()===t);
+                    const labels=[...document.querySelectorAll('*')]
+                        .filter(el=>exact(el,'Sort By'));
+                    let best=null, bestArea=Infinity;
+                    for(const label of labels){
+                        let p=label.parentElement, depth=0;
+                        while(p && depth<12){
+                            if(visible(p)){
+                                const txt=(p.innerText||'');
+                                if(
+                                    txt.includes('Sort By')
+                                    && txt.includes('Model Type')
+                                    && txt.includes('Category')
+                                    && txt.includes('Base Model')
+                                ){
+                                    const r=p.getBoundingClientRect();
+                                    const area=r.width*r.height;
+                                    if(r.width>280 && r.height>300 && area<bestArea){
+                                        best=p; bestArea=area;
+                                    }
+                                }
+                            }
+                            p=p.parentElement; depth++;
+                        }
+                    }
+                    return best;
+                    """
                 )
             except Exception:
                 return None
 
-        popover = None
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and popover is None:
-            popover = visible_popover()
-            if popover is None:
-                time.sleep(.1)
-        if popover is None:
-            return False
+        def open_filter_panel():
+            panel = filter_panel()
+            if panel is not None:
+                return panel
 
-        def activate_exact(labels):
+            labels = exact_visible("Filter")
+            # Prefer the right-most visible Filter control (the toolbar button).
+            labels.sort(
+                key=lambda el: float((el.rect or {}).get("x") or 0),
+                reverse=True,
+            )
             for label in labels:
-                if not label:
+                control = clickable_for(label)
+                if not native_click(control):
                     continue
-                current_popover = visible_popover()
-                if current_popover is None:
-                    return False
+                deadline = time.monotonic() + 3.5
+                while time.monotonic() < deadline:
+                    panel = filter_panel()
+                    if panel is not None:
+                        return panel
+                    time.sleep(.1)
+            return None
+
+        def choose_sort(panel):
+            options = exact_visible(sort_label, panel)
+            if not options:
+                return False
+
+            # "New" may appear in other explanatory text; prefer a compact,
+            # button-like control near the top of the panel.
+            ranked = []
+            for option in options:
                 try:
-                    options = current_popover.find_elements(
-                        By.XPATH, f".//*[normalize-space()={json.dumps(label)}]"
-                    )
-                    option = next((el for el in options if el.is_displayed()), None)
-                    if option is None:
-                        continue
-                    option_class = str(option.get_attribute("class") or "")
-                    if "act-item" not in option_class.split() and not native_click(option):
-                        continue
-                    time.sleep(.25)
-                    return True
+                    click = clickable_for(option)
+                    r = click.rect or option.rect
+                    y = float(r.get("y") or 9999)
+                    w = float(r.get("width") or 9999)
+                    score = 0
+                    if y < 300:
+                        score += 20
+                    if 50 <= w <= 260:
+                        score += 10
+                    try:
+                        tag = str(click.tag_name or "").lower()
+                        role = str(click.get_attribute("role") or "").lower()
+                        if tag == "button" or role == "button":
+                            score += 20
+                    except Exception:
+                        pass
+                    ranked.append((score, click))
                 except Exception:
                     continue
-            return False
 
-        # Keep the popover open while setting both values. Selecting New in one
-        # menu visit and Krea 2 in a later visit can silently restore Recommended.
-        if not activate_exact([sort_label]):
-            return False
+            ranked.sort(key=lambda pair: pair[0], reverse=True)
+            if not ranked:
+                return False
+            return native_click(ranked[0][1])
 
-        selected = False
-        selected = activate_exact(aliases)
-        if not selected:
-            return False
+        def base_model_control(panel):
+            labels = exact_visible("Base Model", panel)
+            if not labels:
+                return (None, None)
 
-        # The waterfall is replaced column-by-column.  Its first changed set can
-        # still contain cards from the previous architecture, so do not accept a
-        # transition frame.  Require the complete ID set to remain unchanged for
-        # four consecutive observations before catalog collection begins.
-        deadline = time.monotonic() + 7.0
-        last_ids = ()
-        stable_observations = 0
-        while time.monotonic() < deadline:
-            current_ids = tuple(self._catalog_grid_model_ids())
-            if current_ids and current_ids != before_ids:
-                if current_ids == last_ids:
-                    stable_observations += 1
-                else:
-                    last_ids = current_ids
-                    stable_observations = 1
-                if stable_observations >= 4:
+            label = labels[0]
+            try:
+                result = self.driver.execute_script(
+                    r"""
+                    const root=arguments[0], label=arguments[1];
+                    const vis=el=>{
+                        if(!el) return false;
+                        const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                        return r.width>0 && r.height>0
+                            && s.display!=='none' && s.visibility!=='hidden';
+                    };
+                    const lr=label.getBoundingClientRect();
+
+                    // Current SeaArt control contains a real text input (the
+                    // caret is visible in the user's screenshot), so prefer it.
+                    const inputs=[...root.querySelectorAll(
+                        'input,[role="combobox"],[aria-haspopup="listbox"]'
+                    )].filter(vis);
+
+                    let best=null, bestScore=-1;
+                    for(const el of inputs){
+                        const r=el.getBoundingClientRect();
+                        if(r.top < lr.bottom-8 || r.top > lr.bottom+190) continue;
+                        let score=0;
+                        if(el.tagName==='INPUT') score+=40;
+                        if(el.getAttribute('role')==='combobox') score+=30;
+                        if(el.getAttribute('aria-haspopup')==='listbox') score+=20;
+                        if(r.width>180) score+=10;
+                        if(score>bestScore){best=el;bestScore=score;}
+                    }
+
+                    if(best){
+                        let box=best;
+                        let p=best.parentElement, depth=0;
+                        while(p && p!==root && depth<6){
+                            const r=p.getBoundingClientRect();
+                            if(vis(p) && r.width>300 && r.height>=38 && r.height<130){
+                                box=p;
+                            }
+                            p=p.parentElement; depth++;
+                        }
+                        return [box,best];
+                    }
+
+                    // Fallback: click the control visually directly below the
+                    // Base Model heading if SeaArt removes input semantics.
+                    const rr=root.getBoundingClientRect();
+                    const x=Math.min(rr.right-40, Math.max(rr.left+100, lr.left+220));
+                    const y=Math.min(rr.bottom-25, lr.bottom+45);
+                    let el=document.elementFromPoint(x,y);
+                    if(!el) return [null,null];
+                    let box=el, p=el.parentElement, depth=0;
+                    while(p && p!==root && depth<6){
+                        const r=p.getBoundingClientRect();
+                        if(vis(p) && r.width>300 && r.height>=38 && r.height<130) box=p;
+                        p=p.parentElement; depth++;
+                    }
+                    const input=box.querySelector('input');
+                    return [box,input];
+                    """,
+                    panel,
+                    label,
+                )
+                if isinstance(result, (list, tuple)) and len(result) >= 2:
+                    return result[0], result[1]
+            except Exception:
+                pass
+            return (None, None)
+
+        def option_target(alias):
+            try:
+                matches = self.driver.find_elements(
+                    By.XPATH, f"//*[normalize-space()={json.dumps(alias)}]"
+                )
+            except Exception:
+                matches = []
+
+            ranked = []
+            for el in matches:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    if el.find_elements(
+                        By.XPATH, "ancestor::a[contains(@href,'/models/detail/')]"
+                    ):
+                        continue
+
+                    score = int(self.driver.execute_script(
+                        r"""
+                        const el=arguments[0];
+                        let p=el,depth=0,score=0;
+                        while(p && depth<9){
+                            const role=(p.getAttribute && p.getAttribute('role')) || '';
+                            const cls=(p.className && String(p.className)) || '';
+                            const s=getComputedStyle(p);
+                            const r=p.getBoundingClientRect();
+                            if(role==='option' || role==='menuitem') score+=45;
+                            if(role==='listbox' || role==='menu') score+=35;
+                            if(/select|dropdown|popover|option|menu/i.test(cls)) score+=18;
+                            if(p.scrollHeight>p.clientHeight+20) score+=12;
+                            if(s.position==='absolute' || s.position==='fixed') score+=8;
+                            if(r.width>300) score+=4;
+                            p=p.parentElement; depth++;
+                        }
+                        return score;
+                        """,
+                        el,
+                    ) or 0)
+                    ranked.append((score, el))
+                except Exception:
+                    continue
+
+            ranked.sort(key=lambda pair: pair[0], reverse=True)
+            if ranked and ranked[0][0] > 0:
+                return ranked[0][1]
+            return None
+
+        def control_has_alias(control):
+            if control is None:
+                return False
+            try:
+                text = clean_text(control).casefold()
+                if any(alias.casefold() in text for alias in aliases):
                     return True
-            else:
-                stable_observations = 0
-            time.sleep(.3)
-        return bool(last_ids or self._catalog_grid_model_ids())
+            except Exception:
+                pass
+
+            # React may replace the selector after choosing an option.
+            try:
+                current_panel = filter_panel()
+                if current_panel is not None:
+                    current_control, _ = base_model_control(current_panel)
+                    current_text = clean_text(current_control).casefold()
+                    return any(alias.casefold() in current_text for alias in aliases)
+            except Exception:
+                pass
+            return False
+
+        def clear_selected_chips(control):
+            """Remove all selected Base Model chips, regardless of architecture."""
+            changed = False
+            for _ in range(12):
+                try:
+                    remover = self.driver.execute_script(
+                        r"""
+                        const root=arguments[0];
+                        if(!root) return null;
+                        const rr=root.getBoundingClientRect();
+                        const visible=el=>{
+                            if(!el) return false;
+                            const r=el.getBoundingClientRect(), s=getComputedStyle(el);
+                            return r.width>0 && r.height>0
+                                && s.display!=='none' && s.visibility!=='hidden';
+                        };
+
+                        const candidates=[];
+                        for(const el of root.querySelectorAll(
+                            'button,[role="button"],[aria-label],[title],svg,span'
+                        )){
+                            if(!visible(el)) continue;
+                            const r=el.getBoundingClientRect();
+                            if(r.width>44 || r.height>44) continue;
+                            const cx=r.left+r.width/2;
+                            if(cx >= rr.left + rr.width*0.80) continue;
+
+                            const label=(
+                                (el.getAttribute?.('aria-label')||'')+' '+
+                                (el.getAttribute?.('title')||'')+' '+
+                                (el.textContent||'')
+                            ).trim().toLowerCase();
+
+                            let score=0;
+                            if(/remove|clear|close|delete/.test(label)) score+=100;
+                            if(/[×✕✖]/.test(label)) score+=90;
+                            if(r.width<=28 && r.height<=28) score+=10;
+                            if(score>0) candidates.push([score,el]);
+                        }
+
+                        if(!candidates.length) return null;
+                        candidates.sort((a,b)=>b[0]-a[0]);
+                        const raw=candidates[0][1];
+                        return raw.closest?.('button,[role="button"]') || raw;
+                        """,
+                        control,
+                    )
+                except Exception:
+                    remover = None
+
+                if remover is None:
+                    break
+                if not native_click(remover):
+                    break
+                changed = True
+                time.sleep(.14)
+
+                try:
+                    panel_now = filter_panel()
+                    fresh_control, _ = base_model_control(panel_now)
+                    if fresh_control is not None:
+                        control = fresh_control
+                except Exception:
+                    pass
+
+            return control, changed
+
+        def set_selector_search(input_el, value):
+            """Set SeaArt's token-selector input through DOM events.
+
+            Selenium currently sees this input as non-interactable on some SeaArt
+            builds, even though the visible selector accepts text. Updating the
+            underlying input with the native value setter + an input event reaches
+            framework-controlled selectors without architecture-specific logic.
+            """
+            if input_el is None:
+                return False
+            try:
+                return bool(self.driver.execute_script(
+                    r"""
+                    const input=arguments[0], value=String(arguments[1]||'');
+                    if(!input) return false;
+
+                    const old=String(input.value||'');
+                    const proto=Object.getPrototypeOf(input);
+                    const desc=
+                        Object.getOwnPropertyDescriptor(proto,'value') ||
+                        Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement?.prototype || {}, 'value'
+                        );
+                    if(desc && desc.set) desc.set.call(input,value);
+                    else input.value=value;
+
+                    // React commonly uses _valueTracker to suppress synthetic
+                    // events when it believes the value is unchanged.
+                    try {
+                        if(input._valueTracker) input._valueTracker.setValue(old);
+                    } catch (_) {}
+
+                    input.dispatchEvent(new InputEvent('input',{
+                        bubbles:true,
+                        inputType:'insertText',
+                        data:value
+                    }));
+                    input.dispatchEvent(new Event('change',{bubbles:true}));
+                    try { input.focus({preventScroll:true}); } catch (_) {}
+                    return true;
+                    """,
+                    input_el,
+                    value,
+                ))
+            except Exception:
+                return False
+
+        def exact_option(alias):
+            # Prefer the existing semantic lookup.
+            target = option_target(alias)
+            if target is not None:
+                return target
+
+            # Fallback for SeaArt builds whose option rows expose no ARIA/class
+            # semantics: accept an exact visible label outside model-card links.
+            try:
+                candidates = self.driver.find_elements(
+                    By.XPATH, f"//*[normalize-space()={json.dumps(alias)}]"
+                )
+            except Exception:
+                candidates = []
+
+            for el in candidates:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    if el.find_elements(
+                        By.XPATH, "ancestor::a[contains(@href,'/models/detail/')]"
+                    ):
+                        continue
+                    return el
+                except Exception:
+                    continue
+            return None
+
+        panel = open_filter_panel()
+        if panel is None:
+            self._last_filter_debug = "Filter panel did not open"
+            return False
+
+        if not choose_sort(panel):
+            self._last_filter_debug = f"Filter panel opened but Sort By {sort_label!r} was not clickable"
+            return False
+        time.sleep(.25)
+
+        control, input_el = base_model_control(panel)
+        if control is None:
+            self._last_filter_debug = "Filter panel opened but Base Model dropdown was not found"
+            return False
+
+        # Every architecture selection starts neutral. This is deliberately
+        # generic: remove whichever Base Model chips SeaArt persisted, then ask
+        # the selector for the architecture AbyssBeacon requested.
+        if not control_has_alias(control):
+            control, _ = clear_selected_chips(control)
+
+            # React can rebuild the selector when a chip is removed.
+            try:
+                panel = filter_panel() or panel
+                fresh_control, fresh_input = base_model_control(panel)
+                if fresh_control is not None:
+                    control = fresh_control
+                    input_el = fresh_input
+            except Exception:
+                pass
+
+            native_click(control)
+            time.sleep(.2)
+
+            selected = False
+            debug_steps = []
+
+            for alias in aliases:
+                # Use SeaArt's own selector search mechanism through DOM events.
+                if input_el is not None:
+                    set_selector_search(input_el, "")
+                    time.sleep(.08)
+                    set_selector_search(input_el, alias)
+                    time.sleep(.45)
+
+                target = None
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    target = exact_option(alias)
+                    if target is not None:
+                        break
+                    time.sleep(.1)
+
+                if target is None:
+                    debug_steps.append(f"{alias}:option-not-rendered")
+                    continue
+
+                if native_click(clickable_for(target)):
+                    time.sleep(.4)
+
+                    try:
+                        current_panel = filter_panel() or panel
+                        current_control, current_input = base_model_control(current_panel)
+                        if current_control is not None:
+                            control = current_control
+                            input_el = current_input
+                    except Exception:
+                        pass
+
+                    if control_has_alias(control):
+                        selected = True
+                        break
+                    debug_steps.append(f"{alias}:clicked-not-selected")
+                else:
+                    debug_steps.append(f"{alias}:click-failed")
+
+            if not selected:
+                self._last_filter_debug = (
+                    "Base Model generic selection failed: "
+                    + "; ".join(debug_steps or ["no option diagnostics"])
+                )
+                return False
+
+        # Close the Filter panel so subsequent catalog scrolling operates on the
+        # model grid rather than the filter sheet/dropdown.
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(.25)
+            if filter_panel() is not None:
+                self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                time.sleep(.25)
+        except Exception:
+            pass
+
+        # Selection is the reliable success signal; the grid can legitimately
+        # contain the same first IDs after changing sort/filter.
+        return True
 
     @staticmethod
     def _bidi_headers_to_dict(headers):
@@ -1901,11 +2570,34 @@ class SeaArtLiveSession:
         except Exception:
             limit = 100
 
-        self.driver.get("https://www.seaart.ai/model")
-        time.sleep(2.0)
-        if not self._try_base_model(base_model, sort=sort):
+        # Treat every architecture scan as independent. A previous scan may have
+        # exited unexpectedly before __exit__ could clear SeaArt's persisted UI.
+        try:
+            self._reset_catalog_filter_state()
+        except Exception:
+            pass
+
+        filter_applied = False
+        for attempt in range(2):
+            self.driver.get("https://www.seaart.ai/model")
+            time.sleep(2.0 if attempt == 0 else 2.5)
+            if self._try_base_model(base_model, sort=sort):
+                filter_applied = True
+                break
+            if attempt == 0:
+                time.sleep(.5)
+
+        if not filter_applied:
+            debug = self._sort_control_debug()
+            filter_debug = str(getattr(self, "_last_filter_debug", "") or "").strip()
+            parts = []
+            if filter_debug:
+                parts.append(f"filter={filter_debug}")
+            if debug:
+                parts.append(f"toolbar={debug}")
+            detail = ("; " + "; ".join(parts)) if parts else ""
             raise RuntimeError(
-                f"SeaArt combined sort/base-model filter was not found for {sort!r} / {base_model!r}"
+                f"SeaArt sort/base-model filter was not found for {sort!r} / {base_model!r}{detail}"
             )
         time.sleep(1.0)
 

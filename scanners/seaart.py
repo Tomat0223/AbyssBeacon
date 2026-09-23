@@ -687,17 +687,23 @@ def _catalog_card_matches_base(card, seaart_base):
 
 
 
-def _fetch_empty_query_catalog(seaart_base, settings, requested_sort, live=None):
-    """Try SeaArt search with an empty keyword plus a structured base-model filter.
+def _fetch_empty_query_catalog(
+    seaart_base,
+    settings,
+    requested_sort,
+    live=None,
+    progress_callback=None,
+):
+    """Use SeaArt's structured search API with an empty keyword.
 
-    This is deliberately a probe/fallback-safe path.  The website normally insists
-    that users type a search term, but the underlying search API keeps the keyword
-    (``obj_name``) separate from ``base_models``.  If SeaArt accepts ``obj_name: \"\"``
-    we can use the search endpoint as a stable architecture catalog and avoid the
-    virtualized Models-page toolbar/scroll path for New/Hot scans.
+    This avoids depending on the Models-page sort/filter DOM for New/Hot scans.
+    SeaArt has used both ``Krea Image`` and ``Krea 2`` for the same architecture,
+    so try the current public label first while keeping the legacy alias as a
+    compatibility fallback.
 
-    Returns ``None`` when the request itself is unavailable/rejected, an empty list
-    when SeaArt successfully answers with zero cards, or a list of model cards.
+    Returns ``None`` when the endpoint itself is unavailable/rejected, an empty
+    list when it answers successfully but no supported alias yields cards, or a
+    list of model cards.
     """
     if requested_sort == "recommended":
         return None
@@ -705,66 +711,127 @@ def _fetch_empty_query_catalog(seaart_base, settings, requested_sort, live=None)
     settings = settings or {}
     max_results = max(1, int(settings.get("max_results") or 100))
     page_size = min(24, max_results)
-    collected = []
-    known = set()
-    page = 1
 
-    try:
-        while len(collected) < max_results and page <= 60 and not scan_control.should_stop():
-            requested = min(page_size, max_results - len(collected))
-            payload = {
-                "form_type": "sku",
-                "order_by": "hot" if requested_sort == "hot" else "new",
-                "base_models": [seaart_base],
-                "model_types": [],
-                "scene": "square",
-                "obj_name": "",
-                "obj_type": "2",
-                "page": page,
-                "page_size": requested,
-                "offset": 0 if page == 1 else "",
-                "ss": 51,
-            }
-            referer = BASE + "/search/model/model"
-            if live is not None:
-                response = live.post_json(SEARCH_API, payload, referer)
-            else:
-                response = _post(SEARCH_API, payload, referer)
+    base_value = str(seaart_base or "").strip()
+    variants = {
+        "krea image": ["Krea 2", "Krea Image"],
+        "krea 2": ["Krea 2", "Krea Image"],
+        "minimax h3 open": ["Minimax H3 Open", "MiniMax H3", "Minimax H3"],
+        "minimax h3": ["Minimax H3 Open", "MiniMax H3", "Minimax H3"],
+    }.get(base_value.casefold(), [base_value])
 
-            items = _search_items(response)
-            if not items:
-                break
+    # De-duplicate aliases without changing preference order.
+    deduped = []
+    seen_aliases = set()
+    for value in variants:
+        key = str(value or "").strip().casefold()
+        if not key or key in seen_aliases:
+            continue
+        seen_aliases.add(key)
+        deduped.append(str(value).strip())
+    variants = deduped or [base_value]
 
-            before = len(collected)
-            for item in items:
-                key = str(item.get("id") or item.get("model_id") or item.get("model_no") or "").strip()
-                if not key or key in known:
-                    continue
-                known.add(key)
-                collected.append(item)
-                if len(collected) >= max_results:
+    successful_request = False
+    last_error = None
+
+    for api_base in variants:
+        collected = []
+        known = set()
+        page = 1
+
+        try:
+            while (
+                len(collected) < max_results
+                and page <= 60
+                and not scan_control.should_stop()
+            ):
+                requested = min(page_size, max_results - len(collected))
+                payload = {
+                    "form_type": "sku",
+                    "order_by": "hot" if requested_sort == "hot" else "new",
+                    "base_models": [api_base],
+                    "model_types": [],
+                    "scene": "square",
+                    "obj_name": "",
+                    "obj_type": "2",
+                    "page": page,
+                    "page_size": requested,
+                    "offset": 0 if page == 1 else "",
+                    "ss": 51,
+                }
+                referer = BASE + "/search/model/model"
+
+                if live is not None:
+                    response = live.post_json(SEARCH_API, payload, referer)
+                else:
+                    response = _post(SEARCH_API, payload, referer)
+
+                successful_request = True
+                items = _search_items(response)
+                if not items:
                     break
 
-            if len(collected) == before or len(items) < requested:
-                break
-            page += 1
-    except Exception as exc:
-        # This line is intentionally always visible during the test.  Do not leak
-        # request headers/tokens; only report the exception class and short message.
-        message = " ".join(str(exc or "").split())[:180]
+                before = len(collected)
+                for item in items:
+                    key = str(
+                        item.get("id")
+                        or item.get("model_id")
+                        or item.get("model_no")
+                        or ""
+                    ).strip()
+                    if not key or key in known:
+                        continue
+
+                    # Keep the structured filter honest if SeaArt ever ignores
+                    # base_models on an empty keyword request.
+                    if not _catalog_card_matches_base(item, api_base):
+                        continue
+
+                    known.add(key)
+                    collected.append(item)
+                    if len(collected) >= max_results:
+                        break
+
+                if callable(progress_callback):
+                    try:
+                        progress_callback(min(len(collected), max_results), max_results)
+                    except Exception:
+                        pass
+
+                if len(collected) == before or len(items) < requested:
+                    break
+                page += 1
+
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        if collected:
+            label = "Hot" if requested_sort == "hot" else "New"
+            builtins.print(
+                f"SeaArt structured backend catalog: {api_base} / {label} -> "
+                f"{len(collected[:max_results])} candidate(s) (limit {max_results})"
+            )
+            return collected[:max_results]
+
+    if not successful_request and last_error is not None:
+        message = " ".join(str(last_error or "").split())[:180]
         builtins.print(
-            f"SeaArt empty-query backend search unavailable: {type(exc).__name__}"
+            f"SeaArt structured backend catalog unavailable: {type(last_error).__name__}"
             + (f" ({message})" if message else "")
-            + "; using Models catalog fallback"
+            + "; using Models-page fallback"
         )
         return None
 
+    # A successful zero-result response is not trusted for these watched
+    # architectures because SeaArt has renamed base-model labels over time.
+    # Let the UI path make one last compatibility attempt.
     label = "Hot" if requested_sort == "hot" else "New"
     builtins.print(
-        f"SeaArt empty-query backend search: {seaart_base} / {label} -> "
-        f"{len(collected[:max_results])} candidate(s) (limit {max_results})"
+        f"SeaArt structured backend catalog returned 0 candidates for "
+        f"{base_value} / {label}; using Models-page fallback"
     )
-    return collected[:max_results]
+    return []
 
 def _fetch_catalog(base_model, settings, live=None, progress_callback=None):
     """Read SeaArt's real Models catalog for one watched base model.
@@ -793,8 +860,10 @@ def _fetch_catalog(base_model, settings, live=None, progress_callback=None):
 
     seaart_base = base_models[0]
     if live is not None:
-        # Blank/wildcard keyword searches use SeaArt's text-search index and do
-        # not reproduce Models -> Base Model -> New. Use the real catalog path.
+        # SeaArt's empty-keyword structured endpoint currently rejects these
+        # catalog requests ("invalid request"). Use the authenticated Models UI,
+        # whose current Filter panel exposes Sort By plus a searchable Base
+        # Model dropdown.
         return live.catalog_models(
             seaart_base,
             max_results=max_results,
@@ -1175,42 +1244,56 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     # Browser-session discovery is preferred because SeaArt now signs its
         # listing/search requests inside the frontend. Manual cURL remains a fallback.
     progress_label = str(settings.get("_watch_architecture") or term or "SeaArt").strip()
-    if not external_search and search_mode == "base_model":
-        max_results = int(settings.get("max_results") or 100)
-        catalog_progress = {"current": 0, "total": max_results}
+    try:
+        if not external_search and search_mode == "base_model":
+            max_results = int(settings.get("max_results") or 100)
+            catalog_progress = {"current": 0, "total": max_results}
 
-        def _catalog_progress(current, total):
-            catalog_progress["current"] = max(0, int(current or 0))
-            catalog_progress["total"] = max(0, int(total or 0))
-            _report_scan_progress(
-                progress_label,
-                catalog_progress["current"],
-                catalog_progress["total"],
-                "Finding models",
-            )
+            def _catalog_progress(current, total):
+                catalog_progress["current"] = max(0, int(current or 0))
+                catalog_progress["total"] = max(0, int(total or 0))
+                _report_scan_progress(
+                    progress_label,
+                    catalog_progress["current"],
+                    catalog_progress["total"],
+                    "Finding models",
+                )
 
-        _report_scan_progress(progress_label, 0, max_results, "Finding models")
-        cards = _fetch_catalog(
-            term,
-            settings,
-            live=live,
-            progress_callback=_catalog_progress,
-        )
-        # Discovery and detail hydration have different totals. Finish the
-        # discovery line before starting the detail stage so a transition such
-        # as 200/200 -> 0/128 reads as a new stage rather than a shrinking scan.
-        if not scan_control.should_stop():
-            _report_scan_progress(
-                progress_label,
-                catalog_progress["current"],
-                catalog_progress["total"],
-                "Finding models",
-                finalize=True,
+            _report_scan_progress(progress_label, 0, max_results, "Finding models")
+            cards = _fetch_catalog(
+                term,
+                settings,
+                live=live,
+                progress_callback=_catalog_progress,
             )
-        discovery_kind = "Live browser structured search" if live else "Structured model search"
-    else:
-        cards = _fetch_search(term, settings, live=live)
-        discovery_kind = "Live browser keyword search" if live else "Keyword search"
+            # Discovery and detail hydration have different totals. Finish the
+            # discovery line before starting the detail stage so a transition such
+            # as 200/200 -> 0/128 reads as a new stage rather than a shrinking scan.
+            if not scan_control.should_stop():
+                _report_scan_progress(
+                    progress_label,
+                    catalog_progress["current"],
+                    catalog_progress["total"],
+                    "Finding models",
+                    finalize=True,
+                )
+            discovery_kind = "Live browser structured search" if live else "Structured model search"
+        else:
+            cards = _fetch_search(term, settings, live=live)
+            discovery_kind = "Live browser keyword search" if live else "Keyword search"
+    except Exception as exc:
+        # Always release Selenium + the isolated SeaArt profile when discovery
+        # fails.  Previously the normal __exit__ lived only at the bottom of
+        # scan(), so an exception here leaked the headless browser and could
+        # prevent Connect/Reconnect from opening a visible SeaArt window.
+        if live_ctx is not None:
+            try:
+                live_ctx.__exit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                pass
+            live_ctx = None
+            live = None
+        raise
     catalog_elapsed = time.perf_counter() - catalog_started
 
     # Anything mode means models + creators. SeaArt's direct keyword endpoint
