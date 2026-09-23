@@ -1186,12 +1186,14 @@ class SeaArtLiveSession:
             return False
 
         requested = str(sort or "newest").strip().lower()
-        wanted = {
-            "newest": "New",
-            "new": "New",
-            "hot": "Hot",
-            "recommended": "Recommended",
-        }.get(requested, "New")
+        wanted_labels = {
+            "newest": ["Latest", "New", "Newest"],
+            "new": ["Latest", "New", "Newest"],
+            "latest": ["Latest", "New", "Newest"],
+            "hot": ["Hot"],
+            "recommended": ["Recommended"],
+        }.get(requested, ["Latest", "New", "Newest"])
+        wanted = wanted_labels[0]
 
         try:
             from selenium.webdriver.common.action_chains import ActionChains
@@ -1252,7 +1254,7 @@ class SeaArtLiveSession:
                         if not el.is_displayed():
                             continue
                         text = clean_text(el)
-                        if text not in {"Recommended", "Hot", "New", "Newest"}:
+                        if text not in {"Recommended", "Hot", "Latest", "New", "Newest"}:
                             continue
                         key = getattr(el, "id", None) or id(el)
                         if key in seen:
@@ -1264,9 +1266,7 @@ class SeaArtLiveSession:
             return result
 
         def trigger_is_wanted():
-            acceptable = {wanted}
-            if wanted == "New":
-                acceptable.add("Newest")
+            acceptable = set(wanted_labels)
             return any(clean_text(el) in acceptable for el in visible_sort_triggers())
 
         if trigger_is_wanted():
@@ -1281,12 +1281,17 @@ class SeaArtLiveSession:
             deadline = time.monotonic() + 3.0
             target = None
             while time.monotonic() < deadline and target is None:
-                try:
-                    matches = self.driver.find_elements(
-                        By.XPATH, f"//*[normalize-space()={json.dumps(wanted)}]"
-                    )
-                except Exception:
-                    matches = []
+                matches = []
+                for candidate_label in wanted_labels:
+                    try:
+                        found = self.driver.find_elements(
+                            By.XPATH,
+                            f"//*[normalize-space()={json.dumps(candidate_label)}]"
+                        )
+                    except Exception:
+                        found = []
+                    if found:
+                        matches.extend(found)
 
                 scored = []
                 try:
@@ -1676,12 +1681,17 @@ class SeaArtLiveSession:
             "minimax h3": ["Minimax H3 Open", "MiniMax H3", "Minimax H3"],
         }.get(requested.casefold(), [requested])
 
-        sort_label = {
-            "newest": "New",
-            "new": "New",
-            "hot": "Hot",
-            "recommended": "Recommended",
-        }.get(str(sort or "newest").strip().casefold(), "New")
+        sort_labels = {
+            "newest": ["Latest", "New", "Newest"],
+            "new": ["Latest", "New", "Newest"],
+            "latest": ["Latest", "New", "Newest"],
+            "hot": ["Hot"],
+            "recommended": ["Recommended"],
+        }.get(
+            str(sort or "newest").strip().casefold(),
+            ["Latest", "New", "Newest"],
+        )
+        sort_label = sort_labels[0]
 
         self._last_filter_debug = ""
 
@@ -1820,11 +1830,13 @@ class SeaArtLiveSession:
             return None
 
         def choose_sort(panel):
-            options = exact_visible(sort_label, panel)
+            options = []
+            for candidate_label in sort_labels:
+                options.extend(exact_visible(candidate_label, panel))
             if not options:
                 return False
 
-            # "New" may appear in other explanatory text; prefer a compact,
+            # Latest/New can appear in other explanatory text; prefer a compact,
             # button-like control near the top of the panel.
             ranked = []
             for option in options:
@@ -2139,13 +2151,118 @@ class SeaArtLiveSession:
                     continue
             return None
 
+        def reacquire_selector(panel, control, input_el):
+            """Refresh selector references after SeaArt/React rerenders."""
+            try:
+                current_panel = filter_panel() or panel
+                fresh_control, fresh_input = base_model_control(current_panel)
+                if fresh_control is not None:
+                    control = fresh_control
+                    input_el = fresh_input
+                return current_panel, control, input_el
+            except Exception:
+                return panel, control, input_el
+
+        def force_dom_option_click(alias):
+            """Click an exact Base Model option without screen coordinates.
+
+            SeaArt's filtered dropdown can rerender/reposition between Selenium
+            locating an option and ActionChains clicking it. A DOM click on the
+            freshly reacquired exact label bubbles through React's delegated
+            click handling without relying on the element's old coordinates.
+            """
+            target = exact_option(alias)
+            if target is None:
+                return False, "dom-target-not-found"
+
+            try:
+                info = self.driver.execute_script(
+                    r"""
+                    const el=arguments[0];
+                    if(!el) return null;
+                    const r=el.getBoundingClientRect();
+                    return {
+                        tag:(el.tagName||'').toLowerCase(),
+                        role:el.getAttribute?.('role')||'',
+                        cls:String(el.className||'').slice(0,120),
+                        text:(el.innerText||el.textContent||'').trim().slice(0,80),
+                        x:Math.round(r.x), y:Math.round(r.y),
+                        w:Math.round(r.width), h:Math.round(r.height)
+                    };
+                    """,
+                    target,
+                ) or {}
+            except Exception:
+                info = {}
+
+            # First force a real DOM click on the exact text node/element.
+            try:
+                ok = bool(self.driver.execute_script(
+                    r"""
+                    const el=arguments[0];
+                    if(!el) return false;
+                    try { el.scrollIntoView({block:'center',inline:'nearest'}); } catch (_) {}
+                    el.click();
+                    return true;
+                    """,
+                    target,
+                ))
+                if ok:
+                    return True, "exact-dom-click"
+            except Exception:
+                pass
+
+            # If SeaArt attaches the handler to a compact row ancestor, invoke
+            # the nearest sensible row directly. Avoid broad popover containers.
+            try:
+                ok = bool(self.driver.execute_script(
+                    r"""
+                    const el=arguments[0];
+                    if(!el) return false;
+                    const wanted=(el.innerText||el.textContent||'').trim();
+                    let p=el.parentElement, depth=0, best=null;
+                    while(p && depth<6){
+                        const r=p.getBoundingClientRect();
+                        const txt=(p.innerText||p.textContent||'').trim();
+                        const role=(p.getAttribute?.('role')||'').toLowerCase();
+                        if(
+                            r.height>=24 && r.height<=100 &&
+                            r.width>=Math.max(80,el.getBoundingClientRect().width) &&
+                            (txt===wanted || role==='option' || role==='menuitem')
+                        ){
+                            best=p;
+                            if(role==='option' || role==='menuitem') break;
+                        }
+                        p=p.parentElement;
+                        depth++;
+                    }
+                    if(!best) return false;
+                    best.click();
+                    return true;
+                    """,
+                    target,
+                ))
+                if ok:
+                    return True, "row-dom-click"
+            except Exception:
+                pass
+
+            summary = ",".join(
+                f"{k}={v}" for k, v in info.items()
+                if v not in (None, "", 0)
+            )
+            return False, "dom-click-failed" + (f"[{summary}]" if summary else "")
+
         panel = open_filter_panel()
         if panel is None:
             self._last_filter_debug = "Filter panel did not open"
             return False
 
         if not choose_sort(panel):
-            self._last_filter_debug = f"Filter panel opened but Sort By {sort_label!r} was not clickable"
+            self._last_filter_debug = (
+                "Filter panel opened but no accepted Sort By label was clickable: "
+                + ", ".join(repr(x) for x in sort_labels)
+            )
             return False
         time.sleep(.25)
 
@@ -2199,21 +2316,60 @@ class SeaArtLiveSession:
                 if native_click(clickable_for(target)):
                     time.sleep(.4)
 
-                    try:
-                        current_panel = filter_panel() or panel
-                        current_control, current_input = base_model_control(current_panel)
-                        if current_control is not None:
-                            control = current_control
-                            input_el = current_input
-                    except Exception:
-                        pass
-
+                    panel, control, input_el = reacquire_selector(
+                        panel, control, input_el
+                    )
                     if control_has_alias(control):
                         selected = True
                         break
-                    debug_steps.append(f"{alias}:clicked-not-selected")
+
+                    # Normal coordinate click executed but SeaArt did not show
+                    # the selected chip. Re-open/filter and click the freshly
+                    # rendered exact option through the DOM, avoiding stale
+                    # screen coordinates after React repositions the dropdown.
+                    try:
+                        native_click(control)
+                        time.sleep(.15)
+                        if input_el is not None:
+                            set_selector_search(input_el, "")
+                            time.sleep(.06)
+                            set_selector_search(input_el, alias)
+                            time.sleep(.35)
+                    except Exception:
+                        pass
+
+                    dom_clicked, dom_detail = force_dom_option_click(alias)
+                    if dom_clicked:
+                        time.sleep(.45)
+                        panel, control, input_el = reacquire_selector(
+                            panel, control, input_el
+                        )
+                        if control_has_alias(control):
+                            selected = True
+                            break
+                        debug_steps.append(
+                            f"{alias}:normal-click-not-selected;"
+                            f"{dom_detail}-not-selected"
+                        )
+                    else:
+                        debug_steps.append(
+                            f"{alias}:normal-click-not-selected;{dom_detail}"
+                        )
                 else:
-                    debug_steps.append(f"{alias}:click-failed")
+                    # Even if ActionChains cannot click the option, a direct DOM
+                    # click can still activate a valid React option.
+                    dom_clicked, dom_detail = force_dom_option_click(alias)
+                    if dom_clicked:
+                        time.sleep(.45)
+                        panel, control, input_el = reacquire_selector(
+                            panel, control, input_el
+                        )
+                        if control_has_alias(control):
+                            selected = True
+                            break
+                    debug_steps.append(
+                        f"{alias}:click-failed;{dom_detail}"
+                    )
 
             if not selected:
                 self._last_filter_debug = (
@@ -2648,9 +2804,13 @@ class SeaArtLiveSession:
             if stagnant >= 10:
                 break
 
-        label = {"newest": "New", "new": "New", "hot": "Hot", "recommended": "Recommended"}.get(
-            str(sort or "newest").strip().lower(), "New"
-        )
+        label = {
+            "newest": "Latest",
+            "new": "Latest",
+            "latest": "Latest",
+            "hot": "Hot",
+            "recommended": "Recommended",
+        }.get(str(sort or "newest").strip().lower(), "Latest")
         verbose_print(
             f"SeaArt live catalog: {base_model} / {label} -> {len(found[:limit])} candidate(s) "
             f"(limit {limit}, scoped filtered grid)"
