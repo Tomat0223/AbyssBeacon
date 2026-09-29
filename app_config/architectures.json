@@ -606,5 +606,53 @@
         ]
       }
     }
+  },
+  "Qwen Image 2.1": {
+    "family": "",
+    "label": "Qwen Image 2.1",
+    "keywords": [
+      "qwen image 2.1",
+      "qwen-image-2.1",
+      "qwen_image_2_1",
+      "qwenimage2.1"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "Qwen-Image-2.1"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "Qwen-Image-2.1"
+        ]
+      },
+      "civitai": {
+        "mode": "text",
+        "terms": [
+          "Qwen Image 2.1"
+        ]
+      },
+      "civitaired": {
+        "mode": "text",
+        "terms": [
+          "Qwen Image 2.1"
+        ]
+      },
+      "tensorhub": {
+        "mode": "text",
+        "terms": [
+          "Qwen Image 2.1"
+        ]
+      },
+      "seaart": {
+        "mode": "text",
+        "terms": [
+          "Qwen Image 2.1"
+        ]
+      }
+    }
   }
 }

@@ -1992,8 +1992,23 @@ class SeaArtLiveSession:
             if control is None:
                 return False
             try:
-                text = clean_text(control).casefold()
-                if any(alias.casefold() in text for alias in aliases):
+                # The control can contain the open dropdown's entire option
+                # list. Only a selected chip/value proves the filter applied.
+                selected = self.driver.execute_script(
+                    r"""
+                    const root=arguments[0];
+                    const nodes=root.querySelectorAll(
+                        '.el-select__tags .el-tag, .el-select__selected-item,'
+                        +' .el-select__tags-text, [class*="selected-tag"],'
+                        +' [class*="selected-item"]'
+                    );
+                    return [...nodes].map(el=>(el.innerText||el.textContent||'').trim());
+                    """, control
+                ) or []
+                if any(
+                    any(alias.casefold() == str(value).casefold() for alias in aliases)
+                    for value in selected
+                ):
                     return True
             except Exception:
                 pass
@@ -2003,8 +2018,19 @@ class SeaArtLiveSession:
                 current_panel = filter_panel()
                 if current_panel is not None:
                     current_control, _ = base_model_control(current_panel)
-                    current_text = clean_text(current_control).casefold()
-                    return any(alias.casefold() in current_text for alias in aliases)
+                    if current_control is not None:
+                        selected = self.driver.execute_script(
+                            r"""return [...arguments[0].querySelectorAll(
+                                '.el-select__tags .el-tag, .el-select__selected-item,'
+                                +' .el-select__tags-text, [class*="selected-tag"],'
+                                +' [class*="selected-item"]'
+                            )].map(el => (el.innerText||el.textContent||'').trim());""",
+                            current_control,
+                        ) or []
+                        return any(
+                            str(value).casefold() in {alias.casefold() for alias in aliases}
+                            for value in selected
+                        )
             except Exception:
                 pass
             return False
@@ -2124,10 +2150,20 @@ class SeaArtLiveSession:
                 return False
 
         def exact_option(alias):
-            # Prefer the existing semantic lookup.
+            # Element Plus retains zero-sized option nodes for virtual rows.
+            # Selenium can report those as displayed even though pointer and
+            # DOM clicks cannot select them. Prefer a rendered exact row.
             target = option_target(alias)
             if target is not None:
-                return target
+                try:
+                    bounds = self.driver.execute_script(
+                        "const r=arguments[0].getBoundingClientRect();"
+                        "return [r.width,r.height];", target
+                    )
+                    if bounds and bounds[0] > 0 and bounds[1] > 0:
+                        return target
+                except Exception:
+                    pass
 
             # Fallback for SeaArt builds whose option rows expose no ARIA/class
             # semantics: accept an exact visible label outside model-card links.
@@ -2142,6 +2178,12 @@ class SeaArtLiveSession:
                 try:
                     if not el.is_displayed():
                         continue
+                    bounds = self.driver.execute_script(
+                        "const r=arguments[0].getBoundingClientRect();"
+                        "return [r.width,r.height];", el
+                    )
+                    if not bounds or bounds[0] <= 0 or bounds[1] <= 0:
+                        continue
                     if el.find_elements(
                         By.XPATH, "ancestor::a[contains(@href,'/models/detail/')]"
                     ):
@@ -2150,6 +2192,32 @@ class SeaArtLiveSession:
                 except Exception:
                     continue
             return None
+
+        def open_base_selector(control):
+            """Click the visible select field, never its upward-opening menu."""
+            try:
+                trigger = self.driver.execute_script(
+                    r"""
+                    const root=arguments[0];
+                    const visible=el=>{
+                        if(!el) return false;
+                        const r=el.getBoundingClientRect(),s=getComputedStyle(el);
+                        return r.width>120 && r.height>=25 && r.height<110
+                            && s.display!=='none' && s.visibility!=='hidden';
+                    };
+                    const matches=[...root.querySelectorAll(
+                        '.el-select__wrapper,.el-input__wrapper,[role="combobox"]'
+                    )].filter(visible);
+                    return matches.sort((a,b)=>
+                        a.getBoundingClientRect().height-b.getBoundingClientRect().height
+                    )[0]||null;
+                    """, control
+                )
+                if trigger is not None:
+                    return native_click(trigger)
+            except Exception:
+                pass
+            return native_click(control)
 
         def reacquire_selector(panel, control, input_el):
             """Refresh selector references after SeaArt/React rerenders."""
@@ -2162,6 +2230,52 @@ class SeaArtLiveSession:
                 return current_panel, control, input_el
             except Exception:
                 return panel, control, input_el
+
+        def option_debug_snapshot(alias, target, control):
+            """Describe SeaArt's option/control DOM without changing behavior."""
+            try:
+                return str(self.driver.execute_script(
+                    r"""
+                    const alias=String(arguments[0]||'');
+                    const target=arguments[1];
+                    const control=arguments[2];
+
+                    const brief=el=>{
+                        if(!el) return null;
+                        const r=el.getBoundingClientRect();
+                        return {
+                            tag:(el.tagName||'').toLowerCase(),
+                            role:el.getAttribute?.('role')||'',
+                            cls:String(el.className||'').slice(0,100),
+                            text:(el.innerText||el.textContent||'').trim().replace(/\s+/g,' ').slice(0,120),
+                            x:Math.round(r.x), y:Math.round(r.y),
+                            w:Math.round(r.width), h:Math.round(r.height),
+                            connected:!!el.isConnected
+                        };
+                    };
+
+                    const chain=[];
+                    let p=target, depth=0;
+                    while(p && depth<5){
+                        chain.push(brief(p));
+                        p=p.parentElement;
+                        depth++;
+                    }
+
+                    return JSON.stringify({
+                        alias,
+                        target:brief(target),
+                        control:brief(control),
+                        active:brief(document.activeElement),
+                        chain
+                    });
+                    """,
+                    alias,
+                    target,
+                    control,
+                ) or "")
+            except Exception as exc:
+                return f"debug-error={type(exc).__name__}"
 
         def force_dom_option_click(alias):
             """Click an exact Base Model option without screen coordinates.
@@ -2287,20 +2401,13 @@ class SeaArtLiveSession:
             except Exception:
                 pass
 
-            native_click(control)
+            open_base_selector(control)
             time.sleep(.2)
 
             selected = False
             debug_steps = []
 
             for alias in aliases:
-                # Use SeaArt's own selector search mechanism through DOM events.
-                if input_el is not None:
-                    set_selector_search(input_el, "")
-                    time.sleep(.08)
-                    set_selector_search(input_el, alias)
-                    time.sleep(.45)
-
                 target = None
                 deadline = time.monotonic() + 3.0
                 while time.monotonic() < deadline:
@@ -2310,8 +2417,25 @@ class SeaArtLiveSession:
                     time.sleep(.1)
 
                 if target is None:
-                    debug_steps.append(f"{alias}:option-not-rendered")
-                    continue
+                    # This select can open upward and has no visible search
+                    # field. Reopen its actual trigger before trying text input.
+                    open_base_selector(control)
+                    time.sleep(.25)
+                    target = exact_option(alias)
+                    if input_el is not None:
+                        if target is None:
+                            try:
+                                input_el.clear()
+                                input_el.send_keys(alias)
+                                time.sleep(.45)
+                                target = exact_option(alias)
+                            except Exception:
+                                pass
+                    if target is None:
+                        debug_steps.append(f"{alias}:option-not-rendered")
+                        continue
+
+                pre_click_debug = option_debug_snapshot(alias, target, control)
 
                 if native_click(clickable_for(target)):
                     time.sleep(.4)
@@ -2323,12 +2447,19 @@ class SeaArtLiveSession:
                         selected = True
                         break
 
+                    # Diagnostic only: capture the DOM shape after SeaArt
+                    # accepted the click event but did not show a selected chip.
+                    debug_steps.append(
+                        f"{alias}:post-pointer="
+                        + option_debug_snapshot(alias, target, control)
+                    )
+
                     # Normal coordinate click executed but SeaArt did not show
                     # the selected chip. Re-open/filter and click the freshly
                     # rendered exact option through the DOM, avoiding stale
                     # screen coordinates after React repositions the dropdown.
                     try:
-                        native_click(control)
+                        open_base_selector(control)
                         time.sleep(.15)
                         if input_el is not None:
                             set_selector_search(input_el, "")
@@ -2356,6 +2487,9 @@ class SeaArtLiveSession:
                             f"{alias}:normal-click-not-selected;{dom_detail}"
                         )
                 else:
+                    debug_steps.append(
+                        f"{alias}:pre-pointer=" + pre_click_debug
+                    )
                     # Even if ActionChains cannot click the option, a direct DOM
                     # click can still activate a valid React option.
                     dom_clicked, dom_detail = force_dom_option_click(alias)
@@ -2734,14 +2868,40 @@ class SeaArtLiveSession:
             pass
 
         filter_applied = False
-        for attempt in range(2):
-            self.driver.get("https://www.seaart.ai/model")
-            time.sleep(2.0 if attempt == 0 else 2.5)
-            if self._try_base_model(base_model, sort=sort):
-                filter_applied = True
+        filter_failures = []
+        for attempt in range(4):
+            if _STOP.is_set():
                 break
-            if attempt == 0:
-                time.sleep(.5)
+            if attempt:
+                # The previous dropdown may have been left open or attached to
+                # a stale filter panel. Start this attempt with a neutral UI.
+                try:
+                    self._reset_catalog_filter_state()
+                except Exception:
+                    pass
+            self.driver.get("https://www.seaart.ai/model")
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and not _STOP.is_set():
+                try:
+                    ready = self.driver.execute_script(
+                        "const body=document.body?.innerText||'';"
+                        "return body.includes('Filter') || body.includes('Base Model');"
+                    )
+                    if ready:
+                        break
+                except Exception:
+                    pass
+                time.sleep(.25)
+            time.sleep(.7 + attempt * .3)
+            try:
+                if self._try_base_model(base_model, sort=sort):
+                    filter_applied = True
+                    break
+                filter_failures.append(str(getattr(self, "_last_filter_debug", "") or "filter unavailable"))
+            except Exception as exc:
+                filter_failures.append(f"{type(exc).__name__}: {exc}")
+            if attempt < 3:
+                time.sleep(.5 + attempt * .5)
 
         if not filter_applied:
             debug = self._sort_control_debug()
@@ -2749,6 +2909,8 @@ class SeaArtLiveSession:
             parts = []
             if filter_debug:
                 parts.append(f"filter={filter_debug}")
+            if filter_failures:
+                parts.append(f"attempts={len(filter_failures)}")
             if debug:
                 parts.append(f"toolbar={debug}")
             detail = ("; " + "; ".join(parts)) if parts else ""
