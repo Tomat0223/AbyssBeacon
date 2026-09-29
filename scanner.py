@@ -2,6 +2,7 @@ import database, scan_status, scan_control, time, json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from scanners import ALL_SCANNERS
+from scanners.common import processors
 from scanners.http_retry import reset_retry_stats, get_retry_stats, get_pacing_stats
 from scan_logging import verbose_enabled
 from settings_manager import load_settings, get_search_settings
@@ -404,6 +405,24 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
     job_start = time.perf_counter()
     try:
         models = source.scan(term, source_seen_models, source_settings, creator=job.get("creator"))
+
+        # Qwen's new watch currently uses provider text search on several
+        # sources. Search results are candidates, not proof of architecture.
+        if watch == "Qwen Image 2.1" and not source_settings.get("_external_search") and not job.get("creator"):
+            matching = []
+            for model in models:
+                resolved = processors.classify_qwen_image_21(
+                    getattr(model, "base_model", ""),
+                    getattr(model, "name", ""),
+                    getattr(model, "display_name", ""),
+                    getattr(model, "tags", ""),
+                )
+                if resolved == watch:
+                    model.architecture = watch
+                    matching.append(model)
+            if verbose_enabled():
+                print(f"{display_name} Qwen Image 2.1: kept {len(matching)}/{len(models)} matching models")
+            models = matching
 
         models, retention_memory_skipped = _apply_shared_retention_tombstones(
             source_name,

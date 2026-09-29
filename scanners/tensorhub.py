@@ -315,6 +315,8 @@ def _architecture_name(base_model):
 
     if upper == "KREA_2":
         return "Krea 2"
+    if re.sub(r"[^A-Z0-9]+", "_", text.upper()).strip("_") == "QWEN_IMAGE_2_1":
+        return "Qwen Image 2.1"
 
     if "MINIMAX" in upper and "H3" in upper:
         return "MiniMax-H3"
@@ -365,7 +367,7 @@ def _architecture_name(base_model):
 
 def _matches_base_model(item, expected_base_model):
     """Return True only when TensorHub's structured nested base model matches."""
-    expected = str(expected_base_model or "").strip().upper().replace("-", "_").replace(" ", "_")
+    expected = re.sub(r"[^A-Z0-9]+", "_", str(expected_base_model or "").upper()).strip("_")
     if not expected:
         return True
 
@@ -376,7 +378,7 @@ def _matches_base_model(item, expected_base_model):
     )
 
     for value in actual_values:
-        actual = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+        actual = re.sub(r"[^A-Z0-9]+", "_", str(value or "").upper()).strip("_")
         if actual == expected:
             return True
     return False
@@ -2671,7 +2673,7 @@ def _extract_general_search_models(body, blocked_creators):
     return list(model_items.values())
 
 
-def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, retention_days, max_results, result_unlimited=False, progress_callback=None):
+def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, retention_days, max_results, result_unlimited=False, progress_callback=None, _qwen_fallback=True):
     """Fetch TensorHub's real search page for one structured base model.
 
     Automatic Retention supplies the date boundary. A finite centralized
@@ -2764,6 +2766,22 @@ def _fetch_architecture_search(base_model, blocked_creators, retention_enabled, 
         if not result_unlimited and len(collected) >= int(max_results or 0):
             break
 
+    if (
+        not collected and page <= 1 and _qwen_fallback
+        and base_model == "QWEN_IMAGE_2_1" and not scan_control.should_stop()
+    ):
+        # TensorHub's visible label uses punctuation unlike its older enum IDs.
+        # Try the site's exact display spelling if the enum yields no projects.
+        for alternative in ("Qwen-Image-2.1", "QWEN_IMAGE_2.1", "QWEN_IMAGE_21"):
+            models, tried_pages = _fetch_architecture_search(
+                alternative, blocked_creators, retention_enabled,
+                retention_days, max_results, result_unlimited,
+                progress_callback, _qwen_fallback=False,
+            )
+            if models:
+                print(f"TensorHub Qwen 2.1 filter matched with {alternative}")
+                return models, page + tried_pages
+        print("TensorHub Qwen 2.1: no matching projects from available base-model filter spellings")
     return list(collected.values()), page
 
 def _fetch_general_search(query, intent, max_results, blocked_creators):

@@ -614,7 +614,10 @@
       "qwen image 2.1",
       "qwen-image-2.1",
       "qwen_image_2_1",
-      "qwenimage2.1"
+      "qwenimage2.1",
+      "qwen 2.1",
+      "qwen-image2.1",
+      "qwenimage21"
     ],
     "source_searches": {
       "huggingface": {
@@ -630,27 +633,27 @@
         ]
       },
       "civitai": {
-        "mode": "text",
+        "mode": "base_model",
         "terms": [
-          "Qwen Image 2.1"
+          "Qwen 2.1"
         ]
       },
       "civitaired": {
-        "mode": "text",
+        "mode": "base_model",
         "terms": [
-          "Qwen Image 2.1"
+          "Qwen 2.1"
         ]
       },
       "tensorhub": {
-        "mode": "text",
+        "mode": "base_model",
         "terms": [
-          "Qwen Image 2.1"
+          "QWEN_IMAGE_2_1"
         ]
       },
       "seaart": {
-        "mode": "text",
+        "mode": "base_model",
         "terms": [
-          "Qwen Image 2.1"
+          "Qwen-image2.1"
         ]
       }
     }

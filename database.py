@@ -2220,6 +2220,58 @@ def repair_canonical_architectures():
 
 
 
+def repair_qwen_image_21_architectures():
+    """Correct existing Other cards with explicit Qwen 2.1 identity metadata."""
+    from scanners.common.processors import classify_qwen_image_21
+
+    conn = connect()
+    repaired_models = repaired_sources = 0
+    try:
+        rows = conn.execute(
+            """SELECT id,base_model,name,display_name,tags
+               FROM models WHERE lower(coalesce(architecture,''))='other'
+               AND (lower(coalesce(name,'')) LIKE '%qwen%'
+                    OR lower(coalesce(display_name,'')) LIKE '%qwen%'
+                    OR lower(coalesce(base_model,'')) LIKE '%qwen%')"""
+        ).fetchall()
+        for row in rows:
+            if classify_qwen_image_21(
+                row["base_model"], row["name"], row["display_name"], row["tags"]
+            ) != "Qwen Image 2.1":
+                continue
+            conn.execute(
+                "UPDATE models SET architecture=? WHERE id=?",
+                ("Qwen Image 2.1", row["id"]),
+            )
+            repaired_models += 1
+            for source_row in conn.execute(
+                "SELECT id,source_data FROM model_sources WHERE model_id=?",
+                (row["id"],),
+            ).fetchall():
+                try:
+                    data = json.loads(source_row["source_data"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(data, dict) or str(data.get("architecture") or "").casefold() != "other":
+                    continue
+                if classify_qwen_image_21(
+                    data.get("base_model"), data.get("name"),
+                    data.get("display_name"), data.get("tags")
+                ) != "Qwen Image 2.1":
+                    continue
+                data["architecture"] = "Qwen Image 2.1"
+                conn.execute(
+                    "UPDATE model_sources SET source_data=? WHERE id=?",
+                    (json.dumps(data, ensure_ascii=False), source_row["id"]),
+                )
+                repaired_sources += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return {"models": repaired_models, "sources": repaired_sources}
+
+
+
 def update_model(model):
 
     conn = connect()

@@ -89,6 +89,27 @@ def classify_architecture(*values):
     return "Other"
 
 
+def classify_qwen_image_21(base_model, *identity_values):
+    """Use an explicit 2.1 title when the provider's base is generic Qwen.
+
+    A text-search result with an Illustrious/Anima (or older Qwen) base must
+    never be relabeled merely because its description mentions Qwen 2.1.
+    """
+    base = _normalize_architecture_text(base_model)
+    classified_base = classify_architecture(base_model)
+    if classified_base == "Qwen Image 2.1":
+        return classified_base
+    if classified_base != "Other":
+        return classified_base
+    if base and base not in {"qwen image", "qwenimage", "qwen image base"}:
+        return "Other"
+    return (
+        "Qwen Image 2.1"
+        if classify_architecture(*identity_values) == "Qwen Image 2.1"
+        else "Other"
+    )
+
+
 
 def classify_model_type(text):
 

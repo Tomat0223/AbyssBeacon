@@ -1953,6 +1953,10 @@ def _build_model(item, enrich=True):
     model.description = description
     model.base_model = base_model
     model.architecture = processors.classify_architecture(base_model) if base_model else "Other"
+    if model.architecture == "Other":
+        model.architecture = processors.classify_qwen_image_21(
+            base_model, name, " ".join(listing_tags)
+        )
     model.model_type = _model_type(item.get("type"), text)
     tag_names = list(listing_tags)
     mirror_tags = _tag_names_from_value(mirror_detail.get("tags") or mirror_detail.get("tagNames") or [])

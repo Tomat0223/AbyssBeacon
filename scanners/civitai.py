@@ -1448,6 +1448,10 @@ def _build_model(item, enrich=False, include_mature_media=False, media_limit=100
     # become a Krea 2 model.
     model.architecture = processors.classify_architecture(base_model) if base_model else "Other"
     if model.architecture == "Other":
+        model.architecture = processors.classify_qwen_image_21(
+            base_model, name, tags
+        )
+    if model.architecture == "Other":
         watch_architecture = str(item.get("_watch_architecture") or "").strip()
         if watch_architecture:
             model.architecture = processors.classify_architecture_with_watch_fallback(
@@ -2003,4 +2007,3 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     print(f"Mature models    : {sum(1 for m in processed if m.sensitive)}")
     print("========================================")
     return processed
-

@@ -1647,6 +1647,12 @@ log.setLevel(logging.ERROR)
 logging.getLogger("werkzeug").disabled = True
 
 database.initialize()
+_qwen_repair = database.repair_qwen_image_21_architectures()
+if _qwen_repair["models"] or _qwen_repair["sources"]:
+    print(
+        "Qwen Image 2.1 classification repaired: "
+        f"{_qwen_repair['models']} models · {_qwen_repair['sources']} source records"
+    )
 
 
 @app.route("/settings", methods=["GET", "POST"])
