@@ -1,0 +1,47 @@
+{
+  "manifest_version": 2,
+  "name": "AbyssBeacon Download Companion",
+  "version": "0.2.0",
+  "description": "Authorize a selected CivitAI Red file in Firefox and hand its download to AbyssBeacon's local installer.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "download-companion@abyssbeacon.local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "browsingActivity",
+          "websiteContent",
+          "authenticationInfo"
+        ],
+        "optional": [
+          "technicalAndInteraction"
+        ]
+      }
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "http://127.0.0.1/*",
+    "https://civitai.red/api/download/models/*",
+    "https://b2.civitai.com/file/civitai-modelfiles/*",
+    "https://civitai.com/api/download/models/*",
+    "https://civitai-delivery-worker-prod.5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/abyssbeacon-red-bridge/start*"
+      ],
+      "js": [
+        "connect.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

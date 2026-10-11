@@ -333,6 +333,14 @@ def extract_readme_media(readme_text, model_id, readme_path="README.md", revisio
         kind = "video" if source_type.startswith("video/") else ""
         add(source_url, kind, "README video", match.start())
 
+    # Markdown links may point to repository-relative video files.
+    for match in re.finditer(
+        r'(?<!!)\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^\s\)]+))(?:\s+["\'][^"\']*["\'])?\s*\)',
+        text,
+        flags=re.I,
+    ):
+        add(match.group(2) or match.group(3), label=match.group(1), position=match.start())
+
     # Also recognize direct media links. This catches model cards that use a
     # normal link around a video/image instead of an actual embed tag.
     for match in re.finditer(r'https?://[^\s<>"\')\]]+', text, flags=re.I):

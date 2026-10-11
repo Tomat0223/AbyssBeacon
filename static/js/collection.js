@@ -577,12 +577,22 @@ document.addEventListener("DOMContentLoaded", () => {
         mediaButton.title = `Open ${item.filename || `Preview ${index + 1}`} in the AbyssBeacon media viewer`;
         mediaButton.setAttribute("aria-label", `Open ${item.filename || `preview ${index + 1}`} in the media viewer`);
 
-        const image = document.createElement("img");
-        image.src = item.thumbnail || item.url || "";
-        image.alt = item.filename || `Preview ${index + 1}`;
-        image.loading = "lazy";
-        image.referrerPolicy = "no-referrer";
-        bindPreviewFallback(image);
+        const isVideo = String(item.type || "").toLowerCase() === "video";
+        const image = document.createElement(isVideo ? "video" : "img");
+        if(isVideo){
+            image.src = item.url || "";
+            image.preload = "metadata";
+            image.muted = true;
+            image.playsInline = true;
+            if(item.thumbnail && item.thumbnail !== item.url) image.poster = item.thumbnail;
+            image.setAttribute("aria-label", item.filename || `Video ${index + 1}`);
+        }else{
+            image.src = item.thumbnail || item.url || "";
+            image.alt = item.filename || `Preview ${index + 1}`;
+            image.loading = "lazy";
+            image.referrerPolicy = "no-referrer";
+            bindPreviewFallback(image);
+        }
 
         const fallback = document.createElement("span");
         fallback.className = "collection-media-fallback";
@@ -590,7 +600,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const hint = document.createElement("span");
         hint.className = "collection-media-open-hint";
-        hint.textContent = "View media";
+        hint.textContent = isVideo ? "Play video" : "View media";
         mediaButton.append(image, fallback, hint);
         card.appendChild(mediaButton);
 

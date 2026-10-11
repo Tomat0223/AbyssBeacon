@@ -1903,6 +1903,8 @@ class SeaArtLiveSession:
                     }
 
                     if(best){
+                        const select=best.closest('.el-select');
+                        if(select && root.contains(select) && vis(select)) return [select,best];
                         let box=best;
                         let p=best.parentElement, depth=0;
                         while(p && p!==root && depth<6){
@@ -2194,30 +2196,61 @@ class SeaArtLiveSession:
             return None
 
         def open_base_selector(control):
-            """Click the visible select field, never its upward-opening menu."""
+            """Ensure the Element Plus menu is open without toggling it shut."""
             try:
-                trigger = self.driver.execute_script(
+                return bool(self.driver.execute_script(
                     r"""
                     const root=arguments[0];
+                    if(!root || !root.isConnected) return false;
                     const visible=el=>{
                         if(!el) return false;
                         const r=el.getBoundingClientRect(),s=getComputedStyle(el);
-                        return r.width>120 && r.height>=25 && r.height<110
+                        return r.width>0 && r.height>0
                             && s.display!=='none' && s.visibility!=='hidden';
                     };
-                    const matches=[...root.querySelectorAll(
+                    const field=root.closest('.el-select') ||
+                        root.querySelector('.el-select') || root;
+                    const combo=field.matches('[role="combobox"]') ? field :
+                        field.querySelector('[role="combobox"]');
+                    const ids=(combo?.getAttribute('aria-controls')||'').split(/\s+/).filter(Boolean);
+                    if(ids.some(id=>visible(document.getElementById(id)))) return true;
+                    // Older Element Plus selects have no aria-controls. An
+                    // already visible options menu must not be clicked closed.
+                    const owns=(combo?.getAttribute('aria-owns')||'').split(/\s+/).filter(Boolean);
+                    if(owns.some(id=>visible(document.getElementById(id)))) return true;
+                    if(!ids.length && !owns.length && combo?.getAttribute('aria-expanded')==='true'
+                        && [...document.querySelectorAll('.el-select-dropdown [role="listbox"],.el-select-dropdown__list')]
+                        .some(visible)) return true;
+                    const trigger=[field,...field.querySelectorAll(
                         '.el-select__wrapper,.el-input__wrapper,[role="combobox"]'
-                    )].filter(visible);
-                    return matches.sort((a,b)=>
-                        a.getBoundingClientRect().height-b.getBoundingClientRect().height
-                    )[0]||null;
+                    )].find(el=>visible(el) && el.matches('.el-select__wrapper,.el-input__wrapper'));
+                    if(!trigger) return false;
+                    // DOM click avoids scrollIntoView moving the filter panel
+                    // and dismissing its upward-opening popover.
+                    trigger.click();
+                    return true;
                     """, control
-                )
-                if trigger is not None:
-                    return native_click(trigger)
+                ))
             except Exception:
-                pass
-            return native_click(control)
+                return False
+
+        def selector_debug(control):
+            try:
+                return str(self.driver.execute_script(
+                    r"""
+                    const root=arguments[0],combo=root?.querySelector('[role="combobox"]');
+                    return JSON.stringify({connected:!!root?.isConnected,
+                        expanded:combo?.getAttribute('aria-expanded'),
+                        controls:combo?.getAttribute('aria-controls'),
+                        menus:[...document.querySelectorAll('.el-select-dropdown')].map(el=>{
+                            const r=el.getBoundingClientRect();
+                            return {w:Math.round(r.width),h:Math.round(r.height),
+                                options:el.querySelectorAll('[role="option"]').length};
+                        })});
+                    """, control
+                ) or '')
+            except Exception:
+                return 'selector-debug-unavailable'
 
         def reacquire_selector(panel, control, input_el):
             """Refresh selector references after SeaArt/React rerenders."""
@@ -2380,6 +2413,12 @@ class SeaArtLiveSession:
             return False
         time.sleep(.25)
 
+        panel = filter_panel()
+        if panel is None:
+            panel = open_filter_panel()
+        if panel is None:
+            self._last_filter_debug = "Filter panel disappeared after sorting"
+            return False
         control, input_el = base_model_control(panel)
         if control is None:
             self._last_filter_debug = "Filter panel opened but Base Model dropdown was not found"
@@ -2419,6 +2458,7 @@ class SeaArtLiveSession:
                 if target is None:
                     # This select can open upward and has no visible search
                     # field. Reopen its actual trigger before trying text input.
+                    panel, control, input_el = reacquire_selector(panel, control, input_el)
                     open_base_selector(control)
                     time.sleep(.25)
                     target = exact_option(alias)
@@ -2432,7 +2472,7 @@ class SeaArtLiveSession:
                             except Exception:
                                 pass
                     if target is None:
-                        debug_steps.append(f"{alias}:option-not-rendered")
+                        debug_steps.append(f"{alias}:option-not-rendered;selector=" + selector_debug(control))
                         continue
 
                 pre_click_debug = option_debug_snapshot(alias, target, control)

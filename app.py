@@ -349,13 +349,20 @@ def _local_download_headers(source, source_page_url=""):
         # Match the successful Firefox download request closely enough for Red's
         # download middleware, while keeping only stable/reusable headers.
         headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:154.0) "
-            "Gecko/20100101 Firefox/154.0"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) "
+            "Gecko/20100101 Firefox/157.0"
         )
         headers["Accept"] = (
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         )
         headers["Accept-Language"] = "en-US,en;q=0.9"
+        # Red's working download request is a same-origin browser navigation.
+        # Keep these download-only; API requests use a different fetch context.
+        headers["Upgrade-Insecure-Requests"] = "1"
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+        headers["Sec-Fetch-Site"] = "same-origin"
+        headers["Sec-Fetch-User"] = "?1"
         referer = str(source_page_url or "").strip()
         if not referer.startswith(("http://", "https://")):
             referer = "https://civitai.red/models"
@@ -8153,7 +8160,8 @@ def collection_page(model_id):
         item_source = str(item.get("source") or "").strip().lower()
         if item_source != source:
             continue
-        if str(item.get("type") or "image").strip().lower() != "image":
+        media_type = str(item.get("type") or "image").strip().lower()
+        if media_type not in {"image", "video"}:
             continue
 
         media_url = display_media_url(item.get("url"), source)
@@ -8188,7 +8196,7 @@ def collection_page(model_id):
         media.append({
             "id": item.get("id"),
             "source": item_source or source,
-            "type": "image",
+            "type": media_type,
             "url": media_url,
             "thumbnail": thumbnail,
             "filename": filename,
@@ -8205,8 +8213,9 @@ def collection_page(model_id):
         if not isinstance(file_data, dict):
             continue
         path = str(file_data.get("path") or file_data.get("name") or "").strip()
-        if not path or not path.casefold().endswith((".png", ".jpg", ".jpeg", ".webp")):
+        if not path or not path.casefold().endswith((".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v")):
             continue
+        media_type = "video" if path.casefold().endswith((".mp4", ".webm", ".mov", ".m4v")) else "image"
         raw_url = str(file_data.get("media_url") or file_data.get("download_url") or "").strip()
         if raw_url.endswith("?download=true"):
             raw_url = raw_url[:-14]
@@ -8224,7 +8233,7 @@ def collection_page(model_id):
             media.append({
                 "id": None,
                 "source": source,
-                "type": "image",
+                "type": media_type,
                 "url": media_url,
                 "thumbnail": "",
                 "filename": filename,
@@ -8260,7 +8269,8 @@ def collection_page(model_id):
                 media_path=preview_path,
             )
             item["url"] = proxy_url
-            item["thumbnail"] = proxy_url
+            if item["type"] == "image":
+                item["thumbnail"] = proxy_url
 
     _link_collection_media_to_files(groups, media)
     attached_repository_paths = _attach_collection_workflows_to_files(groups, repository_files)

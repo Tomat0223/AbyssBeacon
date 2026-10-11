@@ -473,8 +473,65 @@ class DownloadPaused(Exception):
     """Raised when the user pauses while intentionally keeping the .part file."""
 
 
+class DownloadBrowserVerification(Exception):
+    pass
+
+
 class DownloadResumeUnavailable(Exception):
     """Raised when a server refuses a Range resume; existing .part is preserved."""
+
+
+def _download_rejection_detail(response, request_headers=None):
+    """Read a bounded error response; never report request credentials/URLs."""
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    if not any(kind in content_type for kind in ("json", "text", "html")):
+        return ""
+    try:
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=1024):
+            if chunk:
+                data.extend(chunk[:8192 - len(data)])
+            if len(data) >= 8192:
+                break
+        body = bytes(data).decode("utf-8", errors="replace")
+    except Exception:
+        return "Error response could not be read."
+    lower = body.lower()
+    if (str(response.headers.get("cf-mitigated") or "").lower() == "challenge"
+            or any(marker in lower for marker in (
+                "cf-chl-", "just a moment", "verify you are human", "checking your browser"))):
+        return "Browser verification challenge returned by the download endpoint."
+    if "json" in content_type:
+        try:
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                message = payload.get("message") or payload.get("error") or payload.get("detail")
+                if isinstance(message, dict):
+                    message = message.get("message")
+                if isinstance(message, str):
+                    # Redact credential values even if the server echoes them.
+                    for key, value in (request_headers or {}).items():
+                        if str(key).lower() in {"cookie", "authorization"}:
+                            for secret in [str(value), *[part.split("=", 1)[-1].strip()
+                                    for part in str(value).split(";")]]:
+                                if secret:
+                                    message = message.replace(secret, "[redacted]")
+                    message = re.sub(r"https?://[^\s\"<>]+", "[URL omitted]", message)
+                    message = re.sub(r"(?i)(token|authorization|cookie|signature)\s*[:=]\s*[^\s,;]+",
+                                     r"\1=[redacted]", message)
+                    return "Server message: " + " ".join(message.split())[:240]
+        except (ValueError, TypeError):
+            pass
+    # Only report recognized HTML reasons, not arbitrary page content.
+    for marker, reason in (
+        ("sign in", "Download endpoint requested sign-in."),
+        ("unauthorized", "Download endpoint reported unauthorized access."),
+        ("access denied", "Download endpoint reported access denied."),
+        ("forbidden", "Download endpoint reported forbidden access."),
+    ):
+        if marker in lower:
+            return reason
+    return "No recognized error reason in the response (" + content_type.split(";")[0][:60] + ")."
 
 
 def _download_stream(url, destination, referer="", extra_headers=None, progress_callback=None, resume_existing=True):
@@ -529,7 +586,11 @@ def _download_stream(url, destination, referer="", extra_headers=None, progress_
         with requests.get(url, stream=True, allow_redirects=True, timeout=(20, 600), headers=request_headers) as response:
             if response.status_code >= 400:
                 host = urlparse(str(response.url or url)).netloc or "remote server"
-                raise RuntimeError(f"{host} rejected the file request (HTTP {response.status_code}).")
+                detail = _download_rejection_detail(response, request_headers)
+                if host.lower() == "civitai.red" and detail.startswith("Browser verification challenge"):
+                    raise DownloadBrowserVerification(detail)
+                suffix = (" " + detail) if detail else ""
+                raise RuntimeError(f"{host} rejected the file request (HTTP {response.status_code}).{suffix}")
 
             resumed = existing > 0 and response.status_code == 206
             if existing > 0 and not resumed:
@@ -778,14 +839,29 @@ def install_model_file(model, file_data, source, target_url, prefs, download_hea
                 counter += 1
             filename = destination.name
 
-    _download_stream(
-        target_url,
-        destination,
-        model.get("url") or "",
-        download_headers,
-        progress_callback=progress_callback,
-        resume_existing=resume_existing,
-    )
+    try:
+        _download_stream(
+            target_url,
+            destination,
+            model.get("url") or "",
+            download_headers,
+            progress_callback=progress_callback,
+            resume_existing=resume_existing,
+        )
+    except DownloadBrowserVerification:
+        if str(source or "").lower() != "civitaired":
+            raise
+        from civitaired_browser import resolve_download
+        signed_url, storage_headers = resolve_download(
+            target_url, referer=model.get("url") or "",
+            progress_callback=progress_callback,
+        )
+        # Reuse the exact destination already selected by folder/filename logic.
+        # Preserve any existing .part bytes when authorization is refreshed.
+        _download_stream(
+            signed_url, destination, "https://civitai.red/", storage_headers,
+            progress_callback=progress_callback, resume_existing=True,
+        )
 
     if callable(progress_callback):
         progress_callback(stage="Installing")
