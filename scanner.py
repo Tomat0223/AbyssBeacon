@@ -125,6 +125,9 @@ def _source_search_config(architecture_name, data, source_name):
     searches = data.get("source_searches", {}) if isinstance(data, dict) else {}
     configured = searches.get(source_name) if isinstance(searches, dict) else None
 
+    if isinstance(configured, dict) and configured.get("enabled") is False:
+        return ("text", [])
+
     if isinstance(configured, list):
         return "text", [str(x).strip() for x in configured if str(x).strip()]
     if isinstance(configured, dict):
@@ -471,6 +474,13 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
                     if all(term in haystack for term in query_terms):
                         kept.append(model)
                 models = kept
+
+        if str(job.get("watch") or "") in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base"}:
+            wanted = str(job["watch"])
+            models = [
+                model for model in models
+                if str(getattr(model, "architecture", "") or "") == wanted
+            ]
 
         # Search Sources architecture targeting is deliberately applied after
         # the provider's normal keyword search. This keeps arbitrary queries

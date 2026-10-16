@@ -70,6 +70,14 @@ def classify_architecture(*values):
     if not text:
         return "Other"
 
+    # FLUX 3 variants must remain distinct, including the official HF spelling.
+    for value in values:
+        identity = _normalize_architecture_text(value)
+        if re.search(r"\bflux\s*3\b", identity):
+            if re.search(r"\bklein\b", identity):
+                return "FLUX.3 Klein Base" if re.search(r"\bbase\b", identity) else "FLUX.3 Klein"
+            return "FLUX.3"
+
     # Common repository/source spellings sometimes put BASE before the size.
     if re.search(r"\bflux\s*2\s*klein\s*base\s*4b\b", text):
         return "FLUX.2 Klein 4B"
@@ -129,6 +137,10 @@ def classify_architecture_with_watch_fallback(watch, *values):
 
     watch_class = classify_architecture(watch)
     if watch_class == "Other":
+        return "Other"
+
+    if watch_class in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base"}:
+        # A keyword hit alone is not architecture evidence.
         return "Other"
 
     evidence = _normalize_architecture_text(" ".join(

@@ -1,4 +1,142 @@
 {
+  "FLUX.3": {
+    "family": "FLUX",
+    "label": "FLUX.3",
+    "keywords": [
+      "flux.3",
+      "flux3",
+      "flux-3"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "flux-3",
+          "flux3"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "flux-3",
+          "flux3"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
+      }
+    }
+  },
+  "FLUX.3 Klein": {
+    "family": "FLUX",
+    "label": "FLUX.3 Klein",
+    "keywords": [
+      "flux.3 klein",
+      "flux3 klein",
+      "flux-3-image-klein",
+      "flux_3_klein"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "flux-3-image-klein",
+          "flux3-klein"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "flux-3-image-klein",
+          "flux3-klein"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3 Klein"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3 Klein"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
+      }
+    }
+  },
+  "FLUX.3 Klein Base": {
+    "family": "FLUX",
+    "label": "FLUX.3 Klein Base",
+    "keywords": [
+      "flux.3 klein base",
+      "flux3 klein base",
+      "flux-3-image-klein-base",
+      "flux3-klein-base",
+      "flux.3 klein-base"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "flux-3-image-klein-base",
+          "flux3-klein-base"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "flux-3-image-klein-base",
+          "flux3-klein-base"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3 Klein-base"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "Flux.3 Klein-base"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
+      }
+    }
+  },
   "FLUX.2 Klein 4B": {
     "family": "FLUX",
     "label": "FLUX.2 Klein 4B",
