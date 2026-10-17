@@ -81,12 +81,16 @@
         ]
       },
       "seaart": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "Flux.3 Klein"
+        ]
       },
       "tensorhub": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "FLUX.3-Image-Klein_DISTILLED"
+        ]
       }
     }
   },
@@ -132,8 +136,10 @@
         "terms": []
       },
       "tensorhub": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "FLUX.3-Image-Klein_BASE"
+        ]
       }
     }
   },
@@ -793,6 +799,95 @@
         "terms": [
           "Qwen-image2.1"
         ]
+      }
+    }
+  },
+  "MOSS Image": {
+    "family": "MOSS",
+    "label": "MOSS Image",
+    "keywords": [
+      "moss image sft",
+      "moss-image-sft",
+      "moss image",
+      "mossimage"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-SFT",
+          "MOSS-Image"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-SFT",
+          "MOSS-Image"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
+      }
+    }
+  },
+  "MOSS Image Base": {
+    "family": "MOSS",
+    "label": "MOSS Image Base",
+    "keywords": [
+      "moss image base",
+      "moss-image-base",
+      "mossimagebase"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image Base"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image Base"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
       }
     }
   }

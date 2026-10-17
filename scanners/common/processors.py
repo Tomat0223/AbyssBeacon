@@ -70,6 +70,12 @@ def classify_architecture(*values):
     if not text:
         return "Other"
 
+    # Match the image family explicitly; MOSS also names speech/LLM models.
+    for value in values:
+        identity = _normalize_architecture_text(value)
+        if re.search(r"\bmoss\s*image(?:\s*base)?\b", identity):
+            return "MOSS Image Base" if re.search(r"\bmoss\s*image\s*base\b", identity) else "MOSS Image"
+
     # FLUX 3 variants must remain distinct, including the official HF spelling.
     for value in values:
         identity = _normalize_architecture_text(value)
@@ -139,7 +145,7 @@ def classify_architecture_with_watch_fallback(watch, *values):
     if watch_class == "Other":
         return "Other"
 
-    if watch_class in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base"}:
+    if watch_class in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base"}:
         # A keyword hit alone is not architecture evidence.
         return "Other"
 

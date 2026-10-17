@@ -475,7 +475,7 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
                         kept.append(model)
                 models = kept
 
-        if str(job.get("watch") or "") in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base"}:
+        if str(job.get("watch") or "") in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base"}:
             wanted = str(job["watch"])
             models = [
                 model for model in models
