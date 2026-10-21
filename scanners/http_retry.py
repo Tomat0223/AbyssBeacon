@@ -1,6 +1,6 @@
 """Shared HTTP retry helpers for source scanners.
 
-Only throttling responses (HTTP 429) are retried here. Other HTTP statuses are
+Transient GET transport failures and throttling (HTTP 429) are retried here. Other HTTP statuses are
 returned to the caller so each source can preserve its existing handling.
 """
 
@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import email.utils
 import json
+import random
+import math
 import time
 import threading
 from datetime import datetime, timezone
@@ -213,7 +215,7 @@ def get_cached_json_with_backoff(
         return response.status_code, payload, False
 
 
-def _record_retry(provider, recovered=False, failed=False):
+def _record_retry(provider, recovered=False, failed=False, reason=""):
     with _RETRY_LOCK:
         item = _RETRY_STATS.setdefault(provider, {"retries": 0, "recovered": 0, "failed": 0})
         if not recovered and not failed:
@@ -222,6 +224,7 @@ def _record_retry(provider, recovered=False, failed=False):
             item["recovered"] += 1
         if failed:
             item["failed"] += 1
+            item["last_error"] = reason or "HTTP rate limit retries exhausted"
 
 
 
@@ -259,19 +262,50 @@ def get_with_backoff(
     backoff=DEFAULT_BACKOFF,
     pace_key=None,
     min_interval: float = 0.0,
+    cancellable=None,
     **kwargs,
 ):
-    """GET a URL and retry HTTP 429 with Retry-After/exponential fallback.
+    """GET with bounded, cancellable transport and HTTP 429 retries.
 
     Returns the final ``requests.Response``. If all retries are exhausted the
     final 429 response is returned so the source scanner can decide how to
     report or abort that individual search.
     """
     attempts = 0
+    cancellable = scan_control.cancellation_enabled() if cancellable is None else bool(cancellable)
+
+    def check_cancelled():
+        if cancellable:
+            scan_control.check_cancelled()
+
+    def wait(seconds):
+        if cancellable:
+            scan_control.wait_or_cancel(seconds)
+        else:
+            time.sleep(seconds)
+    max_retries = max(0, min(int(max_retries), 5))
+    kwargs.setdefault("timeout", (10, 30))
 
     while True:
+        check_cancelled()
         _pace_request(pace_key, min_interval)
-        response = session.get(url, **kwargs)
+        check_cancelled()
+        try:
+            response = session.get(url, **kwargs)
+        except (requests.exceptions.SSLError, requests.exceptions.InvalidURL):
+            raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            check_cancelled()
+            if attempts >= max_retries:
+                _record_retry(provider, failed=True, reason=failure_message(exc))
+                raise
+            wait_seconds = min(15.0, 2 ** attempts + random.uniform(0, 0.5))
+            attempts += 1
+            _record_retry(provider)
+            # Do not log request URLs, headers, or exception strings containing tokens.
+            print(f"{provider}: {failure_message(exc)}; retry {attempts}/{max_retries} in {wait_seconds:.1f}s")
+            wait(wait_seconds)
+            continue
         if response.status_code != 429:
             if attempts:
                 _record_retry(provider, recovered=True)
@@ -284,6 +318,10 @@ def get_with_backoff(
 
         fallback = backoff[min(attempts, len(backoff) - 1)] if backoff else 3
         wait_seconds = _retry_after_seconds(response, fallback)
+        if not math.isfinite(wait_seconds) or wait_seconds > 120:
+            # Return the rate-limit response without retrying sooner than requested.
+            _record_retry(provider, failed=True)
+            return response
         # A Retry-After applies to the destination, not only this thread. Share
         # that cooldown with sibling CivitAI/Red requests so concurrent detail
         # hydration cannot immediately walk into the same 429 window.
@@ -305,8 +343,27 @@ def get_with_backoff(
             f"(retry {attempts}/{max_retries})"
         )
 
-        deadline = time.monotonic() + wait_seconds
-        while time.monotonic() < deadline:
-            if scan_control.should_stop():
-                return response
-            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        response.close()
+        wait(wait_seconds)
+
+
+def failure_message(exc):
+    """Safe UI category; full chained exceptions remain in diagnostic tracebacks."""
+    if isinstance(exc, scan_control.ScanCancelled):
+        return "Scan stopped by user"
+    text = str(exc).lower()
+    if "browserstartup" in type(exc).__name__.lower():
+        return str(exc)
+    if any(word in text for word in ("nameresolution", "getaddrinfo", "name resolution", "nodename nor servname")):
+        return "DNS resolution failed; check connectivity and VPN DNS"
+    if any(word in text for word in ("remotedisconnected", "remote end closed", "connection aborted")):
+        return "Remote server disconnected; retry after checking connectivity"
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "TLS certificate or secure connection failure"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "Network request timed out"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "Network connection failed; check connectivity"
+    if "429" in text or "rate limit" in text:
+        return "HTTP rate limit; retry later"
+    return f"Source failed ({type(exc).__name__}); see diagnostic log"

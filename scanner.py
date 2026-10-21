@@ -301,7 +301,12 @@ def _apply_shared_retention_tombstones(source_name, models, source_settings):
 
 
 
-def _run_one_source_job(source_name, source, job, source_seen_models, search_settings, terminal_progress_enabled=True, browser_progress_enabled=True):
+def _run_one_source_job(*args, **kwargs):
+    with scan_control.cancellation_scope():
+        return _run_one_source_job_impl(*args, **kwargs)
+
+
+def _run_one_source_job_impl(source_name, source, job, source_seen_models, search_settings, terminal_progress_enabled=True, browser_progress_enabled=True):
     """Execute one source discovery job and return its models + timing.
 
     The shared seen-set is only an optimization. Returned models are also
@@ -527,6 +532,8 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
         }
     except Exception as exc:
         import traceback
+        from scanners.http_retry import failure_message
+        from seaart_browser import BrowserStartupError
         duration = time.perf_counter() - job_start
         scan_status.finish_terminal_progress()
         print(f"{source_name} failed while scanning {watch} / {term}:")
@@ -537,7 +544,9 @@ def _run_one_source_job(source_name, source, job, source_seen_models, search_set
             "models": [],
             "count": 0,
             "duration": duration,
-            "error": repr(exc),
+            "error": failure_message(exc),
+            "fatal_source": isinstance(exc, BrowserStartupError),
+            "cancelled": isinstance(exc, scan_control.ScanCancelled),
         }
 
 
@@ -598,6 +607,8 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
             )
             discovered.extend(result.pop("models"))
             job_results.append(result)
+            if result.get("fatal_source") or result.get("cancelled"):
+                break
     else:
         if verbose_enabled():
             print(f"\n{_source_display_name(source_name, source)}: parallel aliases enabled ({per_source_workers} workers max)")
@@ -833,11 +844,16 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             source_stats = {"processed": 0}
         else:
             source_stats = _commit_source_models(scan_id, source_name, result["models"], stats)
-        source_state = "stopped" if scan_control.should_stop() else ("error" if any(j.get("error") for j in result.get("jobs", [])) else "complete")
-        scan_status.update_source_health(source_name, "stopped" if scan_control.should_stop() else ("error" if source_state == "error" else "ok"), "")
+        provider = _source_display_name(source_name, source)
+        retry_failure = get_retry_stats().get(provider, {})
+        had_error = any(j.get("error") and not j.get("cancelled") for j in result.get("jobs", [])) or bool(retry_failure.get("failed"))
+        error_message = next((j["error"] for j in result.get("jobs", []) if j.get("error")), retry_failure.get("last_error", ""))
+        source_state = "stopped" if scan_control.should_stop() else ("error" if had_error else "complete")
+        scan_status.update_source_health(source_name, "stopped" if scan_control.should_stop() else ("error" if had_error else "ok"), error_message)
         scan_status.update_source_progress(
             source_name,
             status=source_state,
+            message=error_message,
             processed=source_stats.get("processed", 0),
             added=source_stats.get("added", 0),
             updated=source_stats.get("updated", 0),
@@ -848,7 +864,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
         if not verbose_enabled():
             scan_status.finish_terminal_progress()
             display_name = _source_display_name(source_name, source)
-            print(_source_scan_summary(display_name, source_stats, result["duration"]))
+            print(_source_scan_summary(display_name, source_stats, result["duration"]) + (f" [FAILED: {error_message}]" if had_error else ""))
         scan_status.update_status(
             status="stopping" if scan_control.should_stop() else "running",
             source=source_name,
@@ -858,7 +874,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             media=stats["media"],
             images=stats["images"],
             videos=stats["videos"],
-            message=(
+            message=(error_message or
                 f"{_source_display_name(source_name, source)}: "
                 f"{source_stats.get('added', 0)} new, "
                 f"{source_stats.get('updated', 0)} updated, "
@@ -912,12 +928,16 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
                     source_stats = _commit_source_models(
                         scan_id, source_name, result["models"], stats
                     )
-                had_error = any(j.get("error") for j in result.get("jobs", []))
+                provider = _source_display_name(source_name, active_scanners.get(source_name))
+                retry_failure = get_retry_stats().get(provider, {})
+                had_error = any(j.get("error") and not j.get("cancelled") for j in result.get("jobs", [])) or bool(retry_failure.get("failed"))
+                error_message = next((j["error"] for j in result.get("jobs", []) if j.get("error")), retry_failure.get("last_error", ""))
                 source_state = "stopped" if scan_control.should_stop() else ("error" if had_error else "complete")
-                scan_status.update_source_health(source_name, "stopped" if scan_control.should_stop() else ("error" if had_error else "ok"), "")
+                scan_status.update_source_health(source_name, "stopped" if scan_control.should_stop() else ("error" if had_error else "ok"), error_message)
                 scan_status.update_source_progress(
                     source_name,
                     status=source_state,
+                    message=error_message,
                     processed=source_stats.get("processed", 0),
                     added=source_stats.get("added", 0),
                     updated=source_stats.get("updated", 0),
@@ -927,7 +947,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
                 total += source_stats["processed"]
 
                 display_name = _source_display_name(source_name, active_scanners.get(source_name))
-                print(_source_scan_summary(display_name, source_stats, result["duration"]))
+                print(_source_scan_summary(display_name, source_stats, result["duration"]) + (f" [FAILED: {error_message}]" if had_error else ""))
                 scan_status.update_status(
                     status="stopping" if scan_control.should_stop() else "running",
                     source=source_name,
@@ -937,7 +957,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
                     media=stats["media"],
                     images=stats["images"],
                     videos=stats["videos"],
-                    message=(
+                    message=(error_message or
                         f"{display_name}: {source_stats.get('added', 0)} new, "
                         f"{source_stats.get('updated', 0)} updated, "
                         f"{source_stats.get('unchanged', 0)} unchanged"
@@ -971,7 +991,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             state = "recovered" if not values.get("failed") else f"{values.get('failed')} failed"
             retry_parts.append(f"{provider}: {values.get('retries')} retries, {state}")
     if retry_parts:
-        print("Rate-limit retries: " + "; ".join(retry_parts))
+        print("HTTP retries: " + "; ".join(retry_parts))
 
 
     failed_jobs = []
@@ -988,7 +1008,9 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
             source_name = retry_provider_to_source.get(provider, provider)
             if source_name not in failed_jobs:
                 failed_jobs.append(source_name)
-            scan_status.update_source_health(source_name, "error", "Rate limit retries exhausted")
+            scan_status.update_source_health(source_name, "error", values.get("last_error", "HTTP retries exhausted"))
+            if not was_stopped:
+                scan_status.update_source_progress(source_name, status="error", message=values.get("last_error", "HTTP retries exhausted"))
     if failed_jobs:
         print("Partial failures : " + ", ".join(sorted(failed_jobs)))
 

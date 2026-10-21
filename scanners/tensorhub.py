@@ -317,6 +317,9 @@ def _architecture_name(base_model):
     if flux3_id in {"FLUX_3_IMAGE_KLEIN_DISTILLED", "FLUX_3_IMAGE_KLEIN_BASE"}:
         return "FLUX.3 Klein Base" if flux3_id.endswith("_BASE") else "FLUX.3 Klein"
 
+    if upper in {"MOSS_IMAGE_BASE", "MOSS_IMAGE_SFT"}:
+        return "MOSS Image Base" if upper.endswith("_BASE") else "MOSS Image"
+
     if upper == "KREA_2":
         return "Krea 2"
     if re.sub(r"[^A-Z0-9]+", "_", text.upper()).strip("_") == "QWEN_IMAGE_2_1":

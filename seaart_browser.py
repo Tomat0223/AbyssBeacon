@@ -8,6 +8,8 @@ profile. The user finishes the connection explicitly after signing in so browser
 from __future__ import annotations
 
 import base64
+import logging
+import scan_control
 import hashlib
 import json
 import os
@@ -36,6 +38,18 @@ _STOP = threading.Event()
 _FINISH = threading.Event()
 _STATE = {"state":"idle","message":"SeaArt browser session is not connected.","connected":False,"display_name":""}
 _LIVE_LOCK = threading.RLock()
+_LOG = logging.getLogger(__name__)
+
+
+class BrowserStartupError(RuntimeError):
+    pass
+
+
+def _console_kwargs():
+    # Only for console helpers; visible browser launch remains unchanged.
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+
+
 _ALLOWED_BROWSERS = {"firefox", "chrome", "edge"}
 
 
@@ -152,7 +166,7 @@ def _launch_browser(browser):
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=8,
+                    timeout=8, **_console_kwargs(),
                 )
             except Exception:
                 pass
@@ -553,11 +567,13 @@ def _profile_process_ids(browser, profile_path):
     try:
         result = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=6, env=env,
+            capture_output=True, text=True, timeout=6, env=env, **_console_kwargs(),
         )
+        if result.returncode:
+            raise RuntimeError("SeaArt could not inspect its isolated browser processes; close its window and retry.")
         return [int(line.strip()) for line in result.stdout.splitlines() if line.strip().isdigit()]
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RuntimeError("SeaArt browser process check failed; close its window and retry.") from exc
 
 
 def _close_launched_browser():
@@ -584,14 +600,14 @@ def _close_launched_browser():
     if os.name == "nt":
         for pid in pids:
             try:
-                subprocess.run(["taskkill", "/PID", str(pid), "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                subprocess.run(["taskkill", "/PID", str(pid), "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, **_console_kwargs())
             except Exception:
                 pass
         time.sleep(.6)
         # Force only any isolated-profile process that survived the normal close.
         for pid in _profile_process_ids(browser, profile_path):
             try:
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, **_console_kwargs())
             except Exception:
                 pass
         return
@@ -677,6 +693,9 @@ def start_browser_connection():
     global _THREAD
     with _LOCK:
         if _THREAD and _THREAD.is_alive(): return browser_session_status()
+        if not _LIVE_LOCK.acquire(blocking=False):
+            raise RuntimeError("SeaArt is scanning or downloading. Stop that work before reconnecting.")
+        _LIVE_LOCK.release()
         # Reconnect is a fresh authentication attempt.  Do not let a marker from a
         # previous session make a failed/logged-out reconnect look connected again.
         try:
@@ -713,6 +732,15 @@ def stop_browser_connection():
 
 
 def disconnect_browser_session():
+    if not _LIVE_LOCK.acquire(blocking=False):
+        raise RuntimeError("SeaArt is scanning or downloading. Stop that work before disconnecting.")
+    try:
+        return _disconnect_browser_session()
+    finally:
+        _LIVE_LOCK.release()
+
+
+def _disconnect_browser_session():
     stop_browser_connection()
     _close_launched_browser()
     for _ in range(30):
@@ -738,17 +766,27 @@ class SeaArtLiveSession:
     the user has completed the normal-browser Connect SeaArt flow.
     """
 
-    def __init__(self):
+    def __init__(self, cancellable=False):
+        self.cancellable = cancellable
         self.browser = str((_read_marker().get("browser") or preferred_browser())).strip().lower()
         if self.browser not in _ALLOWED_BROWSERS:
             self.browser = preferred_browser()
         self.driver = None
 
+    def _check_cancelled(self):
+        if self.cancellable:
+            scan_control.check_cancelled()
+
     def __enter__(self):
         if not browser_session_saved():
             raise RuntimeError("SeaArt Browser Session is not connected. Open Source Accounts and click Connect SeaArt.")
-        _LIVE_LOCK.acquire()
+        while not _LIVE_LOCK.acquire(timeout=0.2):
+            self._check_cancelled()
         try:
+            self._check_cancelled()
+            with _LOCK:
+                if _THREAD and _THREAD.is_alive():
+                    raise RuntimeError("Finish or close the SeaArt login window before scanning.")
             self.driver = self._open_driver()
             return self
         except Exception:
@@ -762,7 +800,8 @@ class SeaArtLiveSession:
             # architecture starts from a neutral catalog instead of inheriting
             # the previous Base Model chip.
             try:
-                self._reset_catalog_filter_state()
+                if not (self.cancellable and scan_control.should_stop()):
+                    self._reset_catalog_filter_state()
             except Exception:
                 pass
             self.close()
@@ -800,7 +839,7 @@ class SeaArtLiveSession:
             if os.name == "nt":
                 for pid in active:
                     try:
-                        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, **_console_kwargs())
                     except Exception:
                         pass
                 time.sleep(.8)
@@ -821,9 +860,10 @@ class SeaArtLiveSession:
             options.enable_bidi = True
             options.binary_location = exe
             options.add_argument("-headless")
+            options.add_argument("-no-remote")
             options.add_argument("-profile")
             options.add_argument(str(profile))
-            driver = webdriver.Firefox(options=options)
+            driver = self._start_firefox(webdriver, options, profile)
         elif self.browser == "chrome":
             options = ChromeOptions()
             options.enable_bidi = True
@@ -850,13 +890,90 @@ class SeaArtLiveSession:
             pass
         return driver
 
+    def _cleanup_failed_firefox(self, service, profile):
+        # Only this SeaArt profile; never kill Firefox by executable name.
+        if os.name == "nt":
+            try:
+                owned_pids = _profile_process_ids("firefox", str(profile))
+            except Exception:
+                _LOG.warning("SeaArt cleanup could not inspect profile processes", exc_info=True)
+                owned_pids = []
+            for pid in owned_pids:
+                try:
+                    result = subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True, timeout=8, **_console_kwargs())
+                    if result.returncode:
+                        _LOG.warning("SeaArt profile process cleanup returned %s", result.returncode)
+                except Exception:
+                    _LOG.warning("SeaArt profile process cleanup failed", exc_info=True)
+        try:
+            service.stop()
+        except Exception:
+            _LOG.warning("SeaArt GeckoDriver cleanup failed", exc_info=True)
+
+    def _start_firefox(self, webdriver, options, profile):
+        import selenium
+        from selenium.webdriver.firefox.service import Service
+        from selenium.common.exceptions import WebDriverException, SessionNotCreatedException
+        log_dir = _ROOT / "logs" / "seaart-startup"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Error-level only: no WebDriver commands, cookies, or page responses.
+        for old in sorted(log_dir.glob("gecko-*.log"), key=lambda p: p.stat().st_mtime)[:-9]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        for attempt in range(2):
+            self._check_cancelled()
+            log_path = log_dir / f"gecko-{uuid.uuid4().hex}.log"
+            service = Service(log_output=str(log_path), service_args=["--log", "error"])
+            service.process = None  # stop() is safe even when driver resolution fails before start().
+            # Selenium uses creation_flags internally, unlike subprocess's creationflags.
+            service.creation_flags = _console_kwargs().get("creationflags", 0)
+            service.log_output.write(
+                f"AbyssBeacon startup: attempt={attempt + 1} selenium={selenium.__version__} "
+                f"binary={Path(options.binary_location).name} headless=True bidi=True\n")
+            service.log_output.flush()
+            try:
+                driver = webdriver.Firefox(options=options, service=service)
+                if self.cancellable and scan_control.should_stop():
+                    try:
+                        driver.quit()
+                    finally:
+                        self._cleanup_failed_firefox(service, profile)
+                    self._check_cancelled()
+                return driver
+            except WebDriverException as exc:
+                self._cleanup_failed_firefox(service, profile)
+                with log_path.open("a", encoding="utf-8") as diagnostic:
+                    diagnostic.write(f"AbyssBeacon startup failed: {type(exc).__name__}\n")
+                _LOG.warning("SeaArt Firefox startup failed (%s), log=%s", type(exc).__name__, log_path.name)
+                self._check_cancelled()
+                # Incompatible binaries/configuration need correction, not repeated launches.
+                permanent = isinstance(exc, SessionNotCreatedException) or any(
+                    word in str(exc).lower() for word in ("binary is not", "not a firefox", "unable to obtain", "expected browser binary", "only supports"))
+                if attempt or permanent:
+                    raise BrowserStartupError(
+                        f"SeaArt Firefox startup failed. Close SeaArt's login window and check Firefox/GeckoDriver compatibility. Diagnostic: logs/seaart-startup/{log_path.name}"
+                    ) from exc
+                if self.cancellable:
+                    scan_control.wait_or_cancel(2.0)
+                else:
+                    time.sleep(2.0)
+            except Exception:
+                self._cleanup_failed_firefox(service, profile)
+                raise
+
     def close(self):
         driver, self.driver = self.driver, None
         if driver is not None:
             try:
                 driver.quit()
             except Exception:
-                pass
+                _LOG.warning("SeaArt driver quit failed", exc_info=True)
+                if self.browser == "firefox":
+                    self._cleanup_failed_firefox(driver.service, (_PROFILE_ROOT / self.browser).resolve())
 
     @staticmethod
     def _model_ids_from_html(source):
@@ -3306,5 +3423,5 @@ class SeaArtLiveSession:
 
 
 
-def live_session():
-    return SeaArtLiveSession()
+def live_session(cancellable=False):
+    return SeaArtLiveSession(cancellable=cancellable)

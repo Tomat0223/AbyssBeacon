@@ -1207,6 +1207,13 @@ def scan_tag(tag_value, max_results=100, sort="NEWEST", tag_name=""):
     return models
 
 def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
+    # Discovery and detail processing must both release the browser on any exit.
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        return _scan_impl(term, scan_seen_models, scan_settings, creator, stack)
+
+
+def _scan_impl(term, scan_seen_models, scan_settings, creator, stack):
     settings = scan_settings or {}
 
     if creator:
@@ -1239,8 +1246,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
     live = None
     live_ctx = None
     if browser_session_saved():
-        live_ctx = live_session()
-        live = live_ctx.__enter__()
+        live_ctx = live_session(cancellable=True)
+        live = stack.enter_context(live_ctx)
     # Browser-session discovery is preferred because SeaArt now signs its
         # listing/search requests inside the frontend. Manual cURL remains a fallback.
     progress_label = str(settings.get("_watch_architecture") or term or "SeaArt").strip()
@@ -1281,19 +1288,8 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
         else:
             cards = _fetch_search(term, settings, live=live)
             discovery_kind = "Live browser keyword search" if live else "Keyword search"
-    except Exception as exc:
-        # Always release Selenium + the isolated SeaArt profile when discovery
-        # fails.  Previously the normal __exit__ lived only at the bottom of
-        # scan(), so an exception here leaked the headless browser and could
-        # prevent Connect/Reconnect from opening a visible SeaArt window.
-        if live_ctx is not None:
-            try:
-                live_ctx.__exit__(type(exc), exc, exc.__traceback__)
-            except Exception:
-                pass
-            live_ctx = None
-            live = None
-        raise
+    except Exception:
+        raise  # ExitStack releases the session for discovery and detail failures.
     catalog_elapsed = time.perf_counter() - catalog_started
 
     # Anything mode means models + creators. SeaArt's direct keyword endpoint
@@ -1546,8 +1542,6 @@ def scan(term, scan_seen_models=None, scan_settings=None, creator=None):
             scan_status.finish_terminal_progress()
         else:
             _report_scan_progress(progress_label, len(cards), len(cards), "Checking models", finalize=True)
-    if live_ctx is not None:
-        live_ctx.__exit__(None, None, None)
     return results
 
 

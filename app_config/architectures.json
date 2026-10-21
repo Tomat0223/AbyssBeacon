@@ -843,8 +843,10 @@
         "terms": []
       },
       "tensorhub": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "MOSS-Image-SFT"
+        ]
       }
     }
   },
@@ -886,8 +888,10 @@
         "terms": []
       },
       "tensorhub": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
       }
     }
   }
