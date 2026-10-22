@@ -15,6 +15,7 @@ AbyssBeacon brings multiple model sources into one local interface so you can fi
 - Filter by source, architecture, model type, access state, favorites, and download status.
 - Browse model images and video previews.
 - Search supported sources directly without changing the normal scan registry.
+- Import a model or scan a creator by pasting a supported page URL.
 - Use Discovery scans and creator tools to find models outside normal architecture searches.
 - Track downloadable, gated, paid, and early-access states where the source provides enough information.
 - Download through the browser or use the Local Installer for a ComfyUI model library.
@@ -97,6 +98,10 @@ Normal scans use the tested model-family definitions configured in AbyssBeacon.
 The main search box filters models already in your AbyssBeacon feed.
 
 Use Search Sources when you want to look for an arbitrary model name or keyword without adding it to the normal scan registry. Type `search` in the main search box to open Search Sources.
+
+Choose **Import / scan by URL** in Search Sources to paste a supported model or creator page. AbyssBeacon detects the source and uses its normal lookup and account connection. Direct model links are imported independently of the architecture selection; creator imports use the selected result limit and source limits. Some sources require a connected account.
+
+Krea 2 scans include both regular and Turbo categories on CivitAI and CivitAI Red. SeaArt MOSS Image maps to the SFT variant; MOSS Image Base remains separate where supported. Fibo 2.0 Dev and Fibo 2.0 Edit Turbo discovery is enabled for Hugging Face and ModelScope.
 
 Discovery tools can use source-specific tags and creator information to find models outside the normal architecture searches. Type `discover` in the main search box to open Discovery.
 

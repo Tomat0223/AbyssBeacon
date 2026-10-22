@@ -679,13 +679,15 @@
       "civitai": {
         "mode": "base_model",
         "terms": [
-          "Krea 2"
+          "Krea 2",
+          "Krea 2 Turbo"
         ]
       },
       "civitaired": {
         "mode": "base_model",
         "terms": [
-          "Krea 2"
+          "Krea 2",
+          "Krea 2 Turbo"
         ]
       },
       "tensorhub": {
@@ -839,8 +841,10 @@
         ]
       },
       "seaart": {
-        "enabled": false,
-        "terms": []
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
       },
       "tensorhub": {
         "mode": "base_model",
@@ -892,6 +896,86 @@
         "terms": [
           "MOSS-Image-Base"
         ]
+      }
+    }
+  },
+  "Fibo 2.0 Dev": {
+    "family": "FIBO",
+    "label": "Fibo 2.0 Dev",
+    "keywords": [
+      "fibo-2.0-dev",
+      "fibo 2.0 dev"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "Fibo-2.0-dev",
+          "Fibo-2.0"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "Fibo-2.0-dev",
+          "Fibo-2.0"
+        ]
+      },
+      "civitai": {
+        "enabled": false,
+        "terms": []
+      },
+      "civitaired": {
+        "enabled": false,
+        "terms": []
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
+      }
+    }
+  },
+  "Fibo 2.0 Edit Turbo": {
+    "family": "FIBO",
+    "label": "Fibo 2.0 Edit Turbo",
+    "keywords": [
+      "fibo-2.0-edit-turbo",
+      "fibo 2.0 edit turbo"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "Fibo-2.0-edit-turbo",
+          "Fibo-2.0"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "Fibo-2.0-edit-turbo",
+          "Fibo-2.0"
+        ]
+      },
+      "civitai": {
+        "enabled": false,
+        "terms": []
+      },
+      "civitaired": {
+        "enabled": false,
+        "terms": []
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "enabled": false,
+        "terms": []
       }
     }
   }

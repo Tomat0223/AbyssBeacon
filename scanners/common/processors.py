@@ -70,6 +70,28 @@ def classify_architecture(*values):
     if not text:
         return "Other"
 
+    # Variant evidence must be explicit. Broad Fibo searches also find VLMs,
+    # old releases and mixed repack repositories; none implies a Dev checkpoint.
+    fibo_seen = False
+    for value in values:
+        identity = _normalize_architecture_text(value)
+        if not re.search(r"\bfibo\b", identity):
+            continue
+        fibo_seen = True
+        if len(identity) > 400:
+            continue  # Long descriptions may recommend several different variants.
+        if re.search(r"\bfibo\b.*\b(?:vlm|scene analyzer|prompt to json|text encoder)\b", identity):
+            return "Other"
+        has_dev = bool(re.search(r"\bfibo\s*2(?:\s*0)?\s*dev\b", identity))
+        if has_dev and re.search(r"\bedit\s*turbo\b", identity):
+            return "Other"  # A combined Dev + Turbo repository is not one variant.
+        if re.search(r"\bfibo\s*2(?:\s*0)?\s*edit\s*turbo\b", identity):
+            return "Fibo 2.0 Edit Turbo"
+        if re.search(r"\bfibo\s*2(?:\s*0)?\s*dev\b", identity):
+            return "Fibo 2.0 Dev"
+    if fibo_seen:
+        return "Other"
+
     # Match the image family explicitly; MOSS also names speech/LLM models.
     for value in values:
         identity = _normalize_architecture_text(value)
@@ -145,7 +167,7 @@ def classify_architecture_with_watch_fallback(watch, *values):
     if watch_class == "Other":
         return "Other"
 
-    if watch_class in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base"}:
+    if watch_class in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base", "Fibo 2.0 Dev", "Fibo 2.0 Edit Turbo"}:
         # A keyword hit alone is not architecture evidence.
         return "Other"
 

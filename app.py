@@ -4756,6 +4756,19 @@ def search_sources_external():
     depth = str(data.get("depth") or "deep").strip().lower()
     sources = [s for s in (data.get("sources") or []) if s in scanner.ALL_SCANNERS]
 
+    url_target = None
+    if intent == "url":
+        from url_import import parse_target
+        try:
+            url_target = parse_target(query)
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}, 400
+        query = url_target["url"]
+        sources = [url_target["source"]]
+        # A direct URL is explicit identity; stale architecture selections must
+        # not silently discard it.
+        data["architectures"] = []
+
     # Search Sources is a true text search first. Architecture choices are a
     # post-search filter and never decide whether a provider is allowed to
     # search for the keyword.
@@ -4775,7 +4788,7 @@ def search_sources_external():
 
     if not query:
         return {"status": "error", "message": "Enter something to search for."}, 400
-    if intent not in {"anything", "models", "creators"}:
+    if intent not in {"anything", "models", "creators", "url"}:
         intent = "anything"
     if not sources:
         return {"status": "error", "message": "Select at least one source."}, 400
@@ -4800,6 +4813,9 @@ def search_sources_external():
             "external_query": query,
             "external_architectures": selected_architectures,
         }
+        if url_target:
+            job["url_target"] = url_target
+            job["watch"] = "URL: " + url_target["key"]
         if intent == "creators":
             job["watch"] = f"Creator: {query}"
             job["creator"] = query
@@ -4836,6 +4852,9 @@ def search_sources_external():
         except Exception as exc:
             scan_status.update_status(status="error", message=str(exc))
 
+    if url_target:
+        # Establish new-run state before returning, including very fast imports.
+        scan_status.update_status(status="running", message="Starting URL import…")
     threading.Thread(target=run_external, daemon=True).start()
     return {
         "status": "started",

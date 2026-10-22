@@ -291,7 +291,9 @@ def extract_readme_media(readme_text, model_id, readme_path="README.md", revisio
             return
         # README badges are UI decoration, not model previews.
         lowered = url.casefold()
-        if "shields.io/" in lowered or "/badge/" in lowered:
+        if ("shields.io/" in lowered or "/badge/" in lowered
+                or "/badges/" in lowered
+                or urlparse(url).path.casefold().endswith(".svg")):
             return
         candidates.append((
             url,
@@ -799,7 +801,7 @@ def scan(
     # AbyssBeacon exposes a total result ceiling rather than page controls.
     # Hugging Face pagination is followed via the API's Link header.
     per_request = 1000
-    target_results = 10000 if creator else MAX_RESULTS
+    target_results = (min(10000, MAX_RESULTS) if scan_settings.get('_url_creator_limit') else 10000) if creator else MAX_RESULTS
     if not creator:
         _progress(0, target_results, "Finding models")
     params = {

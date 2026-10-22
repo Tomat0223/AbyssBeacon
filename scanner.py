@@ -412,7 +412,11 @@ def _run_one_source_job_impl(source_name, source, job, source_seen_models, searc
 
     job_start = time.perf_counter()
     try:
-        models = source.scan(term, source_seen_models, source_settings, creator=job.get("creator"))
+        if job.get("url_target"):
+            from url_import import scan_target
+            models = scan_target(job["url_target"], source_settings)
+        else:
+            models = source.scan(term, source_seen_models, source_settings, creator=job.get("creator"))
 
         # Qwen's new watch currently uses provider text search on several
         # sources. Search results are candidates, not proof of architecture.
@@ -480,7 +484,7 @@ def _run_one_source_job_impl(source_name, source, job, source_seen_models, searc
                         kept.append(model)
                 models = kept
 
-        if str(job.get("watch") or "") in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base"}:
+        if str(job.get("watch") or "") in {"FLUX.3", "FLUX.3 Klein", "FLUX.3 Klein Base", "MOSS Image", "MOSS Image Base", "Fibo 2.0 Dev", "Fibo 2.0 Edit Turbo"}:
             wanted = str(job["watch"])
             models = [
                 model for model in models
@@ -581,6 +585,13 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
     source_seen_models = set()
     discovered = []
     job_results = []
+    # Both Fibo watches search the same broad family. A candidate rejected by
+    # one watch must remain available to the other watch's classifier.
+    variant_seen = {job.get("watch"): set() for job in jobs
+                    if job.get("watch") in {"Fibo 2.0 Dev", "Fibo 2.0 Edit Turbo"}}
+
+    def seen_for(job):
+        return variant_seen.get(job.get("watch"), source_seen_models)
     worker_start = time.perf_counter()
 
     if not jobs:
@@ -601,7 +612,7 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
             if scan_control.should_stop():
                 break
             result = _run_one_source_job(
-                source_name, source, job, source_seen_models, search_settings,
+                source_name, source, job, seen_for(job), search_settings,
                 terminal_progress_enabled=True,
                 browser_progress_enabled=True,
             )
@@ -622,7 +633,7 @@ def _scan_source_jobs(source_name, source, jobs, search_settings):
                     source_name,
                     source,
                     job,
-                    source_seen_models,
+                    seen_for(job),
                     search_settings,
                     False,
                     False,

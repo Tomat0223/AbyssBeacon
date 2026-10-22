@@ -489,7 +489,7 @@ def _resolve_creator_ids(creator, settings):
     return exact or partial
 
 
-def _fetch_creator_catalog(creator_id, settings):
+def _fetch_creator_catalog(creator_id, settings, live=None):
     """Fetch models from SeaArt's personal-center model catalog."""
     max_results = max(1, int((settings or {}).get("max_results") or 100))
     page_size = min(24, max_results)
@@ -507,7 +507,8 @@ def _fetch_creator_catalog(creator_id, settings):
             "other_account": str(creator_id),
             "scene": "personal_center_refactor_v3",
         }
-        response = _post(CREATOR_LIST_API, payload, BASE + f"/user/{creator_id}")
+        response = (live.post_json(CREATOR_LIST_API, payload, BASE + f"/user/{creator_id}")
+                    if live is not None else _post(CREATOR_LIST_API, payload, BASE + f"/user/{creator_id}"))
         items = _search_items(response)
         if not items:
             break

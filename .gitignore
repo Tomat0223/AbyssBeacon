@@ -35,3 +35,6 @@ venv/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local automated verification files are not part of app releases.
+/tests/

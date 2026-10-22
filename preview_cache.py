@@ -5,6 +5,14 @@ Only card cover images are cached. Full gallery media remains remote and loads o
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import re
+import threading
+import tempfile
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from urllib.parse import urlsplit
 import io
 import os
 import warnings
@@ -19,13 +27,87 @@ PUBLIC_PREFIX = "/static/cache/previews/"
 MAX_EDGE = 512
 QUALITY = 82
 WORKERS = 8
+MAX_PREVIEW_PIXELS = 32_000_000
+MAX_PREVIEW_BYTES = 20 * 1024 * 1024
+# CPython 3.12 warning filters are process-global. Serialize only header probing,
+# not downloads or pixel decoding, while temporarily treating bomb warnings as errors.
+_IMAGE_OPEN_LOCK = threading.Lock()
+_TRACKER_LOCK = threading.Lock()
+_TRACKER = None
+
+
+def _track_preview(url, source, model_key, reason, **details):
+    global _TRACKER
+    record = {
+        "time": datetime.now(timezone.utc).isoformat(),
+        "source": str(source or "unknown")[:80],
+        "model_key": str(model_key or "unknown")[:200],
+        "url_hash": _filename(url).removesuffix(".webp"),
+        "reason": reason,
+        **details,
+    }
+    try:
+        record["host"] = urlsplit(url).hostname or ""
+    except ValueError:
+        record["host"] = "invalid"
+    # No URL paths, query strings, request headers, or exception text: CDN links
+    # may contain signed tokens. Model identity + URL hash suffice for correlation.
+    message = json.dumps(record, ensure_ascii=True)
+    important = reason in {"pixel_limit", "pillow_pixel_guard", "download_too_large"}
+    level = logging.WARNING if important else logging.INFO
+    # Routine unavailable/unsupported cover images belong in the diagnostic
+    # file; safety limits remain visible as concise human-readable messages.
+    logging.getLogger(__name__).log(
+        level, "Preview cache: %s/%s - %s%s", record["source"], record["model_key"],
+        reason.replace("_", " "),
+        f" ({record['pixels']:,} pixels)" if isinstance(record.get("pixels"), int) else "")
+    try:
+        with _TRACKER_LOCK:
+            if _TRACKER is None:
+                directory = os.path.join(BASE_DIR, "logs")
+                os.makedirs(directory, exist_ok=True)
+                handler = RotatingFileHandler(os.path.join(directory, "preview-cache.log"),
+                                              maxBytes=1024 * 1024, backupCount=2, encoding="utf-8")
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                _TRACKER = logging.Logger("abyssbeacon.preview.tracker")
+                _TRACKER.addHandler(handler)
+            _TRACKER.warning(message)
+    except OSError:
+        logging.getLogger(__name__).warning("Could not write preview-cache diagnostic log")
+
 
 
 def _filename(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8", errors="ignore")).hexdigest() + ".webp"
 
 
-def cache_preview_url(url: str) -> str:
+def _thumbnail_request_url(url):
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname != "image.tensorartassets.com" or parts.query or parts.username:
+        return url
+    path = parts.path
+    if path.startswith("/cdn-cgi/image/"):
+        pieces = path.split("/", 4)
+        if len(pieces) != 5:
+            return url
+        path = "/" + pieces[4]
+    return "https://image.tensorartassets.com/cdn-cgi/image/anim=false,plain=false,w=512,f=webp,q=82" + path
+
+
+def _preview_headers(url, source):
+    headers = {"User-Agent": "AbyssBeacon/1.0", "Accept": "image/*"}
+    parts = urlsplit(url)
+    if (source == "huggingface" and parts.scheme == "https"
+            and parts.hostname == "huggingface.co" and not parts.username
+            and parts.port in (None, 443)):
+        from secrets_manager import get_source_token
+        token = get_source_token("huggingface")
+        if token:
+            headers["Authorization"] = "Bearer " + token
+    return headers
+
+
+def cache_preview_url(url: str, *, source="", model_key="", _try_resize=True) -> str:
     url = str(url or "").strip()
     if not url or url.startswith("/static/") or url.startswith("data:"):
         return url
@@ -37,44 +119,108 @@ def cache_preview_url(url: str) -> str:
     if os.path.isfile(path) and os.path.getsize(path) > 0:
         return public
 
+    temporary = None
+    request_url = _thumbnail_request_url(url) if _try_resize else url
     try:
-        response = requests.get(
-            url,
-            timeout=(5, 15),
-            headers={"User-Agent": "AbyssBeacon/1.0", "Accept": "image/*"},
-        )
-        response.raise_for_status()
-        if not str(response.headers.get("content-type", "")).lower().startswith("image/"):
-            return url
-        # Some source previews contain malformed EXIF/TIFF metadata. Pillow can
-        # still decode the image correctly, but emits a noisy UserWarning while
-        # reading that metadata. Hide only that known recoverable warning here;
-        # all other Pillow warnings and actual image failures remain visible.
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"Corrupt EXIF data\..*",
-                category=UserWarning,
-                module=r"PIL\.TiffImagePlugin",
-            )
-            with Image.open(io.BytesIO(response.content)) as image:
-                image = ImageOps.exif_transpose(image)
+        with requests.get(
+            request_url, timeout=(5, 15), stream=True,
+            headers=_preview_headers(request_url, source),
+        ) as response:
+            response.raise_for_status()
+            if not str(response.headers.get("content-type", "")).lower().startswith("image/"):
+                if request_url != url:
+                    return cache_preview_url(url, source=source, model_key=model_key, _try_resize=False)
+                return url
+            try:
+                length = int(response.headers.get("content-length", 0))
+            except (TypeError, ValueError):
+                length = 0
+            if length > MAX_PREVIEW_BYTES:
+                _track_preview(url, source, model_key, "download_too_large", bytes=length)
+                return url
+            content = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if len(content) + len(chunk) > MAX_PREVIEW_BYTES:
+                    _track_preview(url, source, model_key, "download_too_large", bytes=len(content) + len(chunk))
+                    return url
+                content.extend(chunk)
+
+        with _IMAGE_OPEN_LOCK:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                warnings.filterwarnings("ignore", message=r"Corrupt EXIF data\..*",
+                                        category=UserWarning, module=r"PIL\.TiffImagePlugin")
+                image = Image.open(io.BytesIO(content))
+        with image:
+            width, height = image.size
+            if width * height > MAX_PREVIEW_PIXELS:
+                _track_preview(url, source, model_key, "pixel_limit", width=width, height=height,
+                               pixels=width * height, limit=MAX_PREVIEW_PIXELS)
+                return url
+            # Check dimensions BEFORE exif_transpose/convert/thumbnail trigger decoding.
+            image = ImageOps.exif_transpose(image)
+            try:
                 if image.mode not in ("RGB", "RGBA"):
-                    image = image.convert("RGB")
+                    converted = image.convert("RGB")
+                    image.close()
+                    image = converted
                 image.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)
-                if image.mode == "RGBA":
-                    # WebP supports alpha; keep it when present.
-                    image.save(path, "WEBP", quality=QUALITY, method=4)
-                else:
-                    image.convert("RGB").save(path, "WEBP", quality=QUALITY, method=4)
+                # A unique temporary file avoids corrupt or deleted output when
+                # several models share a cover URL and cache it concurrently.
+                fd, temporary = tempfile.mkstemp(dir=CACHE_DIR, suffix=".webp.tmp")
+                os.close(fd)
+                image.save(temporary, "WEBP", quality=QUALITY, method=4)
+                os.replace(temporary, path)
+                temporary = None
+            finally:
+                image.close()
         return public
-    except Exception:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except OSError:
-            pass
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+        # Pillow's own hard/soft protections stay enabled. Never raise its global limit.
+        size_match = re.search(r"Image size \((\d+) pixels\)", str(exc))
+        _track_preview(url, source, model_key, "pillow_pixel_guard",
+                       error_type=type(exc).__name__,
+                       pixels=int(size_match.group(1)) if size_match else None,
+                       pillow_limit=Image.MAX_IMAGE_PIXELS)
         return url
+    except Exception as exc:
+        if request_url != url:
+            return cache_preview_url(url, source=source, model_key=model_key, _try_resize=False)
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        _track_preview(url, source, model_key, "cache_failed", error_type=type(exc).__name__,
+                       http_status=status if isinstance(status, int) else None)
+        return url
+    finally:
+        if temporary:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+
+
+def _cache_model_cover(model):
+    original = str(getattr(model, "image", "") or "")
+    candidates = [original]
+    for item in getattr(model, "media", []) or []:
+        if not isinstance(item, dict) or str(item.get("type") or "").lower() != "image":
+            continue
+        candidate = str(item.get("thumbnail") or item.get("url") or "")
+        path = urlsplit(candidate).path.lower()
+        decorative = (path.endswith(".svg") or "/badges/" in path or "/badge/" in path
+                      or urlsplit(candidate).hostname == "img.shields.io")
+        if candidate.startswith(("http://", "https://")) and candidate not in candidates and not decorative:
+            candidates.append(candidate)
+        if len(candidates) >= 4:
+            break
+    for candidate in candidates:
+        if urlsplit(candidate).path.lower().endswith(".svg"):
+            continue
+        cached = cache_preview_url(candidate,
+                                   source=str(getattr(model, "source", "") or ""),
+                                   model_key=str(getattr(model, "model_key", "") or ""))
+        if cached.startswith(PUBLIC_PREFIX):
+            return cached
+    return original
 
 
 def cache_model_previews(models) -> int:
@@ -85,7 +231,10 @@ def cache_model_previews(models) -> int:
 
     cached = 0
     with ThreadPoolExecutor(max_workers=min(WORKERS, len(candidates)), thread_name_prefix="modelradar-preview") as pool:
-        future_map = {pool.submit(cache_preview_url, m.image): m for m in candidates}
+        future_map = {
+            pool.submit(_cache_model_cover, m): m
+            for m in candidates
+        }
         for future in as_completed(future_map):
             model = future_map[future]
             try:
@@ -225,7 +374,7 @@ def repair_missing_previews(limit: int | None = None):
     def repair_one(model_id):
         # Try several stored candidates because old source URLs occasionally expire.
         for url in candidates.get(model_id, [])[:8]:
-            cached = cache_preview_url(url)
+            cached = cache_preview_url(url, source="preview-repair", model_key=str(model_id))
             if cached and cached.startswith(PUBLIC_PREFIX):
                 return model_id, cached
         return model_id, ""

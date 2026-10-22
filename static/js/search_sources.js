@@ -41,6 +41,10 @@
   window.openSourceSearch=show;
 
   function updateSourceCount(){
+    if(intent?.value==='url'){
+      if(sourceCount) sourceCount.textContent='Detected from URL';
+      return;
+    }
     const all=Array.from(document.querySelectorAll('input[name="externalSource"]'));
     const selected=all.filter(input=>input.checked).length;
     if(sourceCount) sourceCount.textContent=`${selected}/${all.length} selected`;
@@ -56,25 +60,36 @@
   function updateIntentHelp(){
     const mode=String(intent?.value||'models');
     if(!intentHelp) return;
-    if(mode==='anything') intentHelp.textContent='Searches both models and creators. On sources with creator catalogs, matching creators can contribute models they published.';
+    const byUrl=mode==='url';
+    if(run) run.textContent=byUrl?'Import / scan':'Search sources';
+    updateSourceCount();
+    if(query) query.placeholder=byUrl?'Paste a model or creator page URL…':'airbags, unicycle, Rebecca Chambers…';
+    document.querySelectorAll('input[name="externalSource"], input[name="externalArchitecture"]').forEach(input=>input.disabled=byUrl);
+    if(architectureAny) architectureAny.disabled=byUrl;
+    if(byUrl) intentHelp.textContent='Paste a model or creator page URL. Its source and page type are detected automatically; existing account connections are used.';
+    else if(mode==='anything') intentHelp.textContent='Searches both models and creators. On sources with creator catalogs, matching creators can contribute models they published.';
     else if(mode==='creators') intentHelp.textContent='Finds matching creator accounts and imports models from their creator catalogs on supported sources.';
     else intentHelp.textContent='Searches model names and metadata for the keyword.';
   }
   function updateDepthHelp(){
     if(!depthHelp) return;
     const mode=String(depth?.value||'recent');
+    if(intent?.value==='url'){
+      depthHelp.textContent='A model URL imports that model. For creator URLs, depth controls how many models are inspected.';
+      return;
+    }
     depthHelp.textContent=mode==='maximum'
       ? 'No practical AbyssBeacon result cap is applied. Each provider is searched toward its available end; this can take a long time.'
       : 'Depth controls how many matches each provider may inspect. Search is all-time at every depth; providers run in parallel.';
   }
-  intent?.addEventListener('change',updateIntentHelp);
+  intent?.addEventListener('change',()=>{updateIntentHelp();updateDepthHelp();});
   depth?.addEventListener('change',updateDepthHelp);
   updateIntentHelp(); updateDepthHelp(); updateSourceCount();
 
   function stopPolling(){ if(pollTimer){ clearTimeout(pollTimer); pollTimer=null; } }
-  function poll(){
+  function poll(started=false){
     stopPolling();
-    sawActive=false;
+    sawActive=started;
     pollStartedAt=Date.now();
     const tick=async()=>{
       try{
@@ -116,12 +131,12 @@
     const sources=Array.from(document.querySelectorAll('input[name="externalSource"]:checked')).map(x=>x.value);
     const architectures=selectedArchitectures();
     if(!query?.value.trim()){status.textContent='Enter something to search for.';return;}
-    if(!sources.length){status.textContent='Select at least one source.';return;}
+    if(!sources.length && intent.value!=='url'){status.textContent='Select at least one source.';return;}
     run.disabled=true; status.textContent=depth.value==='maximum'?'Searching sources to provider end… this can take a while.':'Starting source search…';
     try{
       const r=await fetch('/search/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:query.value.trim(),intent:intent.value,architectures,depth:depth.value,sources})});
       const data=await r.json(); if(!r.ok) throw new Error(data.message||'Search could not start.');
-      status.textContent='Searching sources… results will be imported into AbyssBeacon.'; poll();
+      status.textContent='Searching sources… results will be imported into AbyssBeacon.'; poll(data.intent==='url');
     }catch(e){run.disabled=false; status.textContent=e.message;}
   });
 })();
