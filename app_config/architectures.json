@@ -1,4 +1,99 @@
 {
+  "MOSS Image": {
+    "family": "MOSS",
+    "label": "MOSS Image",
+    "keywords": [
+      "moss image sft",
+      "moss-image-sft",
+      "moss image",
+      "mossimage"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-SFT",
+          "MOSS-Image"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-SFT",
+          "MOSS-Image"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
+      },
+      "seaart": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image"
+        ]
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS-Image-SFT"
+        ]
+      }
+    }
+  },
+  "MOSS Image Base": {
+    "family": "MOSS",
+    "label": "MOSS Image Base",
+    "keywords": [
+      "moss image base",
+      "moss-image-base",
+      "mossimagebase"
+    ],
+    "source_searches": {
+      "huggingface": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
+      },
+      "modelscope": {
+        "mode": "text",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
+      },
+      "civitai": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image Base"
+        ]
+      },
+      "civitaired": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS Image Base"
+        ]
+      },
+      "seaart": {
+        "enabled": false,
+        "terms": []
+      },
+      "tensorhub": {
+        "mode": "base_model",
+        "terms": [
+          "MOSS-Image-Base"
+        ]
+      }
+    }
+  },
   "FLUX.3": {
     "family": "FLUX",
     "label": "FLUX.3",
@@ -714,10 +809,88 @@
     ],
     "source_searches": {
       "huggingface": {
-        "mode": "text",
-        "terms": [
-          "minimax h3",
-          "minimax-h3"
+        "queries": [
+          {
+            "mode": "text",
+            "term": "minimax h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "text",
+            "term": "minimax-h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "text",
+            "term": "minimax_h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "text",
+            "term": "minimaxh3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "text",
+            "term": "minimax",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "text",
+            "term": "h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "filter",
+            "filters": [
+              "minimax"
+            ],
+            "label": "filter:minimax",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "filter",
+            "filters": [
+              "h3"
+            ],
+            "label": "filter:h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "filter",
+            "filters": [
+              "minimax-h3"
+            ],
+            "label": "filter:minimax-h3",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "filter",
+            "filters": [
+              "base_model:finetune:MiniMaxAI/MiniMax-H3"
+            ],
+            "label": "base-model:finetune",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          },
+          {
+            "mode": "filter",
+            "filters": [
+              "base_model:adapter:MiniMaxAI/MiniMax-H3"
+            ],
+            "label": "base-model:adapter",
+            "allow_watch_fallback": false,
+            "require_watch_match": true
+          }
         ]
       },
       "modelscope": {
@@ -800,101 +973,6 @@
         "mode": "base_model",
         "terms": [
           "Qwen-image2.1"
-        ]
-      }
-    }
-  },
-  "MOSS Image": {
-    "family": "MOSS",
-    "label": "MOSS Image",
-    "keywords": [
-      "moss image sft",
-      "moss-image-sft",
-      "moss image",
-      "mossimage"
-    ],
-    "source_searches": {
-      "huggingface": {
-        "mode": "text",
-        "terms": [
-          "MOSS-Image-SFT",
-          "MOSS-Image"
-        ]
-      },
-      "modelscope": {
-        "mode": "text",
-        "terms": [
-          "MOSS-Image-SFT",
-          "MOSS-Image"
-        ]
-      },
-      "civitai": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS Image"
-        ]
-      },
-      "civitaired": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS Image"
-        ]
-      },
-      "seaart": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS Image"
-        ]
-      },
-      "tensorhub": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS-Image-SFT"
-        ]
-      }
-    }
-  },
-  "MOSS Image Base": {
-    "family": "MOSS",
-    "label": "MOSS Image Base",
-    "keywords": [
-      "moss image base",
-      "moss-image-base",
-      "mossimagebase"
-    ],
-    "source_searches": {
-      "huggingface": {
-        "mode": "text",
-        "terms": [
-          "MOSS-Image-Base"
-        ]
-      },
-      "modelscope": {
-        "mode": "text",
-        "terms": [
-          "MOSS-Image-Base"
-        ]
-      },
-      "civitai": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS Image Base"
-        ]
-      },
-      "civitaired": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS Image Base"
-        ]
-      },
-      "seaart": {
-        "enabled": false,
-        "terms": []
-      },
-      "tensorhub": {
-        "mode": "base_model",
-        "terms": [
-          "MOSS-Image-Base"
         ]
       }
     }

@@ -348,3 +348,23 @@
 .scanner-advanced-settings { margin-top:4px; }
 .scanner-advanced-body { display:grid; gap:12px; }
 .scanner-advanced-body .option-toggle-row { margin-top:2px; }
+
+.scan-config-picker { border:1px solid #24434b; border-radius:12px; background:#071013; }
+.scan-config-picker > summary { display:flex; align-items:center; gap:12px; padding:13px 14px; cursor:pointer; list-style:none; color:#d8f4f6; }
+.scan-config-picker > summary::-webkit-details-marker { display:none; }
+.scan-config-count { margin-left:auto; color:#00eaff; font-size:12px; }
+.scan-config-chevron { color:#00eaff; transition:transform .15s ease; }
+.scan-config-picker[open] .scan-config-chevron { transform:rotate(180deg); }
+.scan-config-picker-body { padding:0 12px 12px; }
+.scan-config-picker .scan-config-heading { justify-content:flex-end; gap:14px; padding:0 0 10px; }
+.scan-config-picker > summary:focus-visible { outline:2px solid #00eaff; outline-offset:2px; border-radius:12px; }
+
+/* Options owns scrolling while open, including when its content fits. Keep
+   the viewport gutter so opening/closing it does not shift the feed grid. */
+html:has(#optionsPanel.open) {
+    overflow: hidden;
+    scrollbar-gutter: stable;
+}
+#optionsPanel {
+    overscroll-behavior: contain;
+}

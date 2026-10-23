@@ -1010,3 +1010,14 @@ OPTIONS SUB-PAGES
     overflow-y: auto;
     overscroll-behavior: contain;
 }
+
+/* Architecture uses the same dark/cyan source-pill controls as Sources. */
+#familyFilter[hidden] { display:none; }
+.architecture-filter-panel { max-height:340px; overflow:auto; }
+.architecture-filter-choices { display:grid; gap:5px; }
+.architecture-filter-choices .source-pill { margin:0; }
+.architecture-filter-choices .source-pill:focus-within { outline:2px solid #00eaff; outline-offset:-2px; }
+
+.architecture-filter-panel .options-multi-actions { position:sticky; top:-9px; background:#090d11; z-index:1; padding-top:8px; }
+.architecture-filter-choices input { position:absolute; display:block; opacity:0; width:1px; height:1px; }
+#sourceSearchFilters[hidden] { display:none; }

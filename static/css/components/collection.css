@@ -622,7 +622,10 @@
     min-width: 0;
 }
 
-.collection-reload-button {
+.collection-reload-button,
+.collection-model-card-actions > button,
+.collection-model-card-actions > a,
+.collection-model-card-actions > select {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -633,10 +636,14 @@
     color: #dffcff;
     background: rgba(4, 13, 16, .92);
     font: inherit;
+    text-decoration: none;
     cursor: pointer;
 }
 
-.collection-reload-button:hover:not(:disabled) {
+.collection-reload-button:hover:not(:disabled),
+.collection-model-card-actions > button:hover:not(:disabled),
+.collection-model-card-actions > a:hover,
+.collection-model-card-actions > select:hover {
     border-color: var(--collection-source-color);
     box-shadow: 0 0 18px color-mix(in srgb, var(--collection-source-color) 20%, transparent);
 }
@@ -1532,3 +1539,20 @@ body.collection-readme-open { overflow: hidden; }
 
 /* Videos share the image preview geometry; playback belongs to the viewer. */
 .collection-media-item video { width: 100%; height: 100%; min-height: 190px; max-height: 280px; object-fit: cover; display: block; pointer-events: none; }
+
+.collection-model-card-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.collection-readme-status { padding:10px 0; color:var(--text-muted, #aaa); }
+.collection-model-card > .collection-markdown { height:360px; overflow:auto; padding:16px; border:1px solid #ffffff20; border-radius:10px; }
+.collection-markdown { overflow-wrap:anywhere; line-height:1.6; }
+.collection-markdown p { white-space:pre-wrap; margin:.5em 0; }
+.collection-markdown pre { white-space:pre-wrap; padding:12px; background:#0004; border-radius:6px; }
+.collection-markdown a { color:#b9a2ff; }
+.collection-markdown ul, .collection-markdown ol { padding-left:24px; }
+.collection-markdown blockquote { border-left:3px solid #9572d0; padding-left:12px; }
+.collection-markdown table { border-collapse:collapse; margin:12px 0; }
+.collection-markdown th, .collection-markdown td { border:1px solid #ffffff30; padding:6px 10px; text-align:left; }
+.collection-markdown summary { cursor:pointer; }
+
+.collection-model-card-actions > :is(button,a,select):focus-visible { outline:2px solid var(--collection-source-color, #00eaff); outline-offset:3px; }
+.collection-model-card-actions > [hidden] { display:none; }
+.collection-model-card-actions > select option { background:#0a1115; color:#dffcff; }

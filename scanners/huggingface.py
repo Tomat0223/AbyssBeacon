@@ -740,6 +740,101 @@ def repository_files(model_id, details, *, allow_recursive_fallback=True):
 
 
 
+def _hf_parse_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _hf_activity_datetime(item):
+    values = [
+        _hf_parse_datetime((item or {}).get("createdAt")),
+        _hf_parse_datetime((item or {}).get("lastModified")),
+    ]
+    values = [value for value in values if value is not None]
+    return max(values) if values else datetime.min
+
+
+
+def _hf_architecture_evidence(item=None, details=None, files=None, readme_text=""):
+    """Return cheap-to-expensive architecture evidence without mutating source metadata.
+
+    Normal Hugging Face discovery can intentionally use broad candidate searches
+    (for example ``minimax`` or ``h3``).  Those searches must not force the watch
+    architecture, but we also should not pay for a recursive repository walk and
+    media extraction before discovering that a candidate is clearly unrelated.
+    """
+    item = item if isinstance(item, dict) else {}
+    details = details if isinstance(details, dict) else {}
+    files = list(files or [])
+
+    values = []
+    for source in (item, details):
+        if not isinstance(source, dict):
+            continue
+        values.extend([
+            source.get("id", ""),
+            source.get("modelId", ""),
+            source.get("pipeline_tag", ""),
+            source.get("pipelineTag", ""),
+            source.get("library_name", ""),
+            source.get("libraryName", ""),
+            source.get("tags", []),
+            source.get("cardData", {}),
+            source.get("card_data", {}),
+        ])
+        base_model = metadata.extract_base_model(source)
+        if base_model:
+            values.append(base_model)
+
+    for file in files:
+        if isinstance(file, dict):
+            values.append(file.get("path") or file.get("name") or "")
+        else:
+            values.append(str(file or ""))
+
+    if readme_text:
+        values.append(readme_text)
+    return values
+
+
+def _hf_watch_evidence_state(watch_architecture, *values):
+    """Return ``(expected, actual, explicit_conflict)`` for staged HF gating.
+
+    ``actual == Other`` remains ambiguous and must not be rejected merely because
+    a broad search term found the repository.  ``explicit_conflict`` handles a
+    narrow but important case the shared classifier cannot represent yet: a repo
+    that explicitly says it is another MiniMax family while MiniMax-H3 is watched.
+    """
+    expected = processors.classify_architecture(watch_architecture)
+    actual = processors.classify_architecture(*values)
+    evidence = str(" ".join(
+        str(value or "") for value in values if value is not None
+    )).casefold()
+    evidence = re.sub(r"[^a-z0-9]+", " ", evidence)
+    evidence = re.sub(r"\s+", " ", evidence).strip()
+
+    explicit_conflict = False
+    if expected == "MiniMax-H3" and "minimax" in evidence:
+        # Explicit MiniMax M-series/music-family metadata is strong negative
+        # evidence for H3.  A bare ``minimax`` remains ambiguous and is retained.
+        compact = evidence.replace(" ", "")
+        if (
+            re.search(r"\bminimax\s*m\s*\d", evidence)
+            or "minimaxm2" in compact
+            or "minimaxm3" in compact
+            or re.search(r"\bminimax\s*music\b", evidence)
+            or "music01" in compact
+        ):
+            explicit_conflict = True
+
+    return expected, actual, explicit_conflict
+
+
 def scan(
     term,
     scan_seen_models=None,
@@ -753,6 +848,10 @@ def scan(
     preview_models = 0
     gated_models = 0
     media_files = 0
+    architecture_rejected = 0
+    listing_architecture_rejected = 0
+    detail_architecture_rejected = 0
+    readme_architecture_rejected = 0
 
     scan_settings = scan_settings or {}
     progress_callback = scan_settings.get("_progress_callback")
@@ -767,6 +866,14 @@ def scan(
     SEARCH_DAYS = int(scan_settings.get("search_days", 7))
     MAX_RESULTS = max(1, int(scan_settings.get("max_results", 100)))
     SORT_MODE = scan_settings.get("sort", "newest_updated")
+    query_filters = [
+        str(value).strip()
+        for value in (scan_settings.get("_query_filters") or [])
+        if str(value).strip()
+    ]
+    allow_watch_fallback = bool(scan_settings.get("_allow_watch_fallback", True))
+    require_watch_match = bool(scan_settings.get("_require_watch_match", False))
+    watch_architecture = str(scan_settings.get("_watch_architecture") or "").strip()
 
     sort_map = {
         "newest_updated": "lastModified",
@@ -795,6 +902,8 @@ def scan(
 
     if creator:
         print(f"\nCREATOR SCAN: {creator}")
+    elif query_filters:
+        print(f"\nSEARCH FILTER: {' + '.join(query_filters)}")
     else:
         print(f"\nSEARCH TERM: {query}")
 
@@ -802,83 +911,139 @@ def scan(
     # Hugging Face pagination is followed via the API's Link header.
     per_request = 1000
     target_results = (min(10000, MAX_RESULTS) if scan_settings.get('_url_creator_limit') else 10000) if creator else MAX_RESULTS
-    if not creator:
-        _progress(0, target_results, "Finding models")
-    params = {
-        "limit": min(per_request, target_results),
-        "sort": api_sort,
-        "direction": -1
-    }
 
-    if creator:
-        params["author"] = creator
-    else:
-        params["search"] = query
+    def fetch_listing(sort_value, activity_label="", progress_offset=0, progress_total=None):
+        params = {
+            "limit": min(per_request, target_results),
+            "sort": sort_value,
+            "direction": -1
+        }
 
-    items = []
-    next_url = HF_API
-    next_params = params
-    page_number = 0
+        if creator:
+            params["author"] = creator
+        elif query_filters:
+            # requests serializes list values as repeated ``filter=`` params,
+            # matching Hugging Face's list_models(filter=[...]) behavior.
+            params["filter"] = query_filters
+        else:
+            params["search"] = query
 
-    while next_url and len(items) < target_results:
-        if scan_control.should_stop():
-            print("Hugging Face scan stopped")
-            return results
+        fetched = []
+        next_url = HF_API
+        next_params = params
+        page_number = 0
 
-        page_number += 1
-        try:
-            r = get_with_backoff(
-                session, next_url, provider="Hugging Face",
-                label=f"search page {page_number}",
-                params=next_params, timeout=15
-            )
-        except Exception as e:
-            print("HF connection error:", e)
-            break
+        while next_url and len(fetched) < target_results:
+            if scan_control.should_stop():
+                print("Hugging Face scan stopped")
+                return fetched
 
-        if r.status_code == 429:
-            print("Hugging Face search stopped after repeated rate limiting")
-            break
-
-        if r.status_code != 200:
-            print("HF ERROR:", r.status_code)
-            break
-
-        page_items = r.json()
-        if not isinstance(page_items, list):
-            break
-
-        remaining = target_results - len(items)
-        items.extend(page_items[:remaining])
-        if not creator:
-            _progress(min(len(items), target_results), target_results, "Finding models")
-        print(f"Hugging Face page {page_number}: {len(page_items)} results")
-
-        if len(items) >= target_results or not page_items:
-            break
-
-        link_header = r.headers.get("Link", "")
-        next_link = ""
-        if link_header:
+            page_number += 1
             try:
-                from requests.utils import parse_header_links
-                links = parse_header_links(link_header.rstrip("> ").replace(">,<", ">, <"))
-                for link in links:
-                    if link.get("rel") == "next" and link.get("url"):
-                        next_link = link["url"]
-                        break
-            except Exception:
-                next_link = ""
+                r = get_with_backoff(
+                    session, next_url, provider="Hugging Face",
+                    label=f"search page {page_number}",
+                    params=next_params, timeout=15
+                )
+            except Exception as e:
+                print("HF connection error:", e)
+                break
 
-        if not next_link:
-            break
+            if r.status_code == 429:
+                print("Hugging Face search stopped after repeated rate limiting")
+                break
 
-        next_url = next_link
-        next_params = None
+            if r.status_code != 200:
+                print("HF ERROR:", r.status_code)
+                break
+
+            page_items = r.json()
+            if not isinstance(page_items, list):
+                break
+
+            remaining = target_results - len(fetched)
+            fetched.extend(page_items[:remaining])
+            if not creator:
+                total_for_progress = progress_total if progress_total is not None else target_results
+                _progress(
+                    progress_offset + min(len(fetched), target_results),
+                    total_for_progress,
+                    "Finding models",
+                )
+            prefix = f"Hugging Face {activity_label} page" if activity_label else "Hugging Face page"
+            print(f"{prefix} {page_number}: {len(page_items)} results")
+
+            if len(fetched) >= target_results or not page_items:
+                break
+
+            link_header = r.headers.get("Link", "")
+            next_link = ""
+            if link_header:
+                try:
+                    from requests.utils import parse_header_links
+                    links = parse_header_links(link_header.rstrip("> ").replace(">,<", ">, <"))
+                    for link in links:
+                        if link.get("rel") == "next" and link.get("url"):
+                            next_link = link["url"]
+                            break
+                except Exception:
+                    next_link = ""
+
+            if not next_link:
+                break
+
+            next_url = next_link
+            next_params = None
+
+        return fetched
+
+    if SORT_MODE == "latest_activity" and not creator:
+        finding_target = target_results * 2
+        _progress(0, finding_target, "Finding models")
+        updated_items = fetch_listing("lastModified", "updated", 0, finding_target)
+        if scan_control.should_stop():
+            return results
+        created_items = fetch_listing("createdAt", "created", len(updated_items), finding_target)
+
+        # The top N of the union of the top N Created and top N Updated lists
+        # contains the true top N by max(createdAt, lastModified). Merge before
+        # expensive detail/README/tree work, then keep only the requested N.
+        merged = {}
+        for item in updated_items + created_items:
+            model_id = str((item or {}).get("id") or "").strip()
+            if not model_id:
+                continue
+            key = model_id.casefold()
+            if key in merged:
+                combined = dict(merged[key])
+                combined.update(item)
+                merged[key] = combined
+            else:
+                merged[key] = dict(item)
+
+        combined_items = list(merged.values())
+        combined_items.sort(key=_hf_activity_datetime, reverse=True)
+        items = combined_items[:target_results]
+        print(
+            f"Hugging Face activity merge: {len(updated_items)} updated + "
+            f"{len(created_items)} created -> {len(combined_items)} unique -> "
+            f"{len(items)} newest activity"
+        )
+    else:
+        # Creator scans deliberately remain single-order: they already walk a
+        # deep explicit author listing and do not use the normal age boundary.
+        if not creator:
+            _progress(0, target_results, "Finding models")
+        items = fetch_listing(api_sort)
 
     if not creator and not scan_control.should_stop():
-        found_total = len(items)
-        _progress(found_total, found_total if found_total < target_results else target_results, "Finding models", True)
+        if SORT_MODE == "latest_activity":
+            found_work = len(updated_items) + len(created_items)
+            final_total = found_work if found_work < (target_results * 2) else (target_results * 2)
+            _progress(found_work, final_total, "Finding models", True)
+        else:
+            found_total = len(items)
+            _progress(found_total, found_total if found_total < target_results else target_results, "Finding models", True)
 
     print(f"Hugging Face results inspected: {len(items)}")
 
@@ -995,13 +1160,18 @@ def scan(
             ""
         )
 
-        # Search Days follows the selected time-based sort. For popularity
-        # sorts, keep the age window based on creation date.
-        cutoff_value = (
-            item.get("lastModified", "")
-            if SORT_MODE == "newest_updated"
-            else created
-        )
+        # Search Days follows the selected time-based sort. Latest Activity
+        # uses whichever source timestamp is newer. Popularity sorts retain the
+        # existing creation-date age boundary.
+        if SORT_MODE == "latest_activity":
+            created_date = _hf_parse_datetime(created)
+            updated_date = _hf_parse_datetime(item.get("lastModified", ""))
+            activity_dates = [value for value in (created_date, updated_date) if value is not None]
+            cutoff_value = max(activity_dates).isoformat() if activity_dates else ""
+        elif SORT_MODE == "newest_updated":
+            cutoff_value = item.get("lastModified", "")
+        else:
+            cutoff_value = created
 
         if cutoff_value and not creator:
 
@@ -1025,6 +1195,23 @@ def scan(
 
                 pass
 
+
+        # Broad Hugging Face discovery lanes are candidate generators, not
+        # architecture authority. Reject only when the cheap listing metadata
+        # positively identifies a *different* architecture/family. Ambiguous
+        # listings continue to model detail so repos with sparse tags are kept.
+        if require_watch_match and watch_architecture:
+            expected_architecture, listing_architecture, listing_conflict = _hf_watch_evidence_state(
+                watch_architecture,
+                *_hf_architecture_evidence(item=item),
+            )
+            if expected_architecture != "Other" and (
+                (listing_architecture != "Other" and listing_architecture != expected_architecture)
+                or (listing_architecture == "Other" and listing_conflict)
+            ):
+                architecture_rejected += 1
+                listing_architecture_rejected += 1
+                continue
 
         # FAST DUPLICATE CHECK USING SEARCH RESULT
 
@@ -1078,13 +1265,36 @@ def scan(
             if gated:
                 gated_models += 1
 
+            # Before downloading README text or walking the recursive tree, use
+            # the regular model-info response plus its sibling filenames to reject
+            # broad-search candidates that clearly belong to another architecture.
+            # Sparse/ambiguous candidates remain eligible for a README second-stage
+            # check, which preserves models whose only useful clue lives in the card.
+            api_description = metadata.extract_description(details)
+            stored_description = (existing_model["description"] or "") if existing_model else ""
+            shallow_files = files_from_model_details(model_id, details)
+            expected_architecture = processors.classify_architecture(watch_architecture)
+            detail_architecture = "Other"
+            detail_conflict = False
+            if require_watch_match and expected_architecture != "Other":
+                _expected, detail_architecture, detail_conflict = _hf_watch_evidence_state(
+                    watch_architecture,
+                    *_hf_architecture_evidence(item=item, details=details, files=shallow_files),
+                    api_description,
+                )
+                if (
+                    (detail_architecture != "Other" and detail_architecture != expected_architecture)
+                    or (detail_architecture == "Other" and detail_conflict)
+                ):
+                    architecture_rejected += 1
+                    detail_architecture_rejected += 1
+                    continue
+
             # Processed Hugging Face repositories get their raw README once. Beyond
             # description/classification text, model cards can contain preview images
             # and videos hosted on cdn-uploads.huggingface.co that never appear in the
             # repository file tree. Unchanged repositories are skipped above, so this
             # does not add a README request to every duplicate on every scan.
-            api_description = metadata.extract_description(details)
-            stored_description = (existing_model["description"] or "") if existing_model else ""
             readme_text = ""
             readme_loaded = False
             readme_checked = False
@@ -1110,6 +1320,30 @@ def scan(
                 # Preserve earlier classification evidence if the README request is
                 # temporarily unavailable. Cached embedded media is reused below too.
                 details["readme"] = stored_description if (not api_description and stored_description) else ""
+
+            # If the detail response was still ambiguous, README text is the final
+            # cheap classification stage. Wrong/unknown broad-search candidates are
+            # discarded here, *before* recursive inventory and media extraction.
+            if require_watch_match and expected_architecture != "Other" and detail_architecture == "Other":
+                _expected, readme_architecture, readme_conflict = _hf_watch_evidence_state(
+                    watch_architecture,
+                    *_hf_architecture_evidence(
+                        item=item,
+                        details=details,
+                        files=shallow_files,
+                        readme_text=readme_text,
+                    ),
+                    api_description,
+                    stored_description,
+                )
+                if (
+                    readme_architecture != expected_architecture
+                    or (readme_architecture == "Other" and readme_conflict)
+                ):
+                    architecture_rejected += 1
+                    readme_architecture_rejected += 1
+                    continue
+
 
 
         except Exception as e:
@@ -1291,8 +1525,7 @@ def scan(
         )
 
         if str(getattr(processed_model, "architecture", "") or "").casefold() == "other":
-            processed_model.architecture = processors.classify_architecture_with_watch_fallback(
-                scan_settings.get("_watch_architecture"),
+            evidence = (
                 getattr(processed_model, "base_model", ""),
                 getattr(processed_model, "name", ""),
                 getattr(processed_model, "display_name", ""),
@@ -1300,6 +1533,21 @@ def scan(
                 getattr(processed_model, "description", ""),
                 raw_model.get("card_data"),
             )
+            direct_architecture = processors.classify_architecture(*evidence)
+            if direct_architecture != "Other":
+                processed_model.architecture = direct_architecture
+            elif allow_watch_fallback:
+                processed_model.architecture = processors.classify_architecture_with_watch_fallback(
+                    watch_architecture,
+                    *evidence,
+                )
+
+        if require_watch_match:
+            expected_architecture = processors.classify_architecture(watch_architecture)
+            actual_architecture = str(getattr(processed_model, "architecture", "") or "").strip()
+            if expected_architecture != "Other" and actual_architecture != expected_architecture:
+                architecture_rejected += 1
+                continue
 
 
         results.append(
@@ -1324,6 +1572,14 @@ def scan(
     print(f"README fetches: {readme_fetches}")
     print(f"Models with previews: {preview_models}")
     print(f"Gated models: {gated_models}")
+    if architecture_rejected:
+        print(f"Architecture rejected: {architecture_rejected}")
+        if listing_architecture_rejected:
+            print(f"  Listing-stage rejected: {listing_architecture_rejected}")
+        if detail_architecture_rejected:
+            print(f"  Detail-stage rejected : {detail_architecture_rejected}")
+        if readme_architecture_rejected:
+            print(f"  README-stage rejected : {readme_architecture_rejected}")
     print(f"Media files found: {media_files}")
 
 

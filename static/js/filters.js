@@ -81,9 +81,77 @@ function ensureSearchUI(){
     navbar.insertBefore(area, cluster);
 }
 
+// Architecture selections are ORed within this filter; other filters still AND.
+function architectureFilterValues(value){
+    if(Array.isArray(value)) return [...new Set(value.filter(item=>typeof item === "string" && item))];
+    const text=String(value || "").trim();
+    if(!text) return [];
+    if(text.startsWith("[")){
+        try { return architectureFilterValues(JSON.parse(text)); } catch(_) { return []; }
+    }
+    return [text];
+}
+function selectedArchitectureValues(){
+    return Array.from(document.getElementById("familyFilter")?.selectedOptions || []).map(option=>option.value).filter(Boolean);
+}
+function architectureFilterValue(){
+    const values=selectedArchitectureValues();
+    return values.length > 1 ? JSON.stringify(values) : (values[0] || "");
+}
+window.modelRadarArchitectureFilterValue=architectureFilterValue;
+function syncArchitectureFilterMenu(){
+    const menu=document.getElementById("architectureFilterMenu");
+    if(!menu) return;
+    const values=selectedArchitectureValues();
+    menu.querySelectorAll('input[type="checkbox"]').forEach(input=>{
+        input.checked=input.value ? values.includes(input.value) : !values.length;
+        input.closest("label")?.classList.toggle("active",input.checked);
+    });
+    const summary=menu.querySelector(".architecture-filter-summary");
+    summary.textContent=values.length > 1 ? `${values.length} Architectures` : (values[0] || "All Architectures");
+    summary.title=values.join(", ") || "All Architectures";
+}
+function setArchitectureFilter(value){
+    const values=architectureFilterValues(value);
+    const select=document.getElementById("familyFilter");
+    if(select) Array.from(select.options).forEach(option=>option.selected=Boolean(option.value) && values.includes(option.value));
+    syncArchitectureFilterMenu();
+}
+function initializeArchitectureFilter(){
+    const select=document.getElementById("familyFilter"), menu=document.getElementById("architectureFilterMenu");
+    if(!select || !menu || menu.dataset.initialized) return;
+    menu.dataset.initialized="true";
+    const panel=menu.querySelector(".architecture-filter-choices");
+    Array.from(select.options).forEach(option=>{
+        const label=document.createElement("label"), input=document.createElement("input"), text=document.createElement("span");
+        label.className="option-toggle source-pill";
+        input.type="checkbox";input.value=option.value;text.textContent=option.textContent;
+        label.append(input,text);panel.append(label);
+        input.addEventListener("change",()=>{
+            const values=new Set(selectedArchitectureValues());
+            if(!input.value) values.clear();
+            else if(input.checked) values.add(input.value);
+            else values.delete(input.value);
+            setArchitectureFilter([...values]);
+            select.dispatchEvent(new Event("change",{bubbles:true}));
+        });
+    });
+    function applyArchitectureSelection(values){
+        setArchitectureFilter(values);
+        select.dispatchEvent(new Event("change",{bubbles:true}));
+    }
+    document.getElementById("selectAllArchitectures")?.addEventListener("click",()=>applyArchitectureSelection(Array.from(select.options).map(option=>option.value).filter(Boolean)));
+    document.getElementById("clearArchitectures")?.addEventListener("click",()=>applyArchitectureSelection([]));
+    select.addEventListener("change",syncArchitectureFilterMenu);
+    menu.addEventListener("keydown",event=>{if(event.key==="Escape"){menu.open=false;menu.querySelector("summary").focus();}});
+    document.addEventListener("click",event=>{if(!menu.contains(event.target)) menu.open=false;});
+    syncArchitectureFilterMenu();
+}
+
 function initializeFilters(){
 
     if(document.querySelector(".navbar.navbar-secondary")) return;
+    initializeArchitectureFilter();
 
     ensureSearchUI();
     restorePreferences();
@@ -622,7 +690,8 @@ function setSelectFromSearch(id, requested, aliases={}){
         normalizedOptionValue(item.value) === wanted || normalizedOptionValue(item.textContent) === wanted
     );
     if(!option) return false;
-    select.value=option.value;
+    if(id === "familyFilter") setArchitectureFilter(option.value);
+    else select.value=option.value;
     return true;
 }
 
@@ -850,7 +919,8 @@ function renderFilterPills(){
 
     const resetSelect=(id,value)=>()=>{
         const el=document.getElementById(id);
-        if(el) el.value=value;
+        if(id === "familyFilter") setArchitectureFilter(value);
+        else if(el) el.value=value;
 
         filterCards();
         savePreferences();
@@ -859,15 +929,18 @@ function renderFilterPills(){
             refreshWindowAfterFilterRemoval(`pill-remove:${id}`);
         }
     };
-    const family=document.getElementById("familyFilter")?.value || "";
+    const family=architectureFilterValue();
     const type=document.getElementById("modelTypeFilter")?.value || "";
     const status=document.getElementById("statusFilter")?.value || "All";
     const access=document.getElementById("accessFilter")?.value || "all";
-    const mature=document.getElementById("sensitiveFilter")?.value || "hide";
+    const mature=document.getElementById("sensitiveFilter")?.value || window.userPreferences?.selected_sensitive || "hide";
     const favorite=document.getElementById("favoriteFilter")?.value || "all";
     const creatorFavorite=document.getElementById("creatorFavoriteFilter")?.value || "all";
     const downloadStatus=document.getElementById("downloadStatusFilter")?.value || "all";
-    if(family) addFilterPill(container,family,resetSelect("familyFilter",""));
+    selectedArchitectureValues().forEach(value=>addFilterPill(container,value,()=>{
+        setArchitectureFilter(selectedArchitectureValues().filter(item=>item !== value));
+        filterCards();savePreferences();refreshWindowAfterFilterRemoval("pill-remove:architecture");
+    }));
     if(type) addFilterPill(container,type,resetSelect("modelTypeFilter",""));
     if(status.toLowerCase()!=="all") addFilterPill(container,status,resetSelect("statusFilter","All"));
     if(access!=="all"){const labels={downloadable:"Downloadable",unconfirmed:"Unknown",gated:"Gated / No Download",public:"Public"};addFilterPill(container,labels[access]||access,resetSelect("accessFilter","all"));}
@@ -923,11 +996,11 @@ function filterCards(){
     const enabledSources = Array.from(document.querySelectorAll('input[name="sources"]:checked'))
         .map(input => input.value.toLowerCase().replace(/\s+/g, ""));
 
-    const family = (document.getElementById("familyFilter")?.value || "").toLowerCase();
+    const family = (architectureFilterValue()).toLowerCase();
     const modelType = (document.getElementById("modelTypeFilter")?.value || "").toLowerCase();
     const status = (document.getElementById("statusFilter")?.value || "all").toLowerCase();
     const access = (document.getElementById("accessFilter")?.value || "all").toLowerCase();
-    const sensitiveMode = normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value);
+    const sensitiveMode = normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value ?? window.userPreferences?.selected_sensitive);
     const favoriteMode = (document.getElementById("favoriteFilter")?.value || "all").toLowerCase();
     const creatorFavoriteMode = (document.getElementById("creatorFavoriteFilter")?.value || "all").toLowerCase();
     const downloadStatusMode = (document.getElementById("downloadStatusFilter")?.value || "all").toLowerCase();
@@ -958,7 +1031,7 @@ function filterCards(){
         // applied in SQLite before LIMIT/OFFSET. Do not narrow them a second time
         // from canonical card metadata: merged cards can qualify through another
         // source snapshot even when the canonical row has a different label.
-        if(!serverWindowed && family) visible = visible && arch.includes(family);
+        if(!serverWindowed && family) visible = visible && architectureFilterValues(family).some(value=>arch === value.toLowerCase());
         if(!serverWindowed && modelType) visible = visible && type.includes(modelType);
         if(status === "updated") {
             visible = visible && (card.dataset.latestUpdated === "true" || card.dataset.latestUpdated === "1");
@@ -993,7 +1066,7 @@ function navbarCountRequestState(){
     const searchSources = window.modelRadarGetBackendSourceFilters?.() || [];
 
     return {
-        architecture: document.getElementById("familyFilter")?.value || "",
+        architecture: architectureFilterValue(),
         modelType: document.getElementById("modelTypeFilter")?.value || "",
         status: (document.getElementById("statusFilter")?.value || "All").toLowerCase(),
         media: document.getElementById("showMediaOnly")?.checked || false,
@@ -1108,11 +1181,13 @@ function persistPreferences(){
 
     const preferences = {
         selected_sources: sources,
-        selected_architecture: document.getElementById("familyFilter")?.value || "",
+        selected_architecture: selectedArchitectureValues().length === 1 ? selectedArchitectureValues()[0] : "",
+        // Scan submission updates the legacy single field independently.
+        selected_feed_architectures: selectedArchitectureValues(),
         selected_model_type: document.getElementById("modelTypeFilter")?.value || "",
         selected_status: document.getElementById("statusFilter")?.value || "All",
         selected_access: document.getElementById("accessFilter")?.value || "all",
-        selected_sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value),
+        selected_sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value ?? window.userPreferences?.selected_sensitive),
         selected_favorite: document.getElementById("favoriteFilter")?.value || "all",
         selected_creator_favorite: document.getElementById("creatorFavoriteFilter")?.value || "all",
         selected_download_status: document.getElementById("downloadStatusFilter")?.value || "all",
@@ -1134,9 +1209,8 @@ function persistPreferences(){
 
 function restorePreferences(){
     if(document.body.classList.contains("creator-page")){
-        // Creator pages always begin with the creator's complete stored set.
-        // This prevents a Home filter such as New from making a just-opened
-        // (therefore now Seen) model disappear from its creator page.
+        // Creator pages use their complete stored catalog and temporary local
+        // controls, independent of the Home feed's New/Seen selection.
         document.querySelectorAll('input[name="sources"]').forEach(input => {
             input.checked = true;
         });
@@ -1145,14 +1219,15 @@ function restorePreferences(){
             modelTypeFilter: "",
             statusFilter: "All",
             accessFilter: "all",
-            sensitiveFilter: "hide",
+            sensitiveFilter: normalizeSensitiveMode(window.userPreferences?.selected_sensitive),
             favoriteFilter: "all",
             creatorFavoriteFilter: "all",
             downloadStatusFilter: "all"
         };
         Object.entries(defaults).forEach(([id, value]) => {
             const element = document.getElementById(id);
-            if(element) element.value = value;
+            if(id === "familyFilter") setArchitectureFilter(value);
+            else if(element) element.value = value;
         });
         const media = document.getElementById("showMediaOnly");
         if(media) media.checked = false;
@@ -1172,7 +1247,8 @@ function restorePreferences(){
 
 
     const values = {
-        familyFilter: preferences.selected_architecture || "",
+        familyFilter: Array.isArray(preferences.selected_feed_architectures)
+            ? preferences.selected_feed_architectures : (preferences.selected_architecture || ""),
         modelTypeFilter: preferences.selected_model_type || "",
         statusFilter: preferences.selected_status || "All",
         accessFilter: preferences.selected_access || "all",
@@ -1184,7 +1260,8 @@ function restorePreferences(){
 
     Object.entries(values).forEach(([id, value]) => {
         const element = document.getElementById(id);
-        if(element) element.value = value;
+        if(id === "familyFilter") setArchitectureFilter(value);
+            else if(element) element.value = value;
     });
 
     const media = document.getElementById("showMediaOnly");
@@ -1206,11 +1283,11 @@ function getVisibleCards(){
 
 function filtersAreActive(){
     const prefs = {
-        family: document.getElementById("familyFilter")?.value || "",
+        family: architectureFilterValue(),
         type: document.getElementById("modelTypeFilter")?.value || "",
         status: (document.getElementById("statusFilter")?.value || "All").toLowerCase(),
         access: (document.getElementById("accessFilter")?.value || "all").toLowerCase(),
-        sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value),
+        sensitive: normalizeSensitiveMode(document.getElementById("sensitiveFilter")?.value ?? window.userPreferences?.selected_sensitive),
         favorite: (document.getElementById("favoriteFilter")?.value || "all").toLowerCase(),
         creatorFavorite: (document.getElementById("creatorFavoriteFilter")?.value || "all").toLowerCase(),
         downloadStatus: (document.getElementById("downloadStatusFilter")?.value || "all").toLowerCase(),
@@ -1245,7 +1322,11 @@ function resetFilters(){
     // Maturity is a persistent safety/display preference, not a disposable search filter.
     // Clear All intentionally leaves the Hide/Show maturity preference unchanged.
     const defaults = {familyFilter:"", modelTypeFilter:"", statusFilter:"All", accessFilter:"all", favoriteFilter:"all", creatorFavoriteFilter:"all", downloadStatusFilter:"all"};
-    Object.entries(defaults).forEach(([id,value]) => { const el=document.getElementById(id); if(el) el.value=value; });
+    Object.entries(defaults).forEach(([id,value]) => {
+        const el=document.getElementById(id);
+        if(id === "familyFilter") setArchitectureFilter(value);
+        else if(el) el.value=value;
+    });
     const media=document.getElementById("showMediaOnly"); if(media) media.checked=false;
     const search=document.getElementById("modelSearch"); if(search) search.value="";
     committedSearchTerms = [];
@@ -1273,70 +1354,25 @@ function normalizeSeenCards(cards){
     );
 }
 
-/**
- * Single frontend entry point for turning model cards from New -> Seen.
- *
- * The database operation may happen elsewhere (for example /model/<id>
- * already marks a card viewed when it is opened). This helper owns the live
- * browser state: badges, data-status, the true windowed New total, navbar
- * counts, and New-filter window replacement.
- *
- * Keeping this centralized also gives the future "mark visible models as seen"
- * observer one reusable batch API instead of creating separate Seen logic.
- */
-async function applySeenState(
-    cards,
-    {
-        changed=null,
-        all=false,
-        refreshNewWindow=true,
-        preserveInCurrentNewView=false
-    } = {}
-){
-    const normalized = normalizeSeenCards(cards);
-    const newlySeen = normalized.filter(
-        card => String(card.dataset.status || "").toLowerCase() === "new"
-    );
-
-    normalized.forEach(card => {
-        card.dataset.status = "seen";
+// Explicit Mark Seen actions own badges, counts and New-feed cleanup.
+async function applySeenState(cards,{changed=null,all=false,refreshNewWindow=true}={}){
+    const normalized=normalizeSeenCards(cards);
+    const newlySeen=normalized.filter(card=>String(card.dataset.status || "").toLowerCase() === "new");
+    normalized.forEach(card=>{
+        card.dataset.status="seen";
         card.querySelector(".badge-new")?.remove();
     });
-
-    const effectiveChanged = changed == null
-        ? newlySeen.length
-        : Math.max(0, Number(changed || 0));
-
-    updateWindowedNewTotal(effectiveChanged, {all});
-
-    const status = String(
-        document.getElementById("statusFilter")?.value || "All"
-    ).toLowerCase();
-    const preserveVisibleNewCards =
-        Boolean(preserveInCurrentNewView)
-        && status === "new";
-
-    // When a model is opened from the New feed, keep that exact card mounted
-    // for the rest of the current view. Its badge/status/count still update,
-    // but the user decides when the visible New result set is rebuilt by
-    // refreshing/reloading or changing filters.
-    if(!preserveVisibleNewCards){
-        filterCards();
+    const effectiveChanged=changed == null ? newlySeen.length : Math.max(0,Number(changed || 0));
+    updateWindowedNewTotal(effectiveChanged,{all});
+    filterCards();
+    if(refreshNewWindow && String(document.getElementById("statusFilter")?.value || "").toLowerCase() === "new"){
+        newlySeen.forEach(card=>{
+            window.modelRadarReleaseCardVideoPreviews?.(card);
+            card.remove();
+        });
+        await window.modelRadarReconcileFeedWindow?.(effectiveChanged,{all});
     }
-
-    // For explicit Seen actions (Mark Visible/Mark All), retain the normal
-    // behavior: remove cards that left the New result set and refill the
-    // bounded window. Opening a single card opts out via preserveInCurrentNewView.
-    if(refreshNewWindow && status === "new" && !preserveVisibleNewCards){
-        newlySeen.forEach(card => card.remove());
-        window.modelRadarReconcileFeedWindow?.(effectiveChanged);
-    }
-
-    return {
-        cards: normalized,
-        newlySeen,
-        changed: effectiveChanged
-    };
+    return {cards:normalized,newlySeen,changed:effectiveChanged};
 }
 
 async function markModelIdsSeen(ids){
@@ -1364,8 +1400,7 @@ async function markModelIdsSeen(ids){
     return data;
 }
 
-// Public hooks intentionally kept small for other UI modules and the planned
-// viewport-based Seen option.
+// Shared hooks for explicit Seen actions.
 window.modelRadarApplySeenState = applySeenState;
 window.modelRadarMarkModelIdsSeen = markModelIdsSeen;
 
@@ -1373,7 +1408,10 @@ function requestMarkSeen(mode){
     const allMode = mode === "all";
     const cards = allMode
         ? Array.from(document.querySelectorAll(".model-card"))
-        : getVisibleCards();
+        : getVisibleCards().filter(card=>{
+            const rect=card.getBoundingClientRect();
+            return rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+        });
 
     const newCards = cards.filter(
         card => (card.dataset.status || "").toLowerCase() === "new"
@@ -1460,3 +1498,38 @@ function requestMarkSeen(mode){
         };
     }
 }
+
+// A return from an artist/collection restores this tab's feed, not another
+// page's temporary controls or a delayed server preference save.
+window.modelRadarCaptureFeedFilters=()=>({
+    values:Object.fromEntries([
+        "familyFilter","modelTypeFilter","statusFilter","accessFilter",
+        "sensitiveFilter","favoriteFilter","creatorFavoriteFilter",
+        "downloadStatusFilter","sortFilter","modelSearch"
+    ].map(id=>[id,id === "familyFilter" ? architectureFilterValue() : (document.getElementById(id)?.value || "")])),
+    sources:Array.from(document.querySelectorAll('input[name="sources"]:checked')).map(input=>input.value),
+    media:Boolean(document.getElementById("showMediaOnly")?.checked),
+    terms:[...committedSearchTerms]
+});
+window.modelRadarRestoreFeedFilters=state=>{
+    if(!state || !state.values) return;
+    Object.entries(state.values).forEach(([id,value])=>{
+        const element=document.getElementById(id);
+        if(id === "familyFilter") setArchitectureFilter(value);
+        else if(element) element.value=String(value);
+    });
+    document.querySelectorAll('input[name="sources"]').forEach(input=>{
+        input.checked=(state.sources || []).includes(input.value);
+    });
+    const media=document.getElementById("showMediaOnly");
+    if(media) media.checked=Boolean(state.media);
+    committedSearchTerms=Array.isArray(state.terms) ? state.terms.map(String) : [];
+    updateSourcePills();updateSourceFilterSummary();updateSearchAutocomplete();
+};
+
+document.addEventListener("DOMContentLoaded",()=>{
+    document.querySelectorAll('input[name="scanModelType"]').forEach(input=>{
+        const sync=()=>input.closest("label")?.classList.toggle("active",input.checked);
+        input.addEventListener("change",sync);sync();
+    });
+});

@@ -331,11 +331,11 @@ function initializeModal(){
         details.scrollTop=0;
         details.replaceChildren();
 
-        // Opening a New card updates its Seen state immediately but intentionally
-        // leaves the card mounted until a manual refresh/reload or filter change.
-        // Closing the modal therefore never restructures the Feed.
+        // Opening/closing a model does not change New status or the feed.
         unlockModelBackground();
     }
+
+    window.modelRadarCloseModelOverlay=closeModelOverlay;
 
     // Other first-party UI surfaces (for example Download Manager history)
     // can open a model through the exact same card click lifecycle instead of
@@ -388,15 +388,11 @@ function initializeModal(){
                 event.preventDefault();
 
 
-                const wasNew =
-                    String(card.dataset.status || "").toLowerCase() === "new"
-                    || Boolean(card.querySelector(".badge-new"));
-
-
                 const id =
                     card.dataset.id;
 
                 if (String(card.dataset.type || "").trim().toLowerCase() === "collection") {
+                    window.modelRadarPrepareFeedDeparture?.();
                     window.location.assign(`/collection/${encodeURIComponent(id)}`);
                     return;
                 }
@@ -404,7 +400,7 @@ function initializeModal(){
                 cleanupActiveGallery();
                 stopDetailMedia();
 
-                const maturityModeForDetail = document.getElementById("sensitiveFilter")?.value || "hide";
+                const maturityModeForDetail = document.getElementById("sensitiveFilter")?.value || window.userPreferences?.selected_sensitive || "hide";
                 fetch(`/model/${id}?mature=${encodeURIComponent(maturityModeForDetail)}`)
 
                     .then(response => response.text())
@@ -414,44 +410,7 @@ function initializeModal(){
 
                         details.innerHTML = html;
 
-                        // /model/<id> marks the database row viewed. Mirror that
-                        // successful transition through the shared live Seen
-                        // state API so the navbar/window never drifts stale.
-                        if (
-                            wasNew
-                            && typeof window.modelRadarApplySeenState === "function"
-                        ) {
-                            const currentStatus = String(
-                                document.getElementById("statusFilter")?.value || "All"
-                            ).toLowerCase();
-
-                            if (currentStatus === "new") {
-                                // /model/<id> already marked the database row viewed.
-                                // Update the live badge/status/count, but deliberately
-                                // keep this card in the current New feed until the user
-                                // refreshes/reloads or changes a filter.
-                                window.modelRadarApplySeenState(
-                                    [card],
-                                    {
-                                        changed:1,
-                                        refreshNewWindow:false,
-                                        preserveInCurrentNewView:true
-                                    }
-                                ).catch(error => {
-                                    console.error("Unable to sync opened card Seen state:", error);
-                                });
-                            } else {
-                                window.modelRadarApplySeenState(
-                                    [card],
-                                    {
-                                        changed:1,
-                                        refreshNewWindow:true
-                                    }
-                                ).catch(error => {
-                                    console.error("Unable to sync opened card Seen state:", error);
-                                });
-                            }
-                        }
+                        // New status persists until an explicit Mark Seen action.
 
                         // The visible rounded frame belongs to .model-panel,
                         // while the source color arrives on the injected
@@ -465,7 +424,7 @@ function initializeModal(){
                         // the persistent Maturity preference is set to Blur.
                         // The setting remains controlled only from Settings.
                         if (detailRoot) {
-                            const maturityMode = document.getElementById("sensitiveFilter")?.value || "hide";
+                            const maturityMode = document.getElementById("sensitiveFilter")?.value || window.userPreferences?.selected_sensitive || "hide";
                             const isSensitive = String(detailRoot.dataset.sensitive || "false").toLowerCase() === "true";
                             detailRoot.classList.toggle(
                                 "sensitive-blurred",
@@ -921,9 +880,9 @@ function initializeModal(){
                             const description = details.querySelector("[data-detail-description]");
                             const toggle = details.querySelector(".description-toggle");
                             const text = String(context?.description || "").trim();
-                            if (section) section.hidden = !text;
+                            if (section) section.hidden = false;
                             if (description) {
-                                description.textContent = text;
+                                description.textContent = text || "No description available for this source/version.";
                                 description.classList.toggle("collapsed", text.length > 500);
                             }
                             if (toggle) {
@@ -946,15 +905,16 @@ function initializeModal(){
                         };
 
                         const applyDownloadSourceVisibility = source => {
-                            const wanted = String(source || "combined").trim().toLowerCase();
+                            const allowed = Array.isArray(source) ? source : null;
+                            const wanted = allowed ? "combined" : String(source || "combined").trim().toLowerCase();
                             details.querySelectorAll(".download-source-group[data-source]").forEach(group => {
                                 const groupSource = String(group.dataset.source || "").trim().toLowerCase();
-                                group.hidden = wanted !== "combined" && groupSource !== wanted;
+                                group.hidden = allowed ? !allowed.includes(groupSource) : wanted !== "combined" && groupSource !== wanted;
                             });
                             const chooserHeading = details.querySelector(".download-content > h4");
                             const chooserNote = details.querySelector(".download-content > .download-source-note");
-                            if (chooserHeading) chooserHeading.hidden = wanted !== "combined";
-                            if (chooserNote) chooserNote.hidden = wanted !== "combined";
+                            if (chooserHeading) chooserHeading.hidden = allowed ? allowed.length < 2 : wanted !== "combined";
+                            if (chooserNote) chooserNote.hidden = allowed ? allowed.length < 2 : wanted !== "combined";
                         };
 
                         const sourceChoiceForVersion = choice => {
@@ -1069,7 +1029,13 @@ function initializeModal(){
                             let shown = 0;
                             versionGroups.forEach(group => {
                                 const current = String(group.dataset.versionName || "").trim().toLocaleLowerCase();
-                                const match = current === wanted;
+                                const pill=details.querySelector(".model-version-pill.selected");
+                                const selected=versionChoices[Number(pill?.dataset.versionChoice)];
+                                const source=group.closest(".download-source-group")?.dataset.source;
+                                const metadata=selected?.source_metadata?.[source];
+                                const match=metadata ? (metadata.id && group.dataset.versionId
+                                    ? String(metadata.id) === String(group.dataset.versionId)
+                                    : current === String(metadata.name || wanted).trim().toLocaleLowerCase()) : false;
                                 group.classList.toggle("version-filter-hidden", !match);
                                 if (match) shown += 1;
                             });
@@ -1155,7 +1121,7 @@ function initializeModal(){
 
                                     if(data.is_collection && data.collection_url){
                                         closeModelOverlay();
-                                        setTimeout(()=>window.location.assign(data.collection_url),120);
+                                        setTimeout(()=>{window.modelRadarPrepareFeedDeparture?.();window.location.assign(data.collection_url)},120);
                                         return;
                                     }
 
@@ -1196,17 +1162,87 @@ function initializeModal(){
                             if (Array.isArray(choice.formats) && choice.formats.length) add(choice.formats.join(" · "));
                         };
 
+                        const preferredVersionSource = choice => {
+                            const metadata=choice?.source_metadata || {};
+                            const keys=Object.keys(metadata);
+                            // A missing count loses to a known zero. Ties use CivitAI
+                            // first, independently of source enumeration order.
+                            return keys.sort((a,b)=>{
+                                const av=metadata[a].downloads, bv=metadata[b].downloads;
+                                const difference=(bv == null ? -1 : Number(bv))-(av == null ? -1 : Number(av));
+                                return difference || (a === "civitai" ? -1 : b === "civitai" ? 1 : a.localeCompare(b));
+                            })[0] || "combined";
+                        };
+                        versionPills.forEach((pill,index)=>{
+                            const choice=versionChoices[index], source=preferredVersionSource(choice);
+                            pill.dataset.versionSource=source;
+                            const context=sourceViewContext(source);
+                            pill.style.setProperty("--version-source-color",context.color || "#00eaff");
+                            const names=Object.keys(choice?.source_metadata || {}).map(key=>sourceViewContext(key).label || key);
+                            pill.title=`${choice?.name || "Version"} · ${names.join(" + ")}`;
+                            if(source === "seaart" && /^(current version|version)$/i.test(choice?.name || "")){
+                                const text=Array.from(pill.childNodes).find(node=>node.nodeType === Node.TEXT_NODE);
+                                if(text) text.textContent="SeaArt model ";
+                            }
+                            pill.setAttribute("aria-pressed",String(pill.classList.contains("selected")));
+                        });
+
+                        const updateSelectedStatistics = choice => {
+                            const metadata=choice?.source_metadata || {};
+                            const source=preferredVersionSource(choice);
+                            const context=sourceViewContext(source);
+                            const view={...context,...(metadata[source] || {})};
+                            updateDescriptionForSource(view);
+                            updateTagsForSource(context);
+                            const provenance=details.querySelector(".detail-stat-provenance");
+                            if(provenance) provenance.textContent=`About and dates: ${context.label || source}${choice?.name ? " · " + choice.name : ""}`;
+                            for(const field of ["downloads","likes","created","updated"]){
+                                const node=details.querySelector(`[data-detail-stat="${field}"]`);
+                                const label=details.querySelector(`[data-detail-stat-label="${field}"]`);
+                                const pair=["civitai","civitaired"].filter(key=>Object.hasOwn(metadata,key));
+                                if(node && ["downloads","likes"].includes(field) && pair.length){
+                                    node.replaceChildren();
+                                    if(label) label.hidden=true;
+                                    for(const key of pair){
+                                        const block=document.createElement("span");block.className="detail-source-stat";
+                                        const heading=document.createElement("strong");heading.textContent=`${key === "civitaired" ? "Civ Red" : sourceViewContext(key).label || key} ${field}`;
+                                        heading.title=`${sourceViewContext(key).label || key} ${field}`;
+                                        const value=document.createElement("span");value.dataset.statSource=key;
+                                        value.textContent=metadata[key][field] == null ? "Unavailable" : String(metadata[key][field]);
+                                        block.append(heading,value);node.append(block);
+                                    }
+                                }else{
+                                    if(label){
+                                        label.hidden=false;
+                                        const scope=view[field+"_label"] || field;
+                                        label.textContent=scope.replace(/^(Listing|Version)\s+/i,"");
+                                        label.title=scope;
+                                    }
+                                    setDetailText(`[data-detail-stat="${field}"]`,view[field],"Unavailable");
+                                }
+                            }
+                            for(const field of ["architecture","model_type","base_model","pipeline","format","license","parameters","quantization"]){
+                                setDetailText(`[data-detail-field="${field}"]`,view[field]);
+                            }
+                        };
+
                         const selectVersion = (pill) => {
                             if (!pill) return;
                             selectedVersionName = String(pill.dataset.versionName || "").trim();
                             selectedVersionId = String(pill.dataset.versionId || "").trim();
                             versionPills.forEach(node => node.classList.toggle("selected", node === pill));
-                            const baseChoice = versionChoices.find(item =>
-                                (selectedVersionId && String(item.id || "") === selectedVersionId) ||
-                                String(item.name || "").trim().toLocaleLowerCase() === selectedVersionName.toLocaleLowerCase()
-                            );
+                            const baseChoice=versionChoices[Number(pill.dataset.versionChoice)];
+                            activeSourceView=preferredVersionSource(baseChoice);
+                            const sourceMeta=baseChoice?.source_metadata?.[activeSourceView] || {};
+                            selectedVersionName=String(sourceMeta.name || baseChoice?.name || "");
+                            selectedVersionId=String(sourceMeta.id || "");
+                            pill.dataset.versionName=selectedVersionName;
+                            pill.dataset.versionId=selectedVersionId;
+                            versionPills.forEach(node=>node.setAttribute("aria-pressed",String(node===pill)));
                             const choice = sourceChoiceForVersion(baseChoice);
                             renderVersionSummary(choice);
+                            updateSelectedStatistics(baseChoice);
+                            applyDownloadSourceVisibility(Object.keys(baseChoice?.source_metadata || {}));
                             setCopyLinkTarget(baseChoice);
                             if (detailArchitectureBadge) {
                                 detailArchitectureBadge.textContent = String(
@@ -1228,6 +1264,12 @@ function initializeModal(){
                             // wrapper changed the pill highlight but the gallery never
                             // received the version switch.
                             const modelDetail = details.querySelector(".model-detail");
+                            if(modelDetail){
+                                modelDetail.dataset.source=activeSourceView;
+                                modelDetail.dataset.gallerySource=activeSourceView;
+                                modelDetail.style.setProperty("--source-color",sourceViewContext(activeSourceView).color || "#00eaff");
+                                modelDetail.dispatchEvent(new CustomEvent("modelradar:source",{detail:{source:activeSourceView},bubbles:true}));
+                            }
                             (modelDetail || details).dispatchEvent(new CustomEvent("modelradar:version", {
                                 detail: {name: selectedVersionName, id: selectedVersionId},
                                 bubbles: true
@@ -1272,6 +1314,9 @@ function initializeModal(){
                                 badge.hidden = activeSourceView !== "combined" && source !== activeSourceView;
                             });
                             applyDownloadSourceVisibility(activeSourceView);
+                            details.querySelectorAll("[data-source-view]").forEach(button=>{
+                                button.setAttribute("aria-pressed",String(button.dataset.sourceView === activeSourceView));
+                            });
 
                             setDetailText('[data-detail-field="architecture"]', context?.architecture, defaultDetailArchitecture || "Not specified");
                             setDetailText('[data-detail-field="model_type"]', context?.model_type);
@@ -1281,8 +1326,8 @@ function initializeModal(){
                             setDetailText('[data-detail-field="license"]', context?.license);
                             setDetailText('[data-detail-field="parameters"]', context?.parameters);
                             setDetailText('[data-detail-field="quantization"]', context?.quantization);
-                            setDetailText('[data-detail-stat="downloads"]', context?.downloads, "0");
-                            setDetailText('[data-detail-stat="likes"]', context?.likes, "0");
+                            setDetailText('[data-detail-stat="downloads"]', context?.downloads, "Unavailable");
+                            setDetailText('[data-detail-stat="likes"]', context?.likes, "Unavailable");
                             setDetailText('[data-detail-stat="created"]', context?.created, "Not specified");
                             setDetailText('[data-detail-stat="updated"]', context?.updated, "Not specified");
                             updateDescriptionForSource(context);
@@ -1317,6 +1362,10 @@ function initializeModal(){
                             }
                             requestAnimationFrame(updateVersionScrollControls);
                         };
+
+                        details.querySelectorAll("[data-source-view]").forEach(button=>{
+                            button.addEventListener("click",()=>applySourceView(button.dataset.sourceView));
+                        });
 
                         if (sourceViewSelect) {
                             sourceViewSelect.addEventListener("change", event => {
@@ -1597,10 +1646,8 @@ function initializeModal(){
                         });
 
                         setAdditionalFilesVisible(false);
-                        // Combined is the transparent default even though the
-                        // source-aware viewer selector is intentionally not exposed.
-                        // This keeps all eligible provider snapshots merged according
-                        // to the user's Mature Content setting.
+                        // Initialize the complete eligible download-source set;
+                        // the first version pill then selects its source-owned view.
                         if (applySourceView) applySourceView("combined", {preserveVersion:false});
                         else if (versionPills.length) selectVersion(versionPills[0]);
                         else setCopyLinkTarget(null);

@@ -1434,23 +1434,23 @@
 /* TensorHub gated/download state should not recolor version navigation.
    Keep sibling/version pills in the normal ModelRadar cyan treatment; actual
    access state is communicated inside the download workflow itself. */
-.model-detail[data-source="tensorhub"] .model-version-pill,
-.model-detail[data-source="tensorhub"] .model-version-pill.gated {
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]),
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]).gated {
     border-color:rgba(0,234,255,.36) !important;
     background:rgba(0,234,255,.07) !important;
     color:#d8f9fc !important;
     box-shadow:none;
 }
 
-.model-detail[data-source="tensorhub"] .model-version-pill:hover,
-.model-detail[data-source="tensorhub"] .model-version-pill.gated:hover {
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]):hover,
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]).gated:hover {
     border-color:#00eaff !important;
     background:rgba(0,234,255,.12) !important;
     color:#fff !important;
 }
 
-.model-detail[data-source="tensorhub"] .model-version-pill.selected,
-.model-detail[data-source="tensorhub"] .model-version-pill.gated.selected {
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]).selected,
+.model-detail[data-source="tensorhub"] .model-version-pill:not([data-version-source]).gated.selected {
     border-color:#00eaff !important;
     background:rgba(0,234,255,.16) !important;
     color:#dffcff !important;

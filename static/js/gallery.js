@@ -41,12 +41,12 @@ function initializeGallery(detailRoot=null){
     const mediaData = readJson(".media-data-json", []);
     const modelFiles = readJson(".model-files-json", []);
     const downloadSources = readJson(".download-sources-json", []);
-    const fallbackItems = Array.from(detail.querySelectorAll(".media-item"));
-    let activeSourceView=String(sourceViewSelect?.value||"combined").trim().toLowerCase()||"combined";
+    const fallbackItems = Array.from(detail.querySelectorAll(".media-item:not([data-no-preview])"));
+    let activeSourceView=String(sourceViewSelect?.value||detail.dataset.gallerySource||"combined").trim().toLowerCase()||"combined";
 
     function sourceMatchesIndex(index){
         if(activeSourceView==="combined") return true;
-        return String(dataFor(index).source||"").trim().toLowerCase()===activeSourceView;
+        return String(dataFor(index).source||detail.dataset.source||"").trim().toLowerCase()===activeSourceView;
     }
 
     function mediaIdentityKey(index){
@@ -86,7 +86,6 @@ function initializeGallery(detailRoot=null){
 
     let visibleIndices = sourceVisibleIndices();
     let total = visibleIndices.length;
-    if(total === 0) return;
     fallbackItems.filter(item=>item.tagName==="VIDEO").forEach(video=>{
         video.loop=true;
         video.playsInline=true;
@@ -272,6 +271,8 @@ function initializeGallery(detailRoot=null){
     }
 
     function renderMetadata(index,allowEnrich=true){
+        if(!total || index!==actualIndex() || !visibleIndices.includes(index)) return;
+        setMetadataAvailable(true);
         const data=dataFor(index);
         if(filenameEl) filenameEl.textContent=data.filename||"";
         if(pathEl) pathEl.textContent=data.path&&data.path!==data.filename?data.path:"";
@@ -368,7 +369,7 @@ function initializeGallery(detailRoot=null){
 
     function showImage(index){
         total=visibleIndices.length;
-        if(!total) return;
+        if(!total){ renderEmptyMedia(); return; }
         if(index<0) index=total-1; if(index>=total) index=0; current=index;
         const actual=actualIndex();
         if(mediaData.length && virtualStage){
@@ -378,7 +379,7 @@ function initializeGallery(detailRoot=null){
             fallbackItems.forEach((item,i)=>item.classList.toggle("active",i===actual)); currentNode=fallbackItems[actual];
             if(currentNode&&currentNode.dataset.src&&!currentNode.src){currentNode.src=currentNode.dataset.src;}
         }
-        if(counter) counter.textContent=`${current+1} / ${total}`;
+        if(counter) counter.textContent=`${current+1} of ${total}`;
         renderMetadata(actual); updatePreviewModelAction(actual); if(filesPanel)filesPanel.classList.remove("open");
         detail.dispatchEvent(new CustomEvent("modelradar:gallery-change", {
             detail: {index: actual, position: current, total},
@@ -388,8 +389,14 @@ function initializeGallery(detailRoot=null){
         if(next) next.style.display=total<=1?"none":"";
     }
 
+    function setMetadataAvailable(available){
+        if(metadataCard) metadataCard.style.display=available?"":"none";
+        if(metadataRestore) metadataRestore.style.display=available?"":"none";
+    }
+
     function renderEmptyMedia(message="No previews found for this source."){
         pauseCurrentVideo();
+        setMetadataAvailable(false);
         total=0;
         current=0;
         if(virtualStage){
@@ -402,7 +409,7 @@ function initializeGallery(detailRoot=null){
             fallbackItems.forEach(item=>item.classList.remove("active"));
             currentNode=null;
         }
-        if(counter) counter.textContent="0 / 0";
+        if(counter) counter.textContent="0 of 0";
         if(prev) prev.style.display="none";
         if(next) next.style.display="none";
         if(filenameEl) filenameEl.textContent="";
@@ -559,12 +566,13 @@ function initializeGallery(detailRoot=null){
                 virtualStage.replaceChildren(loading);
                 currentNode=loading;
             }
-            if(counter) counter.textContent="0 / 0";
+            if(counter) counter.textContent="0 of 0";
             if(prev) prev.style.display="none";
             if(next) next.style.display="none";
             if(filenameEl) filenameEl.textContent="";
             if(pathEl) pathEl.textContent="";
             if(metadataBody) metadataBody.innerHTML="";
+            setMetadataAvailable(false);
         }
 
         if(!hydrate||!wantedId||source!=="civitaired") return;
@@ -594,7 +602,7 @@ function initializeGallery(detailRoot=null){
                 virtualStage.replaceChildren(empty);
                 currentNode=empty;
             }
-            if(counter) counter.textContent="0 / 0";
+            if(counter) counter.textContent="0 of 0";
         }
     }
 

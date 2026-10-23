@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/navbar/scan.css') }}">
     <script src="{{ url_for('static', filename='js/gallery.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/fullscreen.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/collection_readmes.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/collection.js') }}" defer></script>
 </head>
 <body class="collection-page" data-access-status="{{ collection_access_status }}" style="--collection-source-color: {{ source_color }}">
@@ -49,6 +50,28 @@
             </div>
             {% endif %}
         </section>
+
+        {% if collection_readmes %}
+        <section class="collection-section collection-model-card" id="collectionModelCard">
+            <div class="collection-section-heading">
+                <div><span class="collection-section-kicker">REPOSITORY NOTES</span><h2>Model card / README</h2></div>
+                <div class="collection-model-card-actions">
+                    {% if collection_readmes|length > 1 %}
+                    <label for="collectionReadmeSelect">Source</label>
+                    {% endif %}
+                    <select id="collectionReadmeSelect" {% if collection_readmes|length == 1 %}hidden{% endif %}>
+                        {% for readme in collection_readmes %}
+                        <option value="{{ readme.url }}" data-source-url="{{ readme.source_url }}">{{ readme.source_label }} · {{ readme.model_key }}</option>
+                        {% endfor %}
+                    </select>
+                    <a id="collectionModelCardSource" href="{{ collection_readmes[0].source_url }}" target="_blank" rel="noopener noreferrer">View on source</a>
+                    <button id="collectionReadmeRetry" type="button" hidden>Retry</button>
+                </div>
+            </div>
+            <div id="collectionModelCardStatus" class="collection-readme-status" role="status">Loading README…</div>
+            <div id="collectionModelCardContent" class="collection-markdown" tabindex="0" aria-label="Repository README"></div>
+        </section>
+        {% endif %}
 
         {% if media %}
         <section class="collection-section">
@@ -302,12 +325,12 @@
                     <small id="collectionReadmePath"></small>
                 </div>
                 <div class="collection-readme-actions">
-                    <a id="collectionReadmeSource" href="#" target="_blank" rel="noopener noreferrer" hidden>View on Hugging Face</a>
+                    <a id="collectionReadmeSource" href="#" target="_blank" rel="noopener noreferrer" hidden>View on source</a>
                     <button id="collectionReadmeClose" type="button" aria-label="Close README viewer">×</button>
                 </div>
             </div>
             <div id="collectionReadmeStatus" class="collection-readme-status" aria-live="polite"></div>
-            <pre id="collectionReadmeContent" class="collection-readme-content"></pre>
+            <div id="collectionReadmeContent" class="collection-readme-content collection-markdown" tabindex="0"></div>
         </div>
     </div>
 
@@ -332,13 +355,13 @@
                 </div>
 
                 <div class="media-viewer">
-                    <button class="media-prev" type="button" aria-label="Previous preview">◀</button>
+                    <button class="media-prev" style="display:none" type="button" aria-label="Previous preview">◀</button>
                     <div class="media-container">
                         <div class="media-virtual-stage" aria-live="polite"></div>
                     </div>
-                    <button class="media-next" type="button" aria-label="Next preview">▶</button>
+                    <button class="media-next" style="display:none" type="button" aria-label="Next preview">▶</button>
 
-                    <div class="media-metadata-card collapsed">
+                    <div class="media-metadata-card collapsed" style="display:none">
                         <div class="media-metadata-head">
                             <strong>Metadata</strong>
                             <div class="media-metadata-controls">
@@ -352,7 +375,7 @@
                 </div>
 
                 <div class="media-toolbar">
-                    <div class="media-counter"></div>
+                    <div class="media-counter" translate="no"></div>
                 </div>
 
                 <script type="application/json" class="media-data-json">{{ media | tojson }}</script>

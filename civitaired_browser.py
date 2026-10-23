@@ -108,7 +108,11 @@ def resolve_download(target_url, referer="", progress_callback=None, timeout=300
                     for key in ("matched", "tracked", "allowed_storage", "success"):
                         if isinstance(payload.get(key), bool):
                             fields.append(key + "=" + str(payload[key]))
-                    print("RED COMPANION:", " ".join(fields))
+                    if payload.get("matched") is False or payload.get("success") is False:
+                        print("RED COMPANION:", " ".join(fields))
+                    else:
+                        from scan_logging import verbose_print
+                        verbose_print("RED COMPANION:", " ".join(fields))
                     self.reply(200, {"success": True})
                 except (ValueError, TypeError, AttributeError):
                     self.reply(400, {"error": "Invalid diagnostic"})

@@ -161,7 +161,10 @@ def cache_preview_url(url: str, *, source="", model_key="", _try_resize=True) ->
             image = ImageOps.exif_transpose(image)
             try:
                 if image.mode not in ("RGB", "RGBA"):
-                    converted = image.convert("RGB")
+                    # Palette PNGs may store a per-entry alpha table. Converting
+                    # them directly to RGB both warns and loses transparency.
+                    mode = "RGBA" if "transparency" in image.info or "A" in image.getbands() else "RGB"
+                    converted = image.convert(mode)
                     image.close()
                     image = converted
                 image.thumbnail((MAX_EDGE, MAX_EDGE), Image.Resampling.LANCZOS)

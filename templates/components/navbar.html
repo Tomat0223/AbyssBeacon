@@ -4,7 +4,7 @@
 
     {% if creator_page_mode or collection_page_mode %}
     <div class="nav-secondary-return">
-        <a href="/" class="nav-secondary-return-button"{% if collection_page_mode %} data-feed-restore="true"{% endif %} title="Return to the AbyssBeacon home feed">
+        <a href="/" class="nav-secondary-return-button" data-feed-restore="true" title="Return to the AbyssBeacon home feed">
             ← Back to AbyssBeacon
         </a>
     </div>
@@ -205,12 +205,21 @@
       <div><strong id="scanConfigTitle">Scan AbyssBeacon</strong><small>Choose what this normal scan should include. These choices are independent from the feed filters.</small></div>
       <button id="closeScanConfig" type="button" aria-label="Close Scan">×</button>
     </div>
-    <div class="scan-config-section"><div class="scan-config-heading"><span class="scan-config-label">Sources</span><button id="scanAllSources" type="button">Select all</button></div><div class="scan-config-grid">
-      {% for name, source in sources.items() %}<label class="scan-config-choice"><input type="checkbox" name="scanSource" value="{{ name }}" {% if name in preferences.get('scan_sources', selected_scan_sources) %}checked{% endif %}><span>{{ source.display }}</span></label>{% endfor %}
-    </div></div>
-    <div class="scan-config-section"><div class="scan-config-heading"><span class="scan-config-label">Models to Scan</span><button id="scanAllArchitectures" type="button">Select all</button></div><div class="scan-config-grid">
-      {% for architecture in architectures %}{% if architecture != 'Other' %}<label class="scan-config-choice"><input type="checkbox" name="scanArchitecture" value="{{ architecture }}" {% if architecture in preferences.get('scan_architectures', architectures) %}checked{% endif %}><span>{{ architecture }}</span></label>{% endif %}{% endfor %}
-    </div><small class="discovery-field-help">Only the selected architecture search definitions are used for this normal scan.</small></div>
+    <details class="scan-config-section scan-config-picker" data-check-group="scanSource">
+      <summary><span>Sources</span><span class="scan-config-count" aria-live="polite"></span><span class="scan-config-chevron" aria-hidden="true">▾</span></summary>
+      <div class="scan-config-picker-body"><div class="scan-config-heading"><button type="button" data-select-group="scanSource" data-select-action="all">Select All</button><button type="button" data-select-group="scanSource" data-select-action="clear">Clear</button></div>
+      <div class="scan-config-grid">{% for name, source in sources.items() %}<label class="scan-config-choice"><input type="checkbox" name="scanSource" value="{{ name }}" {% if name in preferences.get('scan_sources', selected_scan_sources) %}checked{% endif %}><span>{{ source.display }}</span></label>{% endfor %}</div></div>
+    </details>
+    <details class="scan-config-section scan-config-picker" data-check-group="scanArchitecture">
+      <summary><span>Models to Scan</span><span class="scan-config-count" aria-live="polite"></span><span class="scan-config-chevron" aria-hidden="true">▾</span></summary>
+      <div class="scan-config-picker-body"><div class="scan-config-heading"><button type="button" data-select-group="scanArchitecture" data-select-action="all">Select All</button><button type="button" data-select-group="scanArchitecture" data-select-action="clear">Clear</button></div>
+      <div class="scan-config-grid">{% for architecture in architectures %}{% if architecture != 'Other' %}<label class="scan-config-choice"><input type="checkbox" name="scanArchitecture" value="{{ architecture }}" {% if architecture in preferences.get('scan_architectures', architectures) %}checked{% endif %}><span>{{ architecture }}</span></label>{% endif %}{% endfor %}</div></div>
+    </details>
+    <details class="scan-config-section scan-config-picker" data-check-group="scanModelType">
+      <summary><span>Model types</span><span class="scan-config-count" aria-live="polite"></span><span class="scan-config-chevron" aria-hidden="true">▾</span></summary>
+      <div class="scan-config-picker-body"><div class="scan-config-heading"><button type="button" data-select-group="scanModelType" data-select-action="all">Select All</button><button type="button" data-select-group="scanModelType" data-select-action="clear">Clear</button></div>
+      <div class="scan-config-grid">{% for model_type in model_types %}<label class="scan-config-choice"><input type="checkbox" name="scanModelType" value="{{ model_type }}" {% if not preferences.get('scan_model_types') or model_type in preferences.get('scan_model_types', []) %}checked{% endif %}><span>{{ model_type }}</span></label>{% endfor %}</div></div>
+    </details>
     <div id="scanConfigStatus" class="source-search-status"></div>
     <div class="source-search-actions scan-config-actions">
       <button
@@ -284,9 +293,14 @@
         <option value="all">Broad · up to 1000 per source</option>
         <option value="maximum">Everything available from each source</option>
       </select>
-      <small id="sourceSearchDepthHelp" class="discovery-field-help">Depth controls how many matches each provider is allowed to inspect. Search is all-time at every depth; providers run in parallel.</small>
+      <small id="sourceSearchDepthHelp" class="discovery-field-help">Depth controls how many matches each provider is allowed to inspect. Providers run in parallel; depth does not guarantee an exhaustive search.</small>
     </label>
 
+    <div id="sourceSearchFilters">
+    <div class="scan-config-section"><span class="scan-config-label">Model types (optional)</span><div class="scan-config-grid">
+      {% for model_type in model_types %}<label class="scan-config-choice"><input type="checkbox" name="externalModelType" value="{{ model_type }}"><span>{{ model_type }}</span></label>{% endfor %}
+    </div><small class="discovery-field-help">No selection keeps every model type returned by the keyword search.</small></div>
+    </div>
     <div id="sourceSearchStatus" class="source-search-status"></div>
     <div class="source-search-actions"><button id="cancelSourceSearch" type="button">Cancel</button><button id="runSourceSearch" type="button">Search Sources</button></div>
   </div>
@@ -337,6 +351,9 @@
       <small class="discovery-field-help">Uses your configured architecture definitions. Turn this off to discover every architecture returned by the tag.</small>
     </div>
 
+    <div class="scan-config-section"><span class="scan-config-label">Model types (optional)</span><div class="scan-config-grid">
+      {% for model_type in model_types %}<label class="scan-config-choice"><input type="checkbox" name="discoveryModelType" value="{{ model_type }}"><span>{{ model_type }}</span></label>{% endfor %}
+    </div><small class="discovery-field-help">No selection keeps every model type returned by the tag.</small></div>
     <label>Sort
       <select id="discoverySort">
         <option value="NEWEST" selected>Newest</option>

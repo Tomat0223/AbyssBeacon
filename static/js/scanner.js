@@ -14,53 +14,40 @@ function initializeScanner(){
         if(scanRunning) return;
         scanOverlay?.classList.add("open");
         scanOverlay?.setAttribute("aria-hidden","false");
-        requestAnimationFrame(() => {
-            const sourceBoxes=Array.from(document.querySelectorAll('input[name="scanSource"]'));
-            const archBoxes=Array.from(document.querySelectorAll('input[name="scanArchitecture"]'));
-            const sourceButton=document.getElementById("scanAllSources");
-            const archButton=document.getElementById("scanAllArchitectures");
-            if(sourceButton) sourceButton.textContent=(sourceBoxes.length>0&&sourceBoxes.every(x=>x.checked))?"Clear":"Select all";
-            if(archButton) archButton.textContent=(archBoxes.length>0&&archBoxes.every(x=>x.checked))?"Clear":"Select all";
-        });
+        syncScanSummaries();
+
     });
     document.getElementById("closeScanConfig")?.addEventListener("click", closeScanConfig);
     scanOverlay?.querySelectorAll(".open-settings-overlay").forEach(button => button.addEventListener("click", closeScanConfig));
     scanOverlay?.addEventListener("click", e => { if(e.target === scanOverlay) closeScanConfig(); });
-    const syncBulkLabel = (buttonId, selector) => {
-        const button=document.getElementById(buttonId);
-        const boxes=Array.from(document.querySelectorAll(selector));
-        if(!button) return;
-        const all=boxes.length>0 && boxes.every(x=>x.checked);
-        button.textContent=all?"Clear":"Select all";
+    const syncScanSummaries = () => {
+        const status=document.getElementById("scanConfigStatus");
+        if(status) status.textContent="";
+        scanOverlay?.querySelectorAll("[data-check-group]").forEach(section=>{
+            const boxes=Array.from(section.querySelectorAll('input[type="checkbox"]'));
+            const count=boxes.filter(input=>input.checked).length;
+            const label=section.querySelector(".scan-config-count");
+            if(label) label.textContent=count===boxes.length && count>0 ? `All (${count})` : count ? `${count} selected` : "None selected";
+        });
     };
-    const syncScanBulkLabels = () => {
-        syncBulkLabel("scanAllSources",'input[name="scanSource"]');
-        syncBulkLabel("scanAllArchitectures",'input[name="scanArchitecture"]');
-    };
-
-    document.getElementById("scanAllSources")?.addEventListener("click", () => {
-        const boxes=Array.from(document.querySelectorAll('input[name="scanSource"]'));
-        const all=boxes.length>0 && boxes.every(x=>x.checked);
-        boxes.forEach(x=>x.checked=!all);
-        syncScanBulkLabels();
+    scanOverlay?.querySelectorAll("[data-select-group]").forEach(button=>{
+        button.addEventListener("click",()=>{
+            scanOverlay.querySelectorAll(`input[name="${button.dataset.selectGroup}"]`).forEach(input=>{
+                input.checked=button.dataset.selectAction==="all";
+                input.dispatchEvent(new Event("change",{bubbles:true}));
+            });
+            syncScanSummaries();
+        });
     });
-    document.getElementById("scanAllArchitectures")?.addEventListener("click", () => {
-        const boxes=Array.from(document.querySelectorAll('input[name="scanArchitecture"]'));
-        const all=boxes.length>0 && boxes.every(x=>x.checked);
-        boxes.forEach(x=>x.checked=!all);
-        syncScanBulkLabels();
-    });
-
-    document.querySelectorAll('input[name="scanSource"], input[name="scanArchitecture"]').forEach(box=>{
-        box.addEventListener("change", syncScanBulkLabels);
-    });
-    syncScanBulkLabels();
+    scanOverlay?.querySelectorAll('input[type="checkbox"]').forEach(input=>input.addEventListener("change",syncScanSummaries));
+    syncScanSummaries();
     document.getElementById("runConfiguredScan")?.addEventListener("click", () => {
         const sources=Array.from(document.querySelectorAll('input[name="scanSource"]:checked')).map(x=>x.value);
         const architectures=Array.from(document.querySelectorAll('input[name="scanArchitecture"]:checked')).map(x=>x.value);
         const status=document.getElementById("scanConfigStatus");
         if(!sources.length){ if(status) status.textContent="Select at least one source."; return; }
         if(!architectures.length){ if(status) status.textContent="Select at least one model architecture."; return; }
+        if(!scanOverlay.querySelector('input[name="scanModelType"]:checked')){ if(status) status.textContent="Select at least one model type."; return; }
         closeScanConfig(); startScan(sources, architectures);
     });
 
@@ -191,6 +178,9 @@ function startScan(configuredSources=null, configuredArchitectures=null){
     const architectures = configuredArchitectures || Array.from(document.querySelectorAll('input[name="scanArchitecture"]:checked')).map(input => input.value);
     sources.forEach(source => formData.append("sources", source));
     architectures.forEach(architecture => formData.append("architectures", architecture));
+    document.querySelectorAll('input[name="scanModelType"]:checked').forEach(input=>formData.append("model_types",input.value));
+    formData.append("model_types_explicit","1");
+
 
     scanRunning = true;
     scanDetailsManuallyOpen = true;

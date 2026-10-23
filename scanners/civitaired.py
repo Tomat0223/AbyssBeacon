@@ -1193,6 +1193,7 @@ def _has_ambiguous_multifile_names(versions):
 
 
 def _version_summary(version):
+    from source_metrics import version_statistics
     paid = version.get("paidAccess") if isinstance(version.get("paidAccess"), dict) else {}
     deadline = version.get("earlyAccessDeadline") or paid.get("endsAt") or ""
     paid_terms = paid.get("terms") if isinstance(paid.get("terms"), dict) else {}
@@ -1203,6 +1204,7 @@ def _version_summary(version):
         "description": _plain_text(version.get("description") or ""),
         "base_model": version.get("baseModel") or "",
         "base_model_type": version.get("baseModelType") or "",
+        **version_statistics(version),
         "trained_words": version.get("trainedWords") or [],
         "availability": version.get("availability") or "",
         "status": version.get("status") or "",

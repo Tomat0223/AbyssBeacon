@@ -48,7 +48,7 @@
                 </div>
 
                 <div class="option-grid-two">
-                    <div class="option-group"><span class="option-label">Architecture</span><select id="familyFilter" class="options-select"><option value="">All Architectures</option>{% for architecture in architectures %}{% if architecture != "Other" %}<option value="{{ architecture }}">{{ architecture }}</option>{% endif %}{% endfor %}<option value="Other">Other</option></select></div>
+                    <div class="option-group"><span class="option-label">Architecture</span><select id="familyFilter" multiple hidden aria-label="Architecture selections"><option value="">All Architectures</option>{% for architecture in architectures %}{% if architecture != "Other" %}<option value="{{ architecture }}">{{ architecture }}</option>{% endif %}{% endfor %}<option value="Other">Other</option></select><details id="architectureFilterMenu" class="options-multi-select architecture-filter-menu"><summary><span class="architecture-filter-summary">All Architectures</span><span class="options-multi-arrow">▾</span></summary><div class="options-multi-menu architecture-filter-panel"><div class="options-multi-actions"><button type="button" id="selectAllArchitectures">Select all</button><button type="button" id="clearArchitectures">Clear</button></div><div class="architecture-filter-choices" aria-label="Choose architectures"></div></div></details></div>
                     <div class="option-group"><span class="option-label">Model Type</span><select id="modelTypeFilter" class="options-select"><option value="">All Model Types</option>{% for type in model_types %}{% if type != "Other" %}<option value="{{ type }}">{{ type }}</option>{% endif %}{% endfor %}<option value="Other">Other</option></select></div>
                     <div class="option-group"><span class="option-label">Status</span><select id="statusFilter" class="options-select"><option value="All">All</option><option value="New">New</option><option value="Seen">Seen</option><option value="Updated">Updated</option></select></div>
                     <div class="option-group"><span class="option-label">Access</span><select id="accessFilter" class="options-select"><option value="all">All Models</option><option value="downloadable">Downloadable</option><option value="paid_access">Paid Access</option><option value="gated">Gated / No Download</option></select></div>
@@ -59,6 +59,7 @@
                 </div>
 
                 <label class="option-toggle"><input id="showMediaOnly" type="checkbox"><span>Models with media only</span></label>
+                <div class="options-note">Models stay New until you mark them as seen. Visible marks only models currently on screen; All marks every New model in your library.</div>
                 <div class="options-action-row"><button id="markVisibleSeen" class="options-secondary" type="button">Mark Visible as Seen</button><button id="markAllSeen" class="options-secondary" type="button">Mark All as Seen</button></div>
                 <button id="resetFilters" class="options-reset" type="button">Reset Filters</button>
             </div>
@@ -74,6 +75,7 @@
                     <label class="sort-option"><input type="radio" name="sortOption" value="downloads" {% if selected_sort == "downloads" %}checked{% endif %}><span>Most Downloads</span></label>
                     <label class="sort-option"><input type="radio" name="sortOption" value="likes" {% if selected_sort == "likes" %}checked{% endif %}><span>Most Likes</span></label>
                 </div>
+                <div class="options-note">Popularity uses matching versions where counts are available, taking the highest eligible source total rather than adding mirrors. Unknown version counts sort last; reload older models to refresh missing statistics.</div>
                 <button id="applySort" class="apply-sort" type="button">Apply Sort</button>
             </div>
             {% endif %}
@@ -88,6 +90,7 @@
                 <div class="option-label options-edit-label">Scan Definitions</div>
                 <button class="options-link-button open-settings-overlay" data-settings-url="/settings/sources" data-settings-title="Sources to Scan" type="button">Sources to Scan</button>
                 <button class="options-link-button open-settings-overlay" data-settings-url="/settings/architectures" data-settings-title="Models to Scan" type="button">Models to Scan</button>
+                <div class="options-note">Choose sources, model architectures and model types in the SCAN dialog.</div>
                 <div class="options-divider"></div>
                 <details class="library-appearance-settings scanner-advanced-settings">
                     <summary>
@@ -225,7 +228,8 @@
                         <span class="appearance-chevron" aria-hidden="true">▾</span>
                     </summary>
                     <div class="library-appearance-body">
-                        <div class="options-note">When AbyssBeacon learns how to interpret existing source data differently, this updates saved library entries without running a broad source scan. Most entries use data already stored locally; older entries missing repository metadata are refreshed individually from their source. Future library metadata upgrades can use this same tool.</div>
+                        <div class="options-note">When AbyssBeacon learns how to interpret existing source data differently, this updates saved library entries without running a broad source scan. Most entries use data already stored locally; older entries missing repository or version statistics are refreshed individually from their source. Future library metadata upgrades can use this same tool.</div>
+                        <div class="options-note">Large libraries may take several hours to update, especially older CivitAI/Red entries needing fresh version statistics. Keep AbyssBeacon running and prevent your computer from sleeping until completion. Successfully upgraded entries do not need the same upgrade again.</div>
                         <div id="libraryUpdateStatus" class="options-note" role="status" aria-live="polite">Checking library metadata…</div>
                         <button id="updateLibraryNow" class="options-secondary" type="button" disabled>Check for Library Updates</button>
                     </div>

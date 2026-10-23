@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime, timezone, timedelta
 from config import DATABASE
+from model_identity import MERGE_SOURCES, identity as complete_model_identity, evidence as model_weight_evidence
 
 
 _INITIALIZED = False
@@ -826,58 +827,9 @@ _PRIMARY_IDENTITY_EXTENSIONS = {
 
 
 def _primary_identity_sha256s(model):
-    """Hashes safe enough to identify an entire model across sources.
-
-    Shared repository components must not merge cards. We only trust one exact
-    hash-bearing model artifact. Multiple artifact hashes are considered
-    ambiguous and are deliberately not auto-merged.
-    """
-    model = _model_mapping(model)
-    if not model:
-        return []
-
-    files = model.get("files") or []
-    if isinstance(files, str):
-        try:
-            files = json.loads(files)
-        except Exception:
-            files = []
-    if isinstance(files, dict):
-        files = list(files.values())
-
-    artifact_hashes = []
-    for file_data in files if isinstance(files, list) else []:
-        if not isinstance(file_data, dict):
-            continue
-
-        path = str(
-            file_data.get("path")
-            or file_data.get("name")
-            or file_data.get("filename")
-            or ""
-        ).replace("\\", "/")
-        basename = path.rsplit("/", 1)[-1]
-        extension = ""
-        if "." in basename and not basename.startswith("."):
-            extension = "." + basename.rsplit(".", 1)[-1].casefold()
-
-        if not (
-            file_data.get("primary") is True
-            or extension in _PRIMARY_IDENTITY_EXTENSIONS
-        ):
-            continue
-
-        sha256 = _file_sha256(file_data)
-        if sha256 and sha256 not in artifact_hashes:
-            artifact_hashes.append(sha256)
-
-    if len(artifact_hashes) == 1:
-        return artifact_hashes
-    if len(artifact_hashes) > 1:
-        return []
-
-    direct = _normalize_sha256(model.get("sha"))
-    return [direct] if direct else []
+    """Only complete model-weight inventories qualify; support weights never do."""
+    weights = model_weight_evidence(_model_mapping(model))
+    return sorted({digest for group in weights for digest in group}) if weights else []
 
 
 def _model_sha256s(model):
@@ -888,6 +840,10 @@ def _model_sha256s(model):
 def _register_model_hashes(cursor, model_id, source, model_key, model):
     if not model_id or not source:
         return
+    # A refreshed inventory replaces stale identities rather than accumulating
+    # hashes from versions no longer represented by this source card.
+    cursor.execute("DELETE FROM model_file_hashes WHERE source=? AND model_key=?",
+                   (str(source), str(model_key or "")))
     for sha256 in _model_sha256s(model):
         cursor.execute(
             """
@@ -928,57 +884,69 @@ def get_model_sha256_lookup(model_ids):
     return lookup
 
 
-def _find_cross_source_duplicate(cursor, model):
-    source = str(model.get("source", "") or "")
-    model_key = str(model.get("model_key", "") or "")
-    if source in {"civitai", "civitaired"} and model_key:
-        other = "civitaired" if source == "civitai" else "civitai"
-        row = cursor.execute(
-            "SELECT * FROM models WHERE source=? AND model_key=? LIMIT 1",
-            (other, model_key)
-        ).fetchone()
-        if row:
-            return row
+def _card_merge_identity(cursor, row):
+    """Every attached source must agree; do not extend old ambiguous merges."""
+    links = cursor.execute(
+        "SELECT source,model_key,source_data FROM model_sources WHERE model_id=?",
+        (row["id"],),
+    ).fetchall()
+    if not links:
+        links = [{"source": row["source"], "model_key": row["model_key"],
+                  "source_data": dict(cursor.execute("SELECT * FROM models WHERE id=?", (row["id"],)).fetchone())}]
+    identities, sources = set(), set()
+    for link in links:
+        source = str(link["source"] or "").lower()
+        if source not in MERGE_SOURCES or source in sources:
+            return None
+        sources.add(source)
+        snapshot = _snapshot_dict(link["source_data"])
+        snapshot["source"] = source
+        signature = complete_model_identity(snapshot)
+        if signature is None:
+            return None
+        identities.add(signature)
+    return next(iter(identities)) if len(identities) == 1 else None
 
-    # SHA256 is the authoritative cross-source file identity. Only exact
-    # 64-hex SHA256 values qualify; repo commit SHAs and source version IDs do not.
-    for sha256 in _model_sha256s(model):
-        # A SHA can legitimately appear in many repositories when it belongs to
-        # a shared auxiliary file (VAE, text encoder, config bundle, etc.).
-        # Only auto-merge when this exact hash points to one unambiguous existing
-        # canonical card outside the incoming source.
-        rows = cursor.execute(
-            """
-            SELECT DISTINCT m.*
-            FROM model_file_hashes h
-            JOIN models m ON m.id=h.model_id
-            WHERE h.sha256=? AND lower(h.source)<>lower(?)
-            ORDER BY m.id
-            """,
-            (sha256, source),
-        ).fetchall()
-        ids = {int(row["id"]) for row in rows}
-        if len(ids) == 1:
-            candidate = rows[0]
-            # A legitimate mirror card can have only one source model identity
-            # per source.  If this canonical card already contains a different
-            # key for the incoming source, merging would create the kind of
-            # chained/monster card produced by shared repository components.
-            existing_same_source = cursor.execute(
-                """
-                SELECT 1 FROM model_sources
-                WHERE model_id=? AND lower(source)=lower(?)
-                  AND COALESCE(model_key,'')<>COALESCE(?, '')
-                LIMIT 1
-                """,
-                (candidate["id"], source, model_key),
-            ).fetchone()
-            if existing_same_source:
-                continue
-            if str(candidate["source"] or "").casefold() == source.casefold() and str(candidate["model_key"] or "") != model_key:
-                continue
-            return candidate
-    return None
+
+def _find_cross_source_duplicate(cursor, model):
+    incoming = _model_mapping(model)
+    signature = complete_model_identity(incoming)
+    if signature is None:
+        return None
+    source = str(incoming.get("source") or "").lower()
+    model_key = str(incoming.get("model_key") or "")
+    existing = cursor.execute(
+        "SELECT model_id FROM model_sources WHERE lower(source)=? AND model_key=?",
+        (source, model_key),
+    ).fetchone()
+    digests = _model_sha256s(incoming)
+    if not digests:
+        return None
+    # The index narrows candidates only. One shared file is never sufficient.
+    rows = cursor.execute(
+        """SELECT DISTINCT m.* FROM model_file_hashes h JOIN models m ON m.id=h.model_id
+           WHERE h.sha256=? AND lower(h.source)<>? ORDER BY m.id""",
+        (digests[0], source),
+    ).fetchall()
+    candidates = []
+    for row in rows:
+        if str(row["source"]).lower() == source and str(row["model_key"]) == model_key:
+            continue
+        if existing and int(existing["model_id"]) != int(row["id"]):
+            continue
+        if _card_merge_identity(cursor, row) != signature:
+            continue
+        conflict = cursor.execute(
+            """SELECT 1 FROM model_sources WHERE model_id=? AND lower(source)=?
+               AND COALESCE(model_key,'')<>? LIMIT 1""",
+            (row["id"], source, model_key),
+        ).fetchone()
+        if conflict:
+            continue
+        if str(row["source"]).lower() == source and str(row["model_key"]) != model_key:
+            continue
+        candidates.append(row)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 
@@ -1015,9 +983,10 @@ def _merge_existing_model_rows(cursor, winner_id, loser_id):
     )
 
     # Preserve the losing canonical row as a fully usable alternate source.
-    _register_model_source(
-        cursor, winner_id, loser["source"], loser["url"], loser["model_key"], dict(loser)
-    )
+    stored = cursor.execute("SELECT 1 FROM model_sources WHERE source=? AND model_key=? AND source_data NOT IN ('','{}')",
+                            (loser["source"], loser["model_key"])).fetchone()
+    if not stored:
+        _register_model_source(cursor, loser_id, loser["source"], loser["url"], loser["model_key"], dict(loser))
     links = cursor.execute(
         "SELECT source,url,model_key,source_data FROM model_sources WHERE model_id=?",
         (loser_id,),
@@ -1054,6 +1023,10 @@ def _merge_existing_model_rows(cursor, winner_id, loser_id):
         )
 
     cursor.execute("UPDATE download_history SET model_id=? WHERE model_id=?", (winner_id, loser_id))
+    for table in ("installed_files", "download_queue", "download_watchlist", "collection_families"):
+        cursor.execute(f"UPDATE {table} SET model_id=? WHERE model_id=?", (winner_id, loser_id))
+    cursor.execute("UPDATE OR IGNORE scan_model_changes SET model_id=? WHERE model_id=?", (winner_id, loser_id))
+    cursor.execute("DELETE FROM scan_model_changes WHERE model_id=?", (loser_id,))
     cursor.execute("DELETE FROM models WHERE id=?", (loser_id,))
     return True
 
@@ -1112,27 +1085,14 @@ def _cluster_corrupted_links(links):
             return
         parent[rb] = ra
 
-    # CivitAI Red is a mirror of CivitAI only when its native model key matches.
-    for i, left in enumerate(links):
-        for j in range(i + 1, len(links)):
-            right = links[j]
-            pair = {
-                str(left["source"] or "").casefold(),
-                str(right["source"] or "").casefold(),
-            }
-            if pair == {"civitai", "civitaired"} and (
-                str(left["model_key"] or "").strip()
-                and str(left["model_key"] or "").strip()
-                == str(right["model_key"] or "").strip()
-            ):
-                union(i, j)
-
-    hashes = [_link_identity_hashes(link) for link in links]
+    identities = []
+    for link in links:
+        snapshot = _snapshot_dict(link["source_data"])
+        snapshot["source"] = link["source"]
+        identities.append(complete_model_identity(snapshot))
     for i in range(len(links)):
-        if len(hashes[i]) != 1:
-            continue
         for j in range(i + 1, len(links)):
-            if len(hashes[j]) == 1 and hashes[i] == hashes[j]:
+            if identities[i] is not None and identities[i] == identities[j]:
                 union(i, j)
 
     clusters = {}
@@ -1470,97 +1430,43 @@ def repair_impossible_merged_cards(connection, cursor):
     return {"cards":repaired,"created":created,"backup":backup_path}
 
 
-def reconcile_cross_source_sha256_duplicates(cursor):
-    """Repair all *unambiguous* existing cross-source SHA256 duplicates.
-
-    Exact SHA256 remains the strongest identity signal, but a repository can
-    contain shared support files used by many different models. To avoid false
-    merges, a hash is auto-reconciled only when it maps to at most one canonical
-    model per source. Same-source duplicate hashes are left alone for review.
-    """
-    groups = cursor.execute(
-        """
-        SELECT h.sha256
-        FROM model_file_hashes h
-        JOIN models m ON m.id=h.model_id
-        GROUP BY h.sha256
-        HAVING COUNT(DISTINCT h.model_id)>1
-           AND COUNT(DISTINCT lower(m.source))>1
-        ORDER BY h.sha256
-        """
-    ).fetchall()
-
-    merged = 0
-    merged_groups = 0
-    skipped_ambiguous = 0
-    for group in groups:
-        sha256 = group["sha256"]
-        per_source = cursor.execute(
-            """
-            SELECT lower(h.source) source, COUNT(DISTINCT h.model_id) n
-            FROM model_file_hashes h
-            WHERE h.sha256=?
-            GROUP BY lower(h.source)
-            """,
-            (sha256,),
-        ).fetchall()
-        if any(int(row["n"] or 0) > 1 for row in per_source):
-            skipped_ambiguous += 1
-            continue
-
-        rows = cursor.execute(
-            """
-            SELECT DISTINCT m.*
-            FROM model_file_hashes h
-            JOIN models m ON m.id=h.model_id
-            WHERE h.sha256=?
-            ORDER BY m.id
-            """,
-            (sha256,),
-        ).fetchall()
+def preview_cross_source_merges(cursor):
+    """Offline, read-only candidates. Same-source ambiguity excludes a whole group."""
+    groups = {}
+    for row in cursor.execute("SELECT id,name,source,model_key,url FROM models ORDER BY id").fetchall():
+        signature = _card_merge_identity(cursor, row)
+        if signature is not None:
+            groups.setdefault(signature, []).append(row)
+    candidates, ambiguous = [], []
+    for rows in groups.values():
         if len(rows) < 2:
             continue
-        winner = max(rows, key=_canonical_rank)
-        winner_id = int(winner["id"])
-        changed = 0
+        seen, conflict = set(), False
         for row in rows:
-            loser_id = int(row["id"])
-            if loser_id == winner_id:
-                continue
+            links = cursor.execute("SELECT source FROM model_sources WHERE model_id=?", (row["id"],)).fetchall()
+            sources = {str(link["source"]).lower() for link in links} or {str(row["source"]).lower()}
+            if seen & sources:
+                conflict = True
+            seen.update(sources)
+        items = [{"id": int(row["id"]), "source": row["source"], "name": row["name"],
+                  "url": row["url"]} for row in rows]
+        (ambiguous if conflict else candidates).append(items)
+    return {"candidates": candidates, "ambiguous": ambiguous}
 
-            loser_links = cursor.execute(
-                "SELECT source,model_key FROM model_sources WHERE model_id=?",
-                (loser_id,),
-            ).fetchall()
-            conflict = False
-            for link in loser_links:
-                existing = cursor.execute(
-                    """
-                    SELECT 1 FROM model_sources
-                    WHERE model_id=? AND lower(source)=lower(?)
-                      AND COALESCE(model_key,'')<>COALESCE(?, '')
-                    LIMIT 1
-                    """,
-                    (winner_id,link["source"],link["model_key"]),
-                ).fetchone()
-                if existing:
-                    conflict=True
-                    break
-            if conflict:
-                skipped_ambiguous += 1
-                continue
 
-            if _merge_existing_model_rows(cursor,winner_id,loser_id):
-                merged += 1
-                changed += 1
-        if changed:
-            merged_groups += 1
+def reconcile_cross_source_sha256_duplicates(cursor):
+    """Explicit apply only; whole inventories must match, with no source overlap."""
+    preview = preview_cross_source_merges(cursor)
+    merged = 0
+    for group in preview["candidates"]:
+        rows = [cursor.execute("SELECT * FROM models WHERE id=?", (item["id"],)).fetchone() for item in group]
+        winner = max(rows, key=_canonical_rank)
+        for row in rows:
+            if row["id"] != winner["id"]:
+                merged += int(_merge_existing_model_rows(cursor, winner["id"], row["id"]))
+    return {"groups": len(preview["candidates"]), "merged": merged,
+            "skipped_ambiguous": len(preview["ambiguous"])}
 
-    return {
-        "groups": merged_groups,
-        "merged": merged,
-        "skipped_ambiguous": skipped_ambiguous,
-    }
 
 
 def _stable_model_metadata_hash(model):
@@ -1702,92 +1608,29 @@ def add_model(model):
 
     c = conn.cursor()
 
-    # Cross-source canonicalization. CivitAI Red and CivitAI share the same
-    # underlying model IDs. Keep one feed card while retaining every source
-    # URL as a fallback. Exact cryptographic hashes can also identify mirrors.
-    cross = _find_cross_source_duplicate(c, model)
+    # New mirrors may attach to a proven whole-card match. Existing separate
+    # cards are handled only by the explicit offline review/apply tool.
+    linked = c.execute(
+        """SELECT m.* FROM model_sources s JOIN models m ON m.id=s.model_id
+           WHERE lower(s.source)=lower(?) AND s.model_key=?
+             AND (lower(m.source)<>lower(?) OR m.model_key<>?) LIMIT 1""",
+        (model.get("source", ""), model.get("model_key", ""), model.get("source", ""), model.get("model_key", "")),
+    ).fetchone()
+    # Refresh an already attached source without re-proving a historical merge
+    # or creating another card. The new policy governs new attachments only.
+    cross = linked or _find_cross_source_duplicate(c, model)
     if cross:
         incoming_source = str(model.get("source", "") or "")
-        existing_source = str(cross["source"] or "")
-        _register_model_source(c, cross["id"], existing_source, cross["url"], cross["model_key"], dict(cross))
         _register_model_source(c, cross["id"], incoming_source, model.get("url", ""), model.get("model_key", ""), model)
-
-        incoming_priority = _SOURCE_PRIORITY.get(incoming_source, 0)
-        existing_priority = _SOURCE_PRIORITY.get(existing_source, 0)
-        incoming_existing = c.execute(
-            "SELECT * FROM models WHERE source=? AND (model_key=? OR url=?) AND id<>? LIMIT 1",
-            (incoming_source, model.get("model_key", ""), model.get("url", ""), cross["id"]),
-        ).fetchone()
-        if incoming_priority <= existing_priority:
-            # If both cards already existed before SHA matching was learned,
-            # collapse the incoming-source card into the stronger canonical row.
-            if incoming_existing:
-                c.execute("UPDATE models SET favorite=?, viewed=? WHERE id=?", (
-                    max(int(cross["favorite"] or 0), int(incoming_existing["favorite"] or 0)),
-                    max(int(cross["viewed"] or 0), int(incoming_existing["viewed"] or 0)),
-                    cross["id"],
-                ))
-                c.execute("UPDATE model_sources SET model_id=? WHERE model_id=?", (cross["id"], incoming_existing["id"]))
-                c.execute("UPDATE model_file_hashes SET model_id=? WHERE model_id=?", (cross["id"], incoming_existing["id"]))
-                c.execute("DELETE FROM model_media WHERE model_id=?", (incoming_existing["id"],))
-                c.execute("DELETE FROM models WHERE id=?", (incoming_existing["id"],))
-            media_changed = _replace_media_rows(
-                c,
-                cross["id"],
-                incoming_source,
-                model.get("media", []) or [],
-            )
-            now_seen = datetime.now(timezone.utc).isoformat()
-            c.execute("UPDATE models SET last_seen=? WHERE id=?", (now_seen, cross["id"]))
-            conn.commit()
-            conn.close()
-            collection_snapshot = _model_mapping(model)
-            collection_snapshot["source"] = incoming_source
-            collection_snapshot["model_key"] = str(model.get("model_key", "") or "")
-            sync_collection_families_from_snapshot(cross["id"], collection_snapshot)
-            return {
-                "model_id": cross["id"],
-                "state": "unchanged",
-                "media_changed": bool(media_changed),
-                "media_count": len(model.get("media", []) or []) if media_changed else 0,
-            }
-
-        # A richer source (currently Red over regular CivitAI) replaces the
-        # canonical row while carrying over local user state and source links.
-        preserved_favorite = int(cross["favorite"] or 0)
-        preserved_viewed = int(cross["viewed"] or 0)
-        preserved_first_seen = cross["first_seen"] or model.get("created", "")
-        preserved_retention_mode = cross["retention_mode"] or "source"
-        preserved_creator_discovered_at = cross["creator_discovered_at"] or ""
-        old_id = cross["id"]
-        links = c.execute("SELECT source,url,model_key,source_data FROM model_sources WHERE model_id=?", (old_id,)).fetchall()
-        preserved_hashes = c.execute("SELECT source,model_key,sha256 FROM model_file_hashes WHERE model_id=?", (old_id,)).fetchall()
-        preserved_media = c.execute(
-            "SELECT source,type,url,thumbnail,filename,path,metadata,position FROM model_media WHERE model_id=? ORDER BY position,id",
-            (old_id,),
-        ).fetchall()
-        c.execute("DELETE FROM model_media WHERE model_id=?", (old_id,))
-        c.execute("DELETE FROM model_sources WHERE model_id=?", (old_id,))
-        c.execute("DELETE FROM model_file_hashes WHERE model_id=?", (old_id,))
-        c.execute("DELETE FROM models WHERE id=?", (old_id,))
+        media_changed = _replace_media_rows(c, cross["id"], incoming_source, model.get("media", []) or [])
+        c.execute("UPDATE models SET last_seen=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), cross["id"]))
         conn.commit()
-        # Continue into the normal insert path; local state is restored below.
-        setattr(model, "_preserved_favorite", preserved_favorite)
-        setattr(model, "_preserved_viewed", preserved_viewed)
-        setattr(model, "_preserved_first_seen", preserved_first_seen)
-        setattr(model, "_preserved_retention_mode", preserved_retention_mode)
-        setattr(model, "_preserved_creator_discovered_at", preserved_creator_discovered_at)
-        setattr(model, "_preserved_links", [dict(row) for row in links])
-        setattr(model, "_preserved_hashes", [dict(row) for row in preserved_hashes])
-        setattr(model, "_preserved_media", [dict(row) for row in preserved_media])
-        if incoming_existing:
-            c.execute("UPDATE models SET favorite=?, viewed=?, first_seen=COALESCE(NULLIF(first_seen,''), ?) WHERE id=?", (
-                max(int(incoming_existing["favorite"] or 0), preserved_favorite),
-                max(int(incoming_existing["viewed"] or 0), preserved_viewed),
-                preserved_first_seen,
-                incoming_existing["id"],
-            ))
-
+        conn.close()
+        snapshot = _model_mapping(model)
+        snapshot = {**snapshot, "source": incoming_source, "model_key": str(model.get("model_key", "") or "")}
+        sync_collection_families_from_snapshot(cross["id"], snapshot)
+        return {"model_id": cross["id"], "state": "unchanged", "media_changed": bool(media_changed),
+                "media_count": len(model.get("media", []) or []) if media_changed else 0}
 
     # Check if model already exists.
     #
@@ -4709,49 +4552,8 @@ def migrate():
         )
         print("AbyssBeacon detangle safety: using user's manual models.db backup")
 
-    # Reconcile every pre-existing *unambiguous* exact-SHA cross-source pair.
-    # This repairs databases populated before SHA merging existed; no rescan is
-    # required once the hashes are already indexed.
-    sha_reconcile = reconcile_cross_source_sha256_duplicates(c)
-    if sha_reconcile.get("merged"):
-        print(
-            "SHA256 reconciliation: "
-            f"merged {sha_reconcile['merged']} duplicate card(s) across "
-            f"{sha_reconcile['groups']} cross-source hash group(s)"
-            + (f"; skipped {sha_reconcile['skipped_ambiguous']} ambiguous group(s)"
-               if sha_reconcile.get("skipped_ambiguous") else "")
-        )
-
-    # Reconcile pre-existing CivitAI/Red duplicate cards. Red remains the
-    # storage-canonical row for historical merge stability, but feed/detail
-    # presentation is chosen independently in app.py. Preserve both providers'
-    # source snapshots and galleries while collapsing only the card identity.
-    pairs = c.execute("""
-        SELECT r.id AS red_id, c.id AS civ_id,
-               r.model_key AS model_key,
-               r.url AS red_url, c.url AS civ_url,
-               r.favorite AS red_fav, c.favorite AS civ_fav,
-               r.viewed AS red_view, c.viewed AS civ_view
-        FROM models r
-        JOIN models c ON c.model_key=r.model_key
-        WHERE r.source='civitaired' AND c.source='civitai'
-    """).fetchall()
-    for pair in pairs:
-        red_id, civ_id = pair["red_id"], pair["civ_id"]
-        c.execute("UPDATE models SET favorite=?, viewed=? WHERE id=?", (
-            max(int(pair["red_fav"] or 0), int(pair["civ_fav"] or 0)),
-            max(int(pair["red_view"] or 0), int(pair["civ_view"] or 0)),
-            red_id,
-        ))
-        civ_source = c.execute("SELECT source_data FROM model_sources WHERE source='civitai' AND model_key=?", (pair["model_key"],)).fetchone()
-        civ_source_data = (civ_source["source_data"] if civ_source else "") or ""
-        c.execute("DELETE FROM model_sources WHERE source='civitai' AND model_key=?", (pair["model_key"],))
-        c.execute("INSERT OR REPLACE INTO model_sources(model_id,source,url,model_key,source_data) VALUES(?,?,?,?,?)",
-                  (red_id, 'civitai', pair["civ_url"] or '', pair["model_key"], civ_source_data))
-        c.execute("UPDATE model_sources SET model_id=? WHERE model_id=?", (red_id, civ_id))
-        c.execute("UPDATE model_file_hashes SET model_id=? WHERE model_id=?", (red_id, civ_id))
-        c.execute("UPDATE model_media SET model_id=? WHERE model_id=?", (red_id, civ_id))
-        c.execute("DELETE FROM models WHERE id=?", (civ_id,))
+    # Existing-library merges require an explicit preview/apply via review_merges.py.
+    # Startup and Update Library must not silently collapse existing cards.
 
     # Versioned one-time data upgrades live under migrations/ so database.py
     # stays focused on the current schema. Each successful migration records a

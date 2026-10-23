@@ -6,7 +6,8 @@ def run_scan(
     selected_sources,
     search_terms=None,
     selected_architecture="",
-    selected_architectures=None
+    selected_architectures=None,
+    search_overrides=None
 ):
 
 
@@ -22,7 +23,8 @@ def run_scan(
         selected_sources,
         search_terms,
         selected_architecture,
-        selected_architectures=selected_architectures
+        selected_architectures=selected_architectures,
+        search_overrides=search_overrides
     )
 
 

@@ -618,6 +618,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let timer = null;
     const currentColors = () => Object.fromEntries(colorInputs.map(input => [input.dataset.source, input.value]));
     const applyColor = (source, color) => {
+        document.querySelectorAll(`.model-version-pill[data-version-source="${CSS.escape(source)}"]`).forEach(pill=>pill.style.setProperty("--version-source-color",color));
         document.querySelectorAll(`.model-card[data-source="${CSS.escape(source)}"]`).forEach(card => card.style.setProperty("--source-color", color));
         document.querySelectorAll(`.model-card[data-sources~="${CSS.escape(source)}"]`).forEach(card => {
             if (card.dataset.source === source) card.style.setProperty("--source-color", color);
@@ -648,7 +649,7 @@ document.addEventListener("DOMContentLoaded",()=>{
 
     let pollTimer=null;
     let reloadAfterUpdate=false;
-    const sourceLabel=(name)=>name==="huggingface"?"Hugging Face":name==="modelscope"?"ModelScope":name;
+    const sourceLabel=(name)=>name==="huggingface"?"Hugging Face":name==="modelscope"?"ModelScope":name==="civitai"?"CivitAI":name==="civitaired"?"CivitAI Red":name;
     const countsText=(sources={})=>Object.entries(sources)
         .filter(([,count])=>Number(count||0)>0)
         .map(([name,count])=>`${sourceLabel(name)} ${count}`)
@@ -683,14 +684,14 @@ document.addEventListener("DOMContentLoaded",()=>{
             const checkedNow=Number(result.checked||0);
             const checkedSaved=Number(data?.checked_resolved||0);
             if(result.updated||checkedNow){
-                let text=`Library is current. Updated ${Number(result.updated||0)} saved repository entr${Number(result.updated||0)===1?"y":"ies"}`;
-                if(refreshed) text+=` · checked ${refreshed} legacy repositor${refreshed===1?"y":"ies"}`;
+                let text=`Library is current. Updated ${Number(result.updated||0)} saved source entr${Number(result.updated||0)===1?"y":"ies"}`;
+                if(refreshed) text+=` · ${refreshed} targeted source refresh${refreshed===1?"":"es"}`;
                 if(checkedNow) text+=` · ${checkedNow} unavailable entr${checkedNow===1?"y was":"ies were"} marked checked for this metadata version`;
                 statusEl.textContent=text+".";
             }else if(checkedSaved){
-                statusEl.textContent=`Library is current. ${checkedSaved} unavailable legacy repositor${checkedSaved===1?"y is":"ies are"} already marked checked for this metadata version.`;
+                statusEl.textContent=`Library is current. ${checkedSaved} unavailable legacy source entr${checkedSaved===1?"y is":"ies are"} already marked checked for this metadata version.`;
             }else{
-                statusEl.textContent="Library is current. No saved repository metadata needs an update.";
+                statusEl.textContent="Library is current. No saved source metadata needs an update.";
             }
             button.disabled=true;
             button.textContent="Library Up to Date";
@@ -698,11 +699,11 @@ document.addEventListener("DOMContentLoaded",()=>{
             return false;
         }
 
-        let text=`${pending} saved repository entr${pending===1?"y":"ies"} need the current metadata rules`;
+        let text=`${pending} saved source entr${pending===1?"y":"ies"} need the current metadata rules`;
         if(sourceText) text+=` (${sourceText})`;
-        text+=". AbyssBeacon uses saved data first and only refreshes individual repositories when legacy file metadata is missing; it does not run a broad source scan.";
+        text+=". AbyssBeacon uses saved data first and only refreshes individual saved models/repositories when required metadata is missing; it does not run a broad source scan.";
         if(Number(result.deferred||0)>0){
-            text+=` ${Number(result.deferred)} entr${Number(result.deferred)===1?"y could":"ies could"} not be refreshed from its source. Check the terminal for the exact repositor${Number(result.deferred)===1?"y":"ies"} and reason.`;
+            text+=` ${Number(result.deferred)} entr${Number(result.deferred)===1?"y could":"ies could"} not be refreshed from its source. Check the terminal for the source entr${Number(result.deferred)===1?"y":"ies"} and reason.`;
         }
         if(Number(result.failed||0)>0){
             text+=` ${Number(result.failed)} entr${Number(result.failed)===1?"y could":"ies could"} not be updated; the terminal has the error details.`;
@@ -1597,13 +1598,28 @@ document.addEventListener("DOMContentLoaded",()=>{
 });
 
 
-// Creator pages use the same explicit feed-position restoration as Collections.
-// The home page still starts at the top after a deliberate browser refresh.
+// Artist and Collection pages share the same feed-return control.
 document.addEventListener("DOMContentLoaded", () => {
-    const creatorBack = document.querySelector(".nav-creator-return-button");
-    creatorBack?.addEventListener("click", event => {
+    const back=document.querySelector('[data-feed-restore="true"]');
+    back?.addEventListener("click", event=>{
         event.preventDefault();
-        try{ sessionStorage.setItem("abyss_feed_restore_pending_v1","1"); }catch(_){ }
-        window.location.assign("/");
+        let destination="/";
+        try{
+            sessionStorage.setItem("abyss_feed_restore_pending_v1","1");
+            const snapshot=JSON.parse(sessionStorage.getItem("abyss_feed_snapshot_v2") || "null");
+            const url=new URL(snapshot?.url || "/",window.location.origin);
+            if(url.origin === window.location.origin && url.pathname === "/"){
+                destination=url.pathname+url.search;
+            }
+        }catch(_){ }
+        // Direct visits can use the browser's intact page. Nested visits use
+        // the bounded feed snapshot on a normal home navigation instead.
+        let referrer=null;
+        try{ referrer=new URL(document.referrer); }catch(_){ }
+        if(history.length > 1 && referrer?.origin === window.location.origin && referrer.pathname === "/"){
+            window.history.back();
+        }else{
+            window.location.assign(destination);
+        }
     });
 });

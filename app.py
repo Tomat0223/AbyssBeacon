@@ -960,6 +960,9 @@ def _decode_source_snapshot(link, canonical=None):
             snap["_mirrored_download_fallback"] = True
             snap["_mirrored_from_source"] = canonical_source
 
+    # Keep provider-owned text separate from installer identity fallbacks.
+    snap["_source_description"] = "" if snap.get("_mirrored_download_fallback") else (snap.get("description") or "")
+
     # Source-specific download snapshots intentionally focus on provider data and
     # may omit the canonical card identity. The local installer still needs that
     # identity for friendly filenames and library folders. Fill only blank values
@@ -4644,6 +4647,14 @@ def scan():
     enabled_architectures = {name for name in configured_enabled_architectures if name in architectures and name != "Other"}
     selected_architectures = [name for name in selected_architectures if name in enabled_architectures]
 
+    configured_types = load_model_types()
+    requested_types = request.form.getlist("model_types")
+    if any(value not in configured_types for value in requested_types):
+        return {"success": False, "error": "Select valid model types."}, 400
+    requested_types = list(dict.fromkeys(requested_types))
+    if request.form.get("model_types_explicit") == "1" and not requested_types:
+        return {"success": False, "error": "Select at least one model type."}, 400
+
     if not selected_sources:
         return {"success": False, "error": "Select at least one enabled source."}, 400
     if not selected_architectures:
@@ -4669,7 +4680,8 @@ def scan():
         "scan_sources": selected_sources,
         "selected_scan_sources": selected_sources,
         "scan_architectures": selected_architectures,
-        "selected_architecture": selected_architecture
+        "selected_architecture": selected_architecture,
+        "scan_model_types": requested_types
 
     })
 
@@ -4698,10 +4710,13 @@ def scan():
         try:
 
             scanner_runner.run_scan(
-                selected_sources,
-                selected_terms,
-                selected_architecture,
-                selected_architectures
+                selected_sources=selected_sources,
+                search_terms=selected_terms,
+                selected_architecture=selected_architecture,
+                selected_architectures=selected_architectures,
+                search_overrides={
+                    "_requested_model_types": requested_types,
+                },
             )
 
             # Automatic retention runs only after a genuinely completed normal scan.
@@ -4800,6 +4815,9 @@ def search_sources_external():
     # Result depth controls how many provider matches we inspect, but an exact
     # keyword match must not disappear merely because the model is older than
     # 30 days. Use an effectively all-time source window for every depth.
+    requested_types = [] if intent == "url" else (data.get("model_types") or [])
+    if not isinstance(requested_types, list) or any(not isinstance(value, str) or value not in load_model_types() for value in requested_types):
+        return {"status": "error", "message": "Select valid model types."}, 400
     search_days = 36500
     plan = {source: [] for source in sources}
 
@@ -4846,6 +4864,7 @@ def search_sources_external():
                     "search_days": search_days,
                     "_external_search": True,
                     "_external_maximum": depth == "maximum",
+                    "_requested_model_types": requested_types,
                 },
                 selected_architectures=selected_architectures,
             )
@@ -5228,6 +5247,29 @@ def _architecture_search_terms(architecture):
 
 
 def _architecture_filter_condition(architecture):
+    """Accept legacy single labels or a bounded JSON list of ORed labels."""
+    values = architecture
+    if isinstance(values, str) and values.strip().startswith("["):
+        try:
+            values = json.loads(values)
+        except (TypeError, ValueError):
+            values = [values]
+    if not isinstance(values, list):
+        return _single_architecture_filter_condition(values)
+    labels = list(dict.fromkeys(
+        value.strip() for value in values
+        if isinstance(value, str) and value.strip()
+    ))[:32]
+    conditions, params = [], []
+    for label in labels:
+        condition, arguments = _single_architecture_filter_condition(label)
+        if condition:
+            conditions.append(condition)
+            params.extend(arguments)
+    return ("(" + " OR ".join(conditions) + ")", params) if conditions else ("", [])
+
+
+def _single_architecture_filter_condition(architecture):
     """Match one configured architecture in parent/source/version metadata.
 
     JSON fields are compared as exact labels rather than loose substrings. That
@@ -5351,6 +5393,61 @@ def _classify_detected_architectures(values):
                 searchable.append(canonical)
 
     return searchable, detected
+
+
+def _popularity_order(conn, field, architecture, selected_sources, preferences):
+    """Rank source-owned counts in SQLite before LIMIT/OFFSET, with bounded work."""
+    from source_metrics import rank_value
+
+    if isinstance(architecture, str) and architecture.strip().startswith("["):
+        try:
+            architecture = json.loads(architecture)
+        except ValueError:
+            architecture = [architecture]
+    wanted = architecture if isinstance(architecture, list) else ([architecture] if architecture else [])
+    if not wanted:
+        wanted = preferences.get("enabled_architectures") or []
+    wanted = [str(value).strip() for value in wanted if str(value).strip()]
+    allowed = {str(value).casefold() for value in (selected_sources or [])}
+    maturity = _normalize_maturity_mode(preferences.get("selected_sensitive", "hide"))
+
+    wanted_terms = {str(term).casefold().strip() for name in wanted
+                    for term in _architecture_search_terms(name)}
+
+    def matches(value, names):
+        return str(value or "").casefold().strip() in wanted_terms
+
+    def popularity(canonical_json, links_json):
+        try:
+            canonical = json.loads(canonical_json)
+            links = json.loads(links_json or "[]")
+            if not any(link.get("source") == canonical.get("source") for link in links):
+                links.append({"source": canonical.get("source"), "model_key": canonical.get("model_key"), "source_data": ""})
+            values = []
+            for link in links:
+                source = str(link.get("source") or "").casefold()
+                if allowed and source not in allowed:
+                    continue
+                from source_metrics import mapping
+                snapshot = mapping(link.get("source_data"))
+                if not snapshot:
+                    if source != canonical.get("source"):
+                        continue
+                    snapshot = dict(canonical)
+                snapshot = {**snapshot, "source": source}
+                if maturity != "show" and _source_snapshot_sensitive(snapshot, canonical):
+                    continue
+                value = rank_value(snapshot, field, wanted, matches)
+                if value is not None:
+                    values.append(value)
+            return min(max(values), 2**63 - 1) if values else -1
+        except (TypeError, ValueError, KeyError):
+            return -1
+
+    conn.create_function("abyss_popularity", 2, popularity)
+    identity = "json_object('source',models.source,'model_key',models.model_key,'architecture',models.architecture,'base_model',models.base_model,'card_data',models.card_data,'downloads',models.downloads,'likes',models.likes,'sensitive',models.sensitive)"
+    snapshots = "(SELECT json_group_array(json_object('source',ms.source,'model_key',ms.model_key,'source_data',ms.source_data)) FROM model_sources ms WHERE ms.model_id=models.id)"
+    return f"ORDER BY abyss_popularity({identity}, {snapshots}) DESC, datetime(created) DESC, id DESC"
 
 
 def _feed_window_base_query(
@@ -6099,16 +6196,11 @@ def home():
 
     elif sort == "downloads":
 
-        query += """
-        ORDER BY downloads DESC,
-                datetime(created) DESC
-        """
+        query += " " + _popularity_order(conn, "downloads", architecture, selected_sources, preferences)
 
 
     elif sort == "likes":
-        query += """
-        ORDER BY likes DESC, datetime(created) DESC
-        """
+        query += " " + _popularity_order(conn, "likes", architecture, selected_sources, preferences)
     elif sort == "added":
         query += """
         ORDER BY datetime(first_seen) DESC, id DESC
@@ -6640,6 +6732,8 @@ def feed_chunk():
 
     conn = database.connect()
     conn.row_factory = sqlite3.Row
+    if sort in {"downloads", "likes"}:
+        order = _popularity_order(conn, sort, architecture, selected_sources, {**preferences, "selected_sensitive": maturity_mode})
     total = int(conn.execute(
         f"SELECT COUNT(*) FROM ({base_query}) AS feed_count",
         params,
@@ -7094,6 +7188,10 @@ def start_discovery_scan():
     except (TypeError, ValueError):
         max_results = 100
 
+    requested_types = data.get("model_types") or []
+    if not isinstance(requested_types, list) or any(not isinstance(value, str) or value not in load_model_types() for value in requested_types):
+        return {"success": False, "error": "Select valid model types."}, 400
+
     settings = load_settings()
     configured = settings.get("sources", {})
     if not configured.get(source, {}).get("enabled"):
@@ -7154,6 +7252,7 @@ def start_discovery_scan():
                 sort=sort_value,
                 max_results=max_results,
                 allowed_architectures=discovery_architectures,
+                model_types=requested_types,
             )
         except Exception as exc:
             import traceback
@@ -7468,7 +7567,7 @@ def _link_collection_media_to_files(groups, media):
         })
 
 
-def _attach_collection_readmes_to_files(groups, repository_files, model_id):
+def _attach_collection_readmes_to_files(groups, repository_files, model_id, source="huggingface"):
     """Expose trustworthy per-file README viewers without storing README text."""
     from collections import defaultdict
 
@@ -7530,6 +7629,7 @@ def _attach_collection_readmes_to_files(groups, repository_files, model_id):
                         "collection_readme",
                         model_id=int(model_id),
                         path=readme_path,
+                        source=source,
                     ),
                 })
             file_data["readme_refs"] = refs
@@ -8294,7 +8394,7 @@ def collection_page(model_id):
     _link_collection_media_to_files(groups, media)
     attached_repository_paths = _attach_collection_workflows_to_files(groups, repository_files)
     attached_repository_paths.update(
-        _attach_collection_readmes_to_files(groups, repository_files, model_id)
+        _attach_collection_readmes_to_files(groups, repository_files, model_id, source=source)
     )
     if attached_repository_paths:
         repository_files = [
@@ -8303,7 +8403,7 @@ def collection_page(model_id):
             not in attached_repository_paths
         ]
 
-    database.mark_viewed(model_id)
+    # New/Seen is changed only by the explicit Mark Seen actions.
 
     # Collection pages use the same persistent navbar and Download Manager as
     # Creator pages, while retaining their purpose-built Collection body.
@@ -8368,8 +8468,20 @@ def collection_page(model_id):
         favorite_creator_names = []
     stats_conn.close()
 
+    from collection_readmes import readme_sources
+    readme_snapshots = [collection_snapshot] + [
+        _decode_source_snapshot(dict(link), canonical) for link in links
+    ]
+    readmes = readme_sources(canonical, readme_snapshots)
+    for readme in readmes:
+        readme["url"] = url_for(
+            "collection_readme", model_id=model_id,
+            path=readme["path"], source=readme["source"],
+        )
+
     return render_template(
         "collection.html",
+        collection_readmes=readmes,
         model_id=model_id,
         title=title,
         author=author,
@@ -8417,108 +8529,41 @@ def collection_page(model_id):
 
 @app.route("/collection/<int:model_id>/readme")
 def collection_readme(model_id):
-    """Return one repository README for the Collection's safe in-page viewer."""
-    from scanners import huggingface as huggingface_scanner
+    """Fetch only a stored repository's root or inventory-backed README."""
+    from flask import jsonify
+    from collection_readmes import source_snapshots, readme_target, fetch_readme
 
-    requested_path = str(request.args.get("path") or "").strip().replace("\\", "/")
-    if not requested_path or requested_path.startswith("/") or ".." in requested_path.split("/"):
-        return {"success": False, "error": "Invalid README path."}, 400
-    if requested_path.rsplit("/", 1)[-1].casefold() != "readme.md":
-        return {"success": False, "error": "The selected repository file is not a README."}, 400
-
+    path = request.args.get("path", "README.md")
     conn = database.connect()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM models WHERE id=?", (int(model_id),)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
+    finally:
+        conn.close()
     if row is None:
         return {"success": False, "error": "Collection not found."}, 404
     canonical = dict(row)
-
-    selected_snapshot = None
-    selected_file = None
-    for link in database.get_model_sources(model_id):
-        snapshot = _decode_source_snapshot(dict(link), canonical)
-        if str(snapshot.get("source") or "").strip().lower() != "huggingface":
-            continue
-        snapshot_files = snapshot.get("files") or []
-        if isinstance(snapshot_files, str):
-            try:
-                snapshot_files = json.loads(snapshot_files or "[]")
-            except Exception:
-                snapshot_files = []
-        for file_data in snapshot_files if isinstance(snapshot_files, list) else []:
-            if not isinstance(file_data, dict):
-                continue
-            file_path = str(file_data.get("path") or file_data.get("name") or "").strip().replace("\\", "/")
-            if file_path.casefold() == requested_path.casefold():
-                selected_snapshot = snapshot
-                selected_file = file_data
-                requested_path = file_path
-                break
-        if selected_snapshot is not None:
-            break
-
-    if selected_snapshot is None:
-        return {"success": False, "error": "README not found in this Collection snapshot."}, 404
-
-    model_key = str(selected_snapshot.get("model_key") or canonical.get("model_key") or "").strip()
-    revision = str(
-        selected_file.get("revision")
-        or selected_snapshot.get("sha")
-        or selected_snapshot.get("revision")
-        or "main"
-    ).strip() or "main"
-    if not model_key:
-        return {"success": False, "error": "Hugging Face repository identity is missing."}, 404
-
-    revision_path = quote(revision, safe="")
-    encoded_path = quote(requested_path, safe="/")
-    raw_url = f"https://huggingface.co/{model_key}/raw/{revision_path}/{encoded_path}"
-    source_url = f"https://huggingface.co/{model_key}/blob/{revision_path}/{encoded_path}"
-
+    snapshots = [
+        _decode_source_snapshot(dict(link), canonical)
+        for link in database.get_model_sources(model_id)
+    ]
+    available = source_snapshots(canonical, snapshots)
+    source = str(request.args.get("source") or "").strip().lower()
+    selected = (
+        next((item for item in available if item["source"] == source), None)
+        if source else next(iter(available), None)
+    )
+    if selected is None:
+        return {"success": False, "error": "No supported repository snapshot is available."}, 404
     try:
-        huggingface_scanner._apply_auth()
-        response = huggingface_scanner.get_with_backoff(
-            huggingface_scanner.session,
-            raw_url,
-            provider="Hugging Face",
-            label=f"Collection README {model_key}/{requested_path}",
-            max_retries=2,
-            timeout=15,
-        )
-        if response.status_code in (401, 403):
-            return {
-                "success": False,
-                "restricted": True,
-                "source_url": source_url,
-                "error": "This README is restricted by Hugging Face for the configured account.",
-            }, response.status_code
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "source_url": source_url,
-                "error": f"Hugging Face returned HTTP {response.status_code} for this README.",
-            }, 502
-
-        content = response.content or b""
-        truncated = len(content) > huggingface_scanner.MAX_README_BYTES
-        if truncated:
-            content = content[:huggingface_scanner.MAX_README_BYTES]
-        text_content = content.decode(response.encoding or "utf-8", errors="replace")
-        return {
-            "success": True,
-            "path": requested_path,
-            "text": text_content,
-            "truncated": truncated,
-            "source_url": source_url,
-        }
-    except Exception as exc:
-        logging.warning("Collection README fetch failed for %s/%s: %s", model_key, requested_path, exc)
-        return {
-            "success": False,
-            "source_url": source_url,
-            "error": "Unable to load this README from Hugging Face right now.",
-        }, 502
+        target = readme_target(selected, path)
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}, 400
+    except LookupError as exc:
+        return {"success": False, "error": str(exc)}, 404
+    payload, status = fetch_readme(target)
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response, status
 
 
 @app.route("/collection/<int:model_id>/family/<family_id>/favorite", methods=["POST"])
@@ -10141,11 +10186,11 @@ def model_details(id):
 
     model = dict(model)
     canonical_model = dict(model)
-    maturity_mode = _normalize_maturity_mode(request.args.get("mature", "hide"))
     include_civitai_mature_media = _civitai_include_mature_media_enabled()
 
     detail_settings = load_settings()
     detail_preferences = detail_settings.get("preferences", {}) if isinstance(detail_settings.get("preferences", {}), dict) else {}
+    maturity_mode = _normalize_maturity_mode(request.args.get("mature", detail_preferences.get("selected_sensitive", "hide")))
     detail_card_colors = detail_preferences.get("source_card_colors", {}) if isinstance(detail_preferences.get("source_card_colors", {}), dict) else {}
     source_colors = {
         name: detail_card_colors.get(name, data.get("color", "#00eaff"))
@@ -10307,7 +10352,14 @@ def model_details(id):
     for src in model["download_sources"]:
         for version in src.get("versions", []):
             label = str(version.get("name") or "Current version")
-            key = label.casefold()
+            source_key = str(src.get("source") or "").lower()
+            # Only the two CivitAI sites share version identities. Other providers
+            # may use the same generic name for unrelated revisions.
+            family = "civitai-pair" if source_key in {"civitai", "civitaired"} else source_key
+            raw_arch = str(version.get("architecture") or version.get("base_model") or src.get("architecture") or "").strip()
+            classified_arch = processors.classify_architecture(raw_arch)
+            version_arch = (classified_arch if classified_arch != "Other" else raw_arch).casefold()
+            key = (family, label.casefold(), version_arch, str(version.get("id") or ""))
             entry = version_map.get(key)
             if not entry:
                 raw_version_architecture = str(
@@ -10371,18 +10423,20 @@ def model_details(id):
                 ).strip()
                 if source_format and source_format.casefold() not in {str(x).casefold() for x in source_formats}:
                     source_formats.append(source_format)
+            from source_metrics import detail_version_fields
             entry.setdefault("source_metadata", {})[this_source] = {
                 "name": label,
                 "id": version.get("id"),
                 "status": version.get("access_status"),
                 "share_url": version_share_url,
-                "description": version.get("description") or src.get("description") or "",
+                "description": description_text(version.get("description") or src.get("_source_description") or ""),
                 "base_model": version.get("base_model") or src.get("base_model") or "",
                 "architecture": source_architecture or src.get("architecture") or "",
                 "base_model_type": version.get("base_model_type") or "",
                 "trained_words": version.get("trained_words") or [],
                 "early_access_deadline": version.get("early_access_deadline") or "",
                 "formats": source_formats,
+                **detail_version_fields(src, version, format_date),
             }
             if version_share_url and (
                 not entry.get("share_url")
@@ -10830,12 +10884,7 @@ def model_details(id):
     conn.close()
 
 
-    # Seen state is useful bookkeeping, but it must never be allowed to block
-    # or fail the model viewer. database.mark_viewed() handles short contention
-    # internally and can defer persistence when another writer is unusually
-    # busy.
-    database.mark_viewed(id)
-
+    # Opening details never removes a model from the New feed.
 
     media_rows = raw_media_rows
     media = []
@@ -10957,11 +11006,13 @@ def model_details(id):
             "author": str(snapshot.get("author") or ""),
             "architecture": str(snapshot.get("architecture") or ""),
             "model_type": str(snapshot.get("model_type") or ""),
-            "downloads": snapshot.get("downloads", 0) or 0,
-            "likes": snapshot.get("likes", 0) or 0,
+            "downloads": None if snapshot.get("_mirrored_download_fallback") else snapshot.get("downloads"),
+            "likes": None if snapshot.get("_mirrored_download_fallback") else snapshot.get("likes"),
+            "downloads_label": "Listing downloads",
+            "likes_label": "Listing likes",
             "created": format_date(created_value) if created_value else "",
             "updated": format_date(updated_value) if updated_value else "",
-            "description": description_text(snapshot.get("description") or ""),
+            "description": description_text(snapshot.get("_source_description") or ""),
             "base_model": str(snapshot.get("base_model") or ""),
             "pipeline": str(snapshot.get("pipeline") or ""),
             "format": str(snapshot.get("format") or ""),

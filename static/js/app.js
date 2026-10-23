@@ -9,7 +9,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeFullscreen();
     initializeBackToTop();
     initializeCardVideoPreviews();
-    initializeFeedWindowing();
+    if(typeof initializeFeedWindowing === "function") initializeFeedWindowing();
 
 });
 

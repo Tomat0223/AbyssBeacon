@@ -58,6 +58,8 @@
   document.querySelectorAll('input[name="externalSource"]').forEach(input=>input.addEventListener('change',updateSourceCount));
 
   function updateIntentHelp(){
+    const filters=$("sourceSearchFilters");
+    if(filters) filters.hidden=intent?.value==='url';
     const mode=String(intent?.value||'models');
     if(!intentHelp) return;
     const byUrl=mode==='url';
@@ -80,7 +82,7 @@
     }
     depthHelp.textContent=mode==='maximum'
       ? 'No practical AbyssBeacon result cap is applied. Each provider is searched toward its available end; this can take a long time.'
-      : 'Depth controls how many matches each provider may inspect. Search is all-time at every depth; providers run in parallel.';
+      : 'Depth controls how many matches each provider may inspect. Providers run in parallel; depth does not guarantee an exhaustive search.';
   }
   intent?.addEventListener('change',()=>{updateIntentHelp();updateDepthHelp();});
   depth?.addEventListener('change',updateDepthHelp);
@@ -134,7 +136,7 @@
     if(!sources.length && intent.value!=='url'){status.textContent='Select at least one source.';return;}
     run.disabled=true; status.textContent=depth.value==='maximum'?'Searching sources to provider end… this can take a while.':'Starting source search…';
     try{
-      const r=await fetch('/search/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:query.value.trim(),intent:intent.value,architectures,depth:depth.value,sources})});
+      const r=await fetch('/search/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:query.value.trim(),intent:intent.value,architectures,depth:depth.value,sources,model_types:Array.from(document.querySelectorAll('input[name="externalModelType"]:checked')).map(input=>input.value)})});
       const data=await r.json(); if(!r.ok) throw new Error(data.message||'Search could not start.');
       status.textContent='Searching sources… results will be imported into AbyssBeacon.'; poll(data.intent==='url');
     }catch(e){run.disabled=false; status.textContent=e.message;}

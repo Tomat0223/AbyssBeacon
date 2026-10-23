@@ -148,6 +148,68 @@ def _source_search_config(architecture_name, data, source_name):
     return "text", fallback
 
 
+def _source_search_jobs(architecture_name, data, source_name):
+    """Resolve source-specific discovery jobs, including structured filters.
+
+    Existing architectures keep the simple ``mode`` + ``terms`` schema. Sources
+    that need multiple independent discovery signals can opt into a ``queries``
+    list without forcing that complexity onto every provider.
+    """
+    searches = data.get("source_searches", {}) if isinstance(data, dict) else {}
+    configured = searches.get(source_name) if isinstance(searches, dict) else None
+
+    if isinstance(configured, dict) and configured.get("enabled") is False:
+        return []
+
+    if isinstance(configured, dict):
+        queries = configured.get("queries")
+        if isinstance(queries, list):
+            resolved = []
+            for raw in queries:
+                if isinstance(raw, str):
+                    text = raw.strip()
+                    if text:
+                        resolved.append({"mode": "text", "term": text})
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+
+                mode = str(raw.get("mode") or "text").strip().lower()
+                if mode not in {"text", "base_model", "filter"}:
+                    mode = "text"
+
+                filters = raw.get("filters") or []
+                if isinstance(filters, str):
+                    filters = [filters]
+                filters = [str(value).strip() for value in filters if str(value).strip()]
+
+                term = str(raw.get("term") or "").strip()
+                label = str(raw.get("label") or "").strip()
+                if mode == "filter":
+                    if not filters and term:
+                        filters = [term]
+                    if not filters:
+                        continue
+                    term = label or ("filter:" + " + ".join(filters))
+                elif not term:
+                    continue
+
+                job = {"mode": mode, "term": term}
+                if filters:
+                    job["filters"] = filters
+                if "allow_watch_fallback" in raw:
+                    job["allow_watch_fallback"] = bool(raw.get("allow_watch_fallback"))
+                if "require_watch_match" in raw:
+                    job["require_watch_match"] = bool(raw.get("require_watch_match"))
+                resolved.append(job)
+
+            if resolved:
+                return resolved
+
+    mode, terms = _source_search_config(architecture_name, data, source_name)
+    return [{"mode": mode, "term": term} for term in terms]
+
+
 def build_scan_plan(selected_sources, selected_architecture="", legacy_search_terms=None, selected_architectures=None):
     """Build and de-duplicate source-specific discovery jobs."""
     architectures = load_architectures()
@@ -170,17 +232,30 @@ def build_scan_plan(selected_sources, selected_architecture="", legacy_search_te
 
     for architecture_name, data in watches:
         for source_name in selected_sources:
-            mode, terms = _source_search_config(architecture_name, data, source_name)
-            for term in terms:
-                key = (mode, _normalize_job_term(term))
+            for resolved in _source_search_jobs(architecture_name, data, source_name):
+                mode = str(resolved.get("mode") or "text").strip().lower()
+                term = str(resolved.get("term") or "").strip()
+                filters = tuple(
+                    _normalize_job_term(value)
+                    for value in (resolved.get("filters") or [])
+                    if _normalize_job_term(value)
+                )
+                key = (mode, _normalize_job_term(term), filters)
                 if not key[1] or key in seen[source_name]:
                     continue
                 seen[source_name].add(key)
-                plan[source_name].append({
+                job = {
                     "watch": architecture_name,
                     "term": term,
                     "mode": mode,
-                })
+                }
+                if resolved.get("filters"):
+                    job["filters"] = list(resolved["filters"])
+                if "allow_watch_fallback" in resolved:
+                    job["allow_watch_fallback"] = bool(resolved["allow_watch_fallback"])
+                if "require_watch_match" in resolved:
+                    job["require_watch_match"] = bool(resolved["require_watch_match"])
+                plan[source_name].append(job)
 
     return plan
 
@@ -301,6 +376,13 @@ def _apply_shared_retention_tombstones(source_name, models, source_settings):
 
 
 
+def _filter_requested_models(models, model_types=None):
+    """Filter requested types before preview caching and database writes."""
+    wanted = {str(value).casefold() for value in (model_types or [])}
+    return [model for model in models
+            if not wanted or str(getattr(model, "model_type", "")).casefold() in wanted]
+
+
 def _run_one_source_job(*args, **kwargs):
     with scan_control.cancellation_scope():
         return _run_one_source_job_impl(*args, **kwargs)
@@ -339,6 +421,9 @@ def _run_one_source_job_impl(source_name, source, job, source_seen_models, searc
     source_settings["_external_query"] = str(job.get("external_query") or term).strip()
     source_settings["_external_architectures"] = [str(value).strip() for value in (job.get("external_architectures") or []) if str(value).strip()]
     source_settings["_search_mode"] = mode
+    source_settings["_query_filters"] = list(job.get("filters") or [])
+    source_settings["_allow_watch_fallback"] = bool(job.get("allow_watch_fallback", True))
+    source_settings["_require_watch_match"] = bool(job.get("require_watch_match", False))
     source_settings["_blocked_creators"] = list(database.get_blocked_creator_set(source_name))
     source_settings["_progress_callback"] = _make_source_progress_reporter(
         source_name,
@@ -407,6 +492,13 @@ def _run_one_source_job_impl(source_name, source, job, source_seen_models, searc
         media_limit = 100
     source_settings["_media_limit"] = max(0, media_limit)
 
+    requested_types = source_settings.get("_requested_model_types") or []
+    # The existing CivitAI discovery lane supports a native type filter. Other
+    # sources and multi-type requests retain their existing search parallelism.
+    if source_name == "civitai" and len(requested_types) == 1:
+        native = {"checkpoint": "Checkpoint", "lora": "LORA", "locon": "LoCon", "embedding": "TextualInversion", "vae": "VAE"}
+        if requested_types[0].casefold() in native:
+            source_settings["_model_type"] = native[requested_types[0].casefold()]
     if DEBUG_SCANNERS:
         print(f"{source_name} settings:", source_settings)
 
@@ -435,6 +527,8 @@ def _run_one_source_job_impl(source_name, source, job, source_seen_models, searc
             if verbose_enabled():
                 print(f"{display_name} Qwen Image 2.1: kept {len(matching)}/{len(models)} matching models")
             models = matching
+
+        models = _filter_requested_models(models, requested_types)
 
         models, retention_memory_skipped = _apply_shared_retention_tombstones(
             source_name,
@@ -1004,7 +1098,6 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
     if retry_parts:
         print("HTTP retries: " + "; ".join(retry_parts))
 
-
     failed_jobs = []
     # Source health is populated as workers finish; summarize partial failures.
     for source_name, health in scan_status.get_source_health().items():
@@ -1041,7 +1134,7 @@ def run_scan(selected_sources=None, search_terms=None, selected_architecture="",
     return total
 
 
-def run_discovery_scan(source_name, discovery_type, value, *, label="", sort="NEWEST", max_results=100, allowed_architectures=None):
+def run_discovery_scan(source_name, discovery_type, value, *, label="", sort="NEWEST", max_results=100, allowed_architectures=None, model_types=None):
     """Run an explicit provider discovery scan without altering normal scan history.
 
     Explicit discovery results use the same retention window as Creator Scan
@@ -1086,6 +1179,8 @@ def run_discovery_scan(source_name, discovery_type, value, *, label="", sort="NE
         before = len(models)
         models = [model for model in models if str(getattr(model, "architecture", "Other") or "Other").casefold() in allowed_architectures]
         print(f"Architecture target: kept {len(models)}/{before} discovery result(s)")
+
+    models = _filter_requested_models(models, model_types)
 
     # Respect the global media sanity limit used by normal scans.
     prefs = load_settings().get("preferences", {})

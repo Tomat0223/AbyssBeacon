@@ -1,14 +1,5 @@
-// Full-page Collection views explicitly request restoration of the feed's last
-// saved scroll position. This is more reliable than browser history alone and
-// still lets an intentional browser refresh of the home page start at the top.
+// Collection-specific controls. Shared feed return lives in navbar.js.
 document.addEventListener("DOMContentLoaded", () => {
-    const back = document.querySelector("[data-feed-restore='true']");
-    back?.addEventListener("click", event => {
-        event.preventDefault();
-        try{ sessionStorage.setItem("abyss_feed_restore_pending_v1","1"); }catch(_){ }
-        window.location.assign("/");
-    });
-
     const copyButton = document.getElementById("collectionCopyLinkButton");
     copyButton?.addEventListener("click", async () => {
         if(copyButton.dataset.copying === "true") return;
@@ -323,14 +314,17 @@ document.addEventListener("DOMContentLoaded", () => {
     if(!overlay || !content) return;
 
     const cache = new Map();
+    let readmeGeneration = 0;
 
     function closeViewer(){
+        readmeGeneration++;
         overlay.classList.remove("open");
         overlay.setAttribute("aria-hidden", "true");
         document.body.classList.remove("collection-readme-open");
     }
 
     function openViewer(button){
+        const generation = ++readmeGeneration;
         const url = String(button.dataset.readmeUrl || "").trim();
         const readmePath = String(button.dataset.readmePath || "README.md").trim();
         if(!url) return;
@@ -362,7 +356,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
 
         load.then(payload => {
-            content.textContent = String(payload.text || "");
+            if(generation !== readmeGeneration) return;
+            window.modelRadarRenderReadme(content,payload);
             if(status){
                 status.textContent = payload.truncated
                     ? "This very large README was shortened for the in-page viewer."
@@ -373,6 +368,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 source.hidden = false;
             }
         }).catch(error => {
+            if(generation !== readmeGeneration) return;
             content.textContent = error.message || "Unable to load this README.";
             if(status) status.textContent = "README unavailable";
             const sourceUrl = error.payload?.source_url;

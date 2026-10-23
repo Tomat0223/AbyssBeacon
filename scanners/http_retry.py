@@ -36,6 +36,8 @@ _SCAN_CACHE = {}
 _CACHE_KEY_LOCKS = {}
 
 def reset_retry_stats():
+    from scan_logging import reset_scan_notices
+    reset_scan_notices()
     with _RETRY_LOCK:
         _RETRY_STATS.clear()
     with _PACE_LOCK:

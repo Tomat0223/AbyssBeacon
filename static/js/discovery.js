@@ -325,6 +325,8 @@
                     sort:sort?.value || 'NEWEST',
                     max_results:limit,
                     watch_only:watchOnly?.checked !== false,
+                    model_types:Array.from(document.querySelectorAll('input[name="discoveryModelType"]:checked')).map(input=>input.value),
+
                 }),
             });
             const data = await response.json();

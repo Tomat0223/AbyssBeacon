@@ -133,7 +133,7 @@
         "huggingface": {
             "search_days": 7,
             "max_results": 150,
-            "sort": "newest_updated"
+            "sort": "latest_activity"
         },
         "modelscope": {
             "search_days": 7,

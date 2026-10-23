@@ -13,6 +13,10 @@ AbyssBeacon brings multiple model sources into one local interface so you can fi
 - Scan multiple supported model sources from one interface.
 - Track new, updated, viewed, favorite, and downloaded models.
 - Filter by source, architecture, model type, access state, favorites, and download status.
+- Combine several architectures in one feed filter.
+- Choose sources, architectures and model types using compact collapsible scan controls.
+- View Hugging Face and ModelScope collection READMEs without leaving AbyssBeacon.
+- Switch source/version details and inspect clearly scoped popularity statistics.
 - Browse model images and video previews.
 - Search supported sources directly without changing the normal scan registry.
 - Import a model or scan a creator by pasting a supported page URL.
@@ -40,6 +44,32 @@ AbyssBeacon brings multiple model sources into one local interface so you can fi
 | SeaArt | Yes | Yes | Source-dependent |
 
 Source websites, APIs, authentication requirements, and page structures can change without notice. A source may temporarily require an AbyssBeacon update if its service changes.
+
+## Supported Architectures
+
+The built-in scan options currently include:
+
+| Family | Scan options |
+| --- | --- |
+| MOSS | MOSS Image (SFT), MOSS Image Base |
+| Qwen | Qwen Image 2.1 |
+| Fibo | Fibo 2.0 Dev, Fibo 2.0 Edit Turbo |
+| Krea | Krea 2 |
+| MiniMax | MiniMax-H3 |
+| FLUX.3 | FLUX.3, FLUX.3 Klein, FLUX.3 Klein Base |
+| FLUX.2 | FLUX.2 Klein 4B, FLUX.2 Klein 9B |
+| WAN | WAN 2.2 |
+| Z-Image | Z-Image Turbo, Z-Image Base |
+| LTX | LTX-2.5 |
+| Other families | Anima, Illustrious, Pony, SDXL |
+
+Availability varies by source; an architecture being listed does not mean every site has matching models or a supported scan category.
+
+- **MOSS Image** is the SFT variant. SeaArt supports this option; **MOSS Image Base** is scanned separately on supported sources and is not enabled on SeaArt.
+- **Fibo 2.0 Dev** and **Fibo 2.0 Edit Turbo** discovery is currently enabled for **Hugging Face and ModelScope**.
+- **Krea 2** scans include regular and Turbo categories on **CivitAI and CivitAI Red**.
+
+You can select several architectures in one scan or combine them in the feed filter. Screenshots illustrate the interface and may show fewer options than the current version.
 
 ## Getting Started
 
@@ -101,9 +131,15 @@ Use Search Sources when you want to look for an arbitrary model name or keyword 
 
 Choose **Import / scan by URL** in Search Sources to paste a supported model or creator page. AbyssBeacon detects the source and uses its normal lookup and account connection. Direct model links are imported independently of the architecture selection; creator imports use the selected result limit and source limits. Some sources require a connected account.
 
-Krea 2 scans include both regular and Turbo categories on CivitAI and CivitAI Red. SeaArt MOSS Image maps to the SFT variant; MOSS Image Base remains separate where supported. Fibo 2.0 Dev and Fibo 2.0 Edit Turbo discovery is enabled for Hugging Face and ModelScope.
+See [Supported Architectures](#supported-architectures) for the built-in scan options and source-specific notes.
 
 Discovery tools can use source-specific tags and creator information to find models outside the normal architecture searches. Type `discover` in the main search box to open Discovery.
+
+MiniMax-H3 discovery on Hugging Face combines name, tag, and base-model searches. Broad search hits are checked against architecture evidence before import, so unrelated MiniMax models are not assumed to be H3.
+
+Fresh installations use Hugging Face's combined creation/update activity ordering. Existing saved source-sort preferences remain unchanged when updating.
+
+Models remain **New** when you open them or visit a collection. Use **Mark Visible as Seen** to clear the New status of models currently on screen, or **Mark All as Seen** to clear all New models in the library. Returning from a creator or collection restores your feed filters and location.
 
 Additional explanations are available by hovering over controls inside AbyssBeacon.
 
@@ -206,3 +242,42 @@ The GPL does not prohibit charging money for copies or distributions. It does re
 See [`LICENSE`](LICENSE) for the complete license text.
 
 Copyright (C) 2026 AbyssBeacon contributors.
+
+
+## Source statistics and scan targeting
+
+Source-colored version pills select the matching About text, gallery and dates.
+Pills use your saved source colors. Matching CivitAI/Red versions share one pill,
+colored for the source with more version downloads; both sources' counts appear
+inside the existing Downloads and Likes boxes. SeaArt's generic Current version
+label is displayed as SeaArt. Version selections use version counts/dates when available. Values
+that only describe a provider listing are labelled accordingly; missing version
+counts are unavailable rather than borrowed from the complete listing.
+
+Most Downloads/Most Likes sort matching architecture versions before pagination.
+Each version is counted once within its provider. Merged cards use the highest
+eligible provider count, without adding mirror totals. Missing version statistics
+sort last. Use **Options > Library > Update Library** to fill missing saved
+CivitAI/Red version statistics and dates. It uses stored data first, then targeted
+requests to the same provider. Temporary failures remain pending for retry;
+unavailable versions are marked checked without erasing old data. A source that
+fails is paused for that update run. A model **Reload** remains available for
+fresh full details. Some providers do not publish every metric. Provider popularity
+figures can also cover different reporting periods.
+
+The SCAN dialog has collapsible Sources, Models to Scan and Model types sections,
+with selected counts and Select All/Clear controls. Model types default to all;
+clearing the type selection requires choosing a type before scanning. Normal
+scans retain their existing result limits and automatic retention/day boundaries.
+The experimental custom lookback controls have been removed from normal scans,
+keyword search and tag discovery. Exact URL imports retain their existing behavior.
+
+
+### Updating an existing library
+
+**Options > Library > Update Library** applies pending metadata upgrades. Large
+libraries may take several hours, especially older CivitAI/Red cards needing
+individual version-statistics requests. Keep AbyssBeacon running and prevent
+sleep until completion. Successfully upgraded entries do not need the same
+upgrade again; when no upgrades remain, the action is unavailable. This metadata
+refresh does not apply the optional existing-library merge proposals.

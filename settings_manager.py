@@ -14,7 +14,7 @@ DEFAULT_SEARCH_SETTINGS = {
     "huggingface": {
         "search_days": 7,
         "max_results": 100,
-        "sort": "newest_updated"
+        "sort": "latest_activity"
     },
     "modelscope": {
         "search_days": 7,
@@ -119,6 +119,7 @@ def normalize_scan_limits(scan_limits=None, legacy_search_settings=None):
 
 VALID_SORTS = {
     "huggingface": {
+        "latest_activity",
         "newest_updated",
         "newest_created",
         "downloads",

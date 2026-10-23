@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import database
+import version_metadata
 from scanners.common import metadata as source_metadata
 from scanners.common.repository_classifier import (
     REPOSITORY_CLASSIFIER_VERSION,
@@ -25,7 +26,7 @@ from scanners.common.repository_classifier import (
     synthesize_collection_title,
 )
 
-_SUPPORTED_REPOSITORY_SOURCES = ("huggingface", "modelscope")
+_SUPPORTED_REPOSITORY_SOURCES = ("huggingface", "modelscope", *version_metadata.SOURCES)
 _CIVITAI_COMPANION_NAMES = {"abyssbeacon info.txt", "modelradar info.txt"}
 _LEGACY_COMPANION_MEDIA_SUFFIXES = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif",
@@ -366,6 +367,8 @@ def _mark_huggingface_nested_readme_checked(snapshot):
 
 def _repository_update_current(snapshot, source):
     source = str(source or "").strip().casefold()
+    if source in version_metadata.SOURCES:
+        return version_metadata.current(snapshot)
     if _repository_metadata_version(snapshot) < repository_classifier_target_version(source):
         return False
     if source == "huggingface":
@@ -504,7 +507,7 @@ def _repository_rows(conn):
             m.created
         FROM model_sources ms
         JOIN models m ON m.id = ms.model_id
-        WHERE lower(ms.source) IN ('huggingface', 'modelscope')
+        WHERE lower(ms.source) IN ('huggingface', 'modelscope', 'civitai', 'civitaired')
         ORDER BY ms.id
         """
     ).fetchall()
@@ -528,7 +531,8 @@ def _compute_update_status():
         target_version = repository_classifier_target_version(source)
         if _repository_update_current(snapshot, source):
             current += 1
-            if (
+            version_checked = source in version_metadata.SOURCES and _json_object(_json_object(snapshot.get("card_data")).get("version_metrics_upgrade")).get("status") == "checked_unavailable"
+            if version_checked or (
                 _classification_version(snapshot) < target_version
                 and _checked_resolution_version(snapshot) >= target_version
             ):
@@ -1056,6 +1060,7 @@ def _run_repository_update():
     failed = 0
     source_refreshes = 0
     family_sync_queue = {}
+    blocked_version_sources = set()
     try:
         rows = _repository_rows(conn)
         pending_rows = []
@@ -1077,7 +1082,7 @@ def _run_repository_update():
         )
         print(f"  Hugging Face library inventory/media refresh: v{_huggingface_library_refresh_target()}")
         print(f"  ModelScope library metadata/media refresh: v{_modelscope_library_refresh_target()}")
-        print(f"  Repository snapshots pending: {len(pending_rows)}")
+        print(f"  Saved source snapshots pending: {len(pending_rows)}")
 
         needs_source_refresh = []
         for index, (row, snapshot) in enumerate(pending_rows, 1):
@@ -1089,6 +1094,60 @@ def _run_repository_update():
             )
 
             try:
+                if source in version_metadata.SOURCES:
+                    # Do not hold a SQLite write transaction during network I/O.
+                    conn.commit()
+                    if source in blocked_version_sources:
+                        deferred += 1
+                        _set_job(deferred=deferred)
+                        continue
+                    try:
+                        upgraded, request_count = version_metadata.upgrade(snapshot, source, model_key)
+                        source_refreshes += request_count
+                        # Read the current row again: a simultaneous source scan may
+                        # have refreshed it while this upgrade waited on the network.
+                        latest = conn.execute("SELECT source_data FROM model_sources WHERE id=?", (row["source_link_id"],)).fetchone()
+                        if latest is None:
+                            checked += 1
+                            continue
+                        if latest["source_data"] != row["source_data"]:
+                            deferred += 1
+                            _set_job(deferred=deferred, error="Source changed during update; retry if still needed")
+                            continue
+                        card = upgraded["card_data"]
+                        saved = conn.execute("UPDATE model_sources SET source_data=? WHERE id=? AND source_data IS ?", (json.dumps(upgraded, ensure_ascii=False), row["source_link_id"], row["source_data"]))
+                        if saved.rowcount != 1:
+                            conn.rollback()
+                            deferred += 1
+                            _set_job(deferred=deferred)
+                            continue
+                        if str(row["canonical_source"] or "").lower() == source and str(row["canonical_model_key"] or "") == model_key:
+                            canonical = conn.execute("SELECT card_data FROM models WHERE id=?", (row["model_id"],)).fetchone()
+                            canonical_card = _json_object(canonical["card_data"]) if canonical else {}
+                            canonical_card["versions"] = card["versions"]
+                            canonical_card["version_metrics_upgrade"] = card["version_metrics_upgrade"]
+                            conn.execute("UPDATE models SET card_data=? WHERE id=?", (json.dumps(canonical_card, ensure_ascii=False), row["model_id"]))
+                        conn.commit()
+                        if card["version_metrics_upgrade"]["status"] == "checked_unavailable":
+                            checked += 1
+                        else:
+                            updated += 1
+                        _set_job(updated=updated, checked=checked)
+                    except Exception as exc:
+                        conn.rollback()
+                        blocked_version_sources.add(source)
+                        deferred += 1
+                        # Do not log request headers, cookies or response bodies.
+                        reason = f"{source} model {model_key}: metadata refresh deferred ({type(exc).__name__})"
+                        if isinstance(exc, version_metadata.MetadataRequestError):
+                            reason += f" HTTP {exc.status}"
+                            if exc.status in {401, 403}:
+                                reason += "; check this source's account access"
+                            elif exc.status == 429:
+                                reason += "; source rate-limited, retry Update Library later"
+                        print("  " + reason)
+                        _set_job(deferred=deferred, error=reason)
+                    continue
                 if (
                     source == "huggingface"
                     and (
@@ -1296,8 +1355,8 @@ def _run_repository_update():
         )
         if source_refreshes:
             print(
-                f"  Targeted library repository refreshes used: {source_refreshes} "
-                "(only repositories already saved in the library; no discovery scan)."
+                f"  Targeted library source requests used: {source_refreshes} "
+                "(only models/repositories already saved in the library; no discovery scan)."
             )
         if checked:
             print(
@@ -1406,7 +1465,10 @@ def print_startup_notice():
         print(f"  Hugging Face library metadata/inventory needs refresh: {hf} repository entr{'y' if hf == 1 else 'ies'}")
     if ms:
         print(f"  ModelScope repository metadata is out of date: {ms} repository entr{'y' if ms == 1 else 'ies'}")
-    print("  Open Options > Library > Update Library to apply the current repository metadata rules.")
+    for source in version_metadata.SOURCES:
+        if sources.get(source):
+            print(f"  {source} saved version statistics/dates need refresh: {sources[source]} entries")
+    print("  Open Options > Library > Update Library to apply the current metadata rules.")
     if hf:
         print("  Hugging Face entries will be checked only from the saved library: full repository tree + README media.")
     print("  Legacy entries missing file metadata will be refreshed individually from their source.")

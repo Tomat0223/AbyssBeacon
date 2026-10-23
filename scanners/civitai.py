@@ -261,7 +261,8 @@ def _models_v9_discovery(base_model, max_items, api_sort="Newest", model_type=""
     _apply_auth()
     token = get_civitai_search_key()
     if not token:
-        builtins.print("CivitAI limited scan mode: connect CivitAI in Source Accounts for broader discovery.")
+        from scan_logging import notice_once
+        notice_once("civitai-limited-discovery", "CivitAI limited scan mode: connect CivitAI in Source Accounts for broader discovery.")
         return None
 
     try:
@@ -1167,6 +1168,7 @@ def _merge_version_lists(primary, secondary):
     return out
 
 def _version_summary(version):
+    from source_metrics import version_statistics
     paid = version.get("paidAccess") if isinstance(version.get("paidAccess"), dict) else {}
     deadline = version.get("earlyAccessDeadline") or paid.get("endsAt") or ""
     can_download = version.get("canDownload")
@@ -1180,6 +1182,7 @@ def _version_summary(version):
         "description": _plain_text(version.get("description") or ""),
         "base_model": version.get("baseModel") or "",
         "base_model_type": version.get("baseModelType") or "",
+        **version_statistics(version),
         "trained_words": version.get("trainedWords") or [],
         "availability": version.get("availability") or "",
         "status": version.get("status") or "",

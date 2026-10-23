@@ -21,13 +21,30 @@ function initializeFeedWindowing(){
     const feedReturnWindowStartKey="abyss_feed_return_window_start_v1";
     const feedRestorePendingKey="abyss_feed_restore_pending_v1";
     let scrollSaveQueued=false;
-    let scrollDirection="down";
+    let scrollDirection=null;
     let lastScrollY=Math.max(0,window.scrollY || 0);
     let adjustingScroll=false;
     let feedWindowSuspended=false;
+    let scrollAdjustmentGeneration=0;
+    let positionOperation=0;
+    let positioning=true;
+    let departing=false;
+    const feedSnapshotKey="abyss_feed_snapshot_v2";
+    if("scrollRestoration" in history) history.scrollRestoration="manual";
+    // The feed owns instant layout compensation. The global smooth-scroll
+    // rule can otherwise cross another paging boundary before reaching zero.
+    document.documentElement.style.scrollBehavior="auto";
+
+    // Windowing owns scroll compensation here. Native anchoring must not also
+    // move the viewport when the same cards are removed or prepended.
+    feed.style.overflowAnchor="none";
+    // Loading/error text must not resize the top sentinel above mounted cards.
+    [topSentinel,bottomSentinel].forEach(sentinel=>{
+        if(sentinel) sentinel.style.height="28px";
+    });
 
     function isFeedWindowSuspended(){
-        return feedWindowSuspended
+        return departing || feedWindowSuspended
             || Boolean(document.getElementById("modelOverlay")?.classList.contains("open"));
     }
 
@@ -54,7 +71,7 @@ function initializeFeedWindowing(){
     }
 
     function saveFeedReturnPosition(){
-        if(isFeedWindowSuspended()) return;
+        if(isFeedWindowSuspended() || positioning) return;
         try{
             sessionStorage.setItem(feedReturnScrollKey,String(Math.max(0,Math.round(window.scrollY || 0))));
             sessionStorage.setItem(feedReturnWindowStartKey,String(Math.max(0,windowStart || 0)));
@@ -71,7 +88,58 @@ function initializeFeedWindowing(){
     }
 
     window.addEventListener("scroll",queueFeedReturnPositionSave,{passive:true});
-    window.addEventListener("pagehide",saveFeedReturnPosition);
+    function saveFeedSnapshot(){
+        const copy=grid.cloneNode(true);
+        copy.querySelectorAll("video").forEach(video=>{
+            video.removeAttribute("src");delete video.dataset.previewBound;
+        });
+        const anchor=captureViewport().find(item=>item.bottom > 0 && item.top < window.innerHeight);
+        const state={url:window.location.href,html:copy.innerHTML,
+            start:windowStart,total,dataset:{...feed.dataset},
+            y:Math.max(0,window.scrollY || 0),
+            anchor:anchor ? {id:anchor.card.dataset.id,top:anchor.top} : null,
+            filters:window.modelRadarCaptureFeedFilters?.() || null};
+        try{
+            const text=JSON.stringify(state);
+            // This is the mounted window only, never the whole visited feed.
+            if(text.length <= 2000000) sessionStorage.setItem(feedSnapshotKey,text);
+            else sessionStorage.removeItem(feedSnapshotKey);
+            sessionStorage.setItem(feedReturnScrollKey,String(state.y));
+            sessionStorage.setItem(feedReturnWindowStartKey,String(windowStart));
+        }catch(_){
+            try{
+                sessionStorage.removeItem(feedSnapshotKey);
+                sessionStorage.setItem(feedReturnScrollKey,String(state.y));
+                sessionStorage.setItem(feedReturnWindowStartKey,String(windowStart));
+            }catch(_){ }
+        }
+    }
+
+    function prepareFeedDeparture(){
+        saveFeedSnapshot();
+        try{ sessionStorage.setItem(feedRestorePendingKey,"1"); }catch(_){ }
+        // A late response must not replace the window after it was saved.
+        requestGeneration += 1;activeController?.abort();loading=false;
+        departing=true;
+    }
+    window.modelRadarPrepareFeedDeparture=prepareFeedDeparture;
+    document.addEventListener("click",event=>{
+        if(event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        const link=event.target.closest?.("a[href]");
+        if(!link || link.target === "_blank" || link.hasAttribute("download")) return;
+        const url=new URL(link.href,window.location.href);
+        if(url.origin === window.location.origin && /^\/(creator|collection)\//.test(url.pathname)) prepareFeedDeparture();
+    },true);
+    window.addEventListener("pagehide",()=>{
+        if(!departing) saveFeedSnapshot();
+    });
+    window.addEventListener("pageshow",event=>{
+        if(!event.persisted) return;
+        departing=false;positioning=true;
+        window.modelRadarCloseModelOverlay?.();
+        try{ sessionStorage.removeItem(feedRestorePendingKey); }catch(_){ }
+        finishPositioning(++positionOperation);
+    });
 
     function mountedCards(){
         return Array.from(grid.querySelectorAll(":scope > .model-card"));
@@ -100,13 +168,45 @@ function initializeFeedWindowing(){
 
     function preserveViewportBy(delta){
         const amount=Number(delta || 0);
-        if(!Number.isFinite(amount) || Math.abs(amount) < 0.5) return;
+        const generation=++scrollAdjustmentGeneration;
         adjustingScroll=true;
-        window.scrollBy(0,amount);
-        requestAnimationFrame(()=>{
+        if(Number.isFinite(amount) && Math.abs(amount) >= 0.5){
+            window.scrollBy({top:amount,left:0,behavior:"instant"});
+        }
+        // Scroll events/observer notifications can arrive on the next frame.
+        // Keep synthetic movement out of direction detection until it settles.
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{
+            if(generation !== scrollAdjustmentGeneration) return;
             lastScrollY=Math.max(0,window.scrollY || 0);
             adjustingScroll=false;
+        }));
+    }
+
+    function visibleCard(card){
+        return card.getClientRects().length > 0;
+    }
+
+    function captureViewport(){
+        return mountedCards().filter(visibleCard).map(card=>{
+            const rect=card.getBoundingClientRect();
+            return {card,top:rect.top,bottom:rect.bottom};
         });
+    }
+
+    function restoreViewport(anchors){
+        const surviving=anchors.filter(anchor=>anchor.card.isConnected && visibleCard(anchor.card));
+        const anchor=surviving.find(item=>item.bottom > 0 && item.top < window.innerHeight)
+            || surviving[0];
+        preserveViewportBy(anchor ? anchor.card.getBoundingClientRect().top-anchor.top : 0);
+    }
+
+    function rowChunkSize(){
+        const cards=mountedCards().filter(visibleCard);
+        const first=cards[0];
+        const columns=first
+            ? cards.filter(card=>card.offsetTop === first.offsetTop).length
+            : 1;
+        return Math.max(columns,Math.floor(chunkSize/columns)*columns);
     }
 
     function releaseCard(card){
@@ -120,30 +220,34 @@ function initializeFeedWindowing(){
         });
     }
 
-    // Removing cards above the viewport changes document height. Anchor the
-    // first card that remains so the user sees no visual jump while the old
-    // chunk is discarded.
-    function pruneTopToLimit(){
+    // Trim whole visual rows: removing 80 cards from a three-column grid
+    // otherwise moves retained models into different columns on every page.
+    function pruneTopToLimit(protectedCards){
         const cards=mountedCards();
-        const overflow=Math.max(0,cards.length-maxMountedCards);
+        let overflow=Math.max(0,cards.length-maxMountedCards);
         if(!overflow) return 0;
-
-        const anchor=cards[overflow] || null;
-        const before=anchor?.getBoundingClientRect().top ?? null;
+        const previous=cards.slice(0,overflow).reverse().find(visibleCard);
+        if(previous){
+            while(overflow < cards.length && (
+                !visibleCard(cards[overflow]) || cards[overflow].offsetTop === previous.offsetTop
+            )) overflow += 1;
+        }
+        // The user may have reversed direction while the request was in
+        // flight. Discard the new tail instead of removing a visible model.
+        if(cards.slice(0,overflow).some(card=>protectedCards.has(card))){
+            removeCards(cards.slice(maxMountedCards));
+            return 0;
+        }
         removeCards(cards.slice(0,overflow));
         windowStart += overflow;
-
-        if(anchor && before !== null && anchor.isConnected){
-            const after=anchor.getBoundingClientRect().top;
-            preserveViewportBy(after-before);
-        }
         return overflow;
     }
 
-    function pruneBottomToLimit(){
+    function pruneBottomToLimit(protectedCards){
         const cards=mountedCards();
         const overflow=Math.max(0,cards.length-maxMountedCards);
         if(!overflow) return 0;
+        if(cards.slice(cards.length-overflow).some(card=>protectedCards.has(card))) return pruneTopToLimit(protectedCards);
         removeCards(cards.slice(cards.length-overflow));
         return overflow;
     }
@@ -154,7 +258,7 @@ function initializeFeedWindowing(){
         const searchSources=window.modelRadarGetBackendSourceFilters?.() || [];
 
         return {
-            architecture: document.getElementById("familyFilter")?.value || "",
+            architecture: window.modelRadarArchitectureFilterValue?.() || "",
             modelType: document.getElementById("modelTypeFilter")?.value || "",
             status: document.getElementById("statusFilter")?.value || "all",
             favorite: document.getElementById("favoriteFilter")?.value || "all",
@@ -235,6 +339,10 @@ function initializeFeedWindowing(){
 
             total=Number(data.total || 0);
 
+            const viewport=mode === "replace" ? null : captureViewport();
+            const protectedCards=new Set((viewport || [])
+                .filter(anchor=>anchor.bottom > 0 && anchor.top < window.innerHeight)
+                .map(anchor=>anchor.card));
             let preservedScrollY=null;
             if(mode === "replace"){
                 // Initial persisted-filter hydration can finish a few seconds after
@@ -258,12 +366,10 @@ function initializeFeedWindowing(){
                 }else{
                     marker.remove();
                 }
-                pruneTopToLimit();
+                pruneTopToLimit(protectedCards);
             }else if(mode === "prepend"){
                 const existingCards=mountedCards();
                 const existingIds=new Set(existingCards.map(card=>String(card.dataset.id || "")));
-                const anchor=existingCards[0] || null;
-                const before=anchor?.getBoundingClientRect().top ?? null;
                 const fragment=htmlToFragment(data.html);
                 Array.from(fragment.querySelectorAll?.(".model-card") || []).forEach(card=>{
                     if(existingIds.has(String(card.dataset.id || ""))) card.remove();
@@ -271,11 +377,7 @@ function initializeFeedWindowing(){
                 grid.prepend(fragment);
                 windowStart=Number(data.offset || 0);
 
-                if(anchor && before !== null && anchor.isConnected){
-                    const after=anchor.getBoundingClientRect().top;
-                    preserveViewportBy(after-before);
-                }
-                pruneBottomToLimit();
+                pruneBottomToLimit(protectedCards);
             }
 
             // Publish the new server total before filters.js refreshes the
@@ -284,6 +386,9 @@ function initializeFeedWindowing(){
             syncFeedState();
             initializeCardVideoPreviews();
             if(typeof window.modelRadarFilterCards === "function") window.modelRadarFilterCards();
+            // Include pruning, filtering and top-sentinel visibility in the same
+            // measurement, rather than compensating an intermediate layout.
+            if(viewport) restoreViewport(viewport);
             if(preservedScrollY !== null){
                 const restorePreservedScroll=()=>window.scrollTo(
                     0,
@@ -312,51 +417,69 @@ function initializeFeedWindowing(){
     }
 
     async function loadNextChunk(){
-        if(isFeedWindowSuspended() || loading || windowEnd() >= total) return null;
-        return fetchChunk(windowEnd(),{mode:"append",limit:chunkSize});
+        if(isFeedWindowSuspended() || positioning || adjustingScroll || loading || windowEnd() >= total) return null;
+        return fetchChunk(windowEnd(),{mode:"append",limit:rowChunkSize()});
     }
 
     async function loadPreviousChunk(){
-        if(isFeedWindowSuspended() || loading || windowStart <= 0) return null;
-        const offset=Math.max(0,windowStart-chunkSize);
+        if(isFeedWindowSuspended() || positioning || adjustingScroll || loading || windowStart <= 0) return null;
+        const offset=Math.max(0,windowStart-rowChunkSize());
         const limit=Math.max(1,windowStart-offset);
         return fetchChunk(offset,{mode:"prepend",limit});
     }
 
+    function finishPositioning(operation){
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{
+            if(operation !== positionOperation) return;
+            lastScrollY=Math.max(0,window.scrollY || 0);
+            scrollDirection=null;
+            positioning=false;
+            queueFeedReturnPositionSave();
+        }));
+    }
+
     async function resetFeedWindow({preserveScroll=false}={}){
+        const operation=++positionOperation;positioning=true;
         bottomSentinel.classList.remove("complete","error");
         topSentinel?.classList.remove("error");
         const data=await fetchChunk(0,{mode:"replace",limit:replaceSize,preserveScroll});
-        syncFeedState();
+        if(operation === positionOperation && !preserveScroll) window.scrollTo({top:0,behavior:"instant"});
+        finishPositioning(operation);
         return data;
     }
 
     async function jumpFeedToTop(){
-        if(windowStart > 0){
+        const operation=++positionOperation;positioning=true;
+        // Replacing cancels a pending prepend, even if the user reached the
+        // top while that older request was still loading.
+        if(windowStart > 0 || loading){
             await fetchChunk(0,{mode:"replace",limit:replaceSize});
         }
-        window.scrollTo({top:0,behavior:"smooth"});
+        if(operation === positionOperation){
+            window.scrollTo({top:0,behavior:"instant"});
+            finishPositioning(operation);
+        }
     }
 
-    function reconcileAfterRemoval(removedCount=0){
-        const removed=Math.max(0,Number(removedCount || 0));
-        if(removed) total=Math.max(0,total-removed);
-        syncFeedState();
-        if(windowEnd() < total && mountedCount() < replaceSize){
-            loadNextChunk();
-        }
+    async function reconcileAfterRemoval(removedCount=0,{all=false}={}){
+        const operation=++positionOperation;positioning=true;
+        total=Math.max(0,total-Math.max(0,Number(removedCount || 0)));
+        const offset=all ? 0 : Math.min(windowStart,Math.max(0,total-replaceSize));
+        await fetchChunk(offset,{mode:"replace",limit:replaceSize,preserveScroll:!all});
+        if(operation === positionOperation && (all || total === 0)) window.scrollTo({top:0,behavior:"instant"});
+        finishPositioning(operation);
     }
 
     if("IntersectionObserver" in window){
         const bottomObserver=new IntersectionObserver(entries=>{
-            if(isFeedWindowSuspended()) return;
+            if(isFeedWindowSuspended() || positioning || adjustingScroll || loading) return;
             if(scrollDirection === "down" && entries.some(entry=>entry.isIntersecting)) loadNextChunk();
         },{rootMargin:"1800px 0px",threshold:0.01});
         bottomObserver.observe(bottomSentinel);
 
         if(topSentinel){
             const topObserver=new IntersectionObserver(entries=>{
-                if(isFeedWindowSuspended()) return;
+                if(isFeedWindowSuspended() || positioning || adjustingScroll || loading) return;
                 if(scrollDirection === "up" && entries.some(entry=>entry.isIntersecting)) loadPreviousChunk();
             },{rootMargin:"1800px 0px",threshold:0.01});
             topObserver.observe(topSentinel);
@@ -368,10 +491,23 @@ function initializeFeedWindowing(){
     window.addEventListener("scroll",()=>{
         if(isFeedWindowSuspended()) return;
         const currentY=Math.max(0,window.scrollY || 0);
-        if(!adjustingScroll){
-            if(currentY > lastScrollY + 1) scrollDirection="down";
-            else if(currentY < lastScrollY - 1) scrollDirection="up";
+        // Reaching zero is an explicit request for the beginning, including
+        // the small interval in which an earlier chunk is compensating scroll.
+        if(!positioning && currentY <= 1 && windowStart > 0 && lastScrollY > 1){
+            scrollAdjustmentGeneration += 1;adjustingScroll=false;
+            jumpFeedToTop();
+            return;
+        }
+        if(adjustingScroll || positioning){
             lastScrollY=currentY;
+            return;
+        }
+        if(currentY > lastScrollY + 1) scrollDirection="down";
+        else if(currentY < lastScrollY - 1) scrollDirection="up";
+        lastScrollY=currentY;
+        if(currentY <= 1 && windowStart > 0 && scrollDirection === "up"){
+            jumpFeedToTop();
+            return;
         }
 
         if(scrollDirection === "down" && window.innerHeight + currentY >= document.documentElement.scrollHeight - 1800){
@@ -391,70 +527,70 @@ function initializeFeedWindowing(){
 
     syncFeedState();
 
-    // A browser reload should always restart AbyssBeacon at the top. The bounded
-    // Feed window is rebuilt from the first 120 cards on a deliberate reload.
+    let restoreRequested=false;
+    let snapshot=null;
     try{
         const navigation=performance.getEntriesByType?.("navigation")?.[0];
-        if(navigation?.type === "reload"){
-            try{ sessionStorage.removeItem(feedRestorePendingKey); }catch(_){ }
-            if("scrollRestoration" in history) history.scrollRestoration="manual";
-            const forceReloadTop=()=>window.scrollTo(0,0);
-            forceReloadTop();
-            requestAnimationFrame(forceReloadTop);
-            window.addEventListener("pageshow",forceReloadTop,{once:true});
+        restoreRequested=navigation?.type !== "reload"
+            && sessionStorage.getItem(feedRestorePendingKey) === "1";
+        if(restoreRequested) snapshot=JSON.parse(sessionStorage.getItem(feedSnapshotKey) || "null");
+        sessionStorage.removeItem(feedRestorePendingKey);
+        if(snapshot){
+            const url=new URL(snapshot.url);
+            if(url.origin !== window.location.origin || url.pathname !== "/" || typeof snapshot.html !== "string"
+                || snapshot.html.length > 2000000 || !Number.isInteger(snapshot.start) || snapshot.start < 0
+                || !Number.isFinite(snapshot.y)) snapshot=null;
         }
-    }catch(_){ }
+    }catch(_){ snapshot=null; }
+
+    if(snapshot){
+        const fragment=htmlToFragment(snapshot.html);
+        if(fragment.querySelectorAll(".model-card").length > maxMountedCards) snapshot=null;
+        else{
+            removeCards(mountedCards());grid.replaceChildren(fragment);
+            Object.assign(feed.dataset,snapshot.dataset || {});
+            windowStart=snapshot.start;total=Math.max(0,Number(snapshot.total) || 0);
+            window.modelRadarRestoreFeedFilters?.(snapshot.filters);
+            syncFeedState();initializeCardVideoPreviews();window.modelRadarFilterCards?.();
+        }
+    }
 
     const initialState=currentStructuralFilters();
     const needsFilteredWindow =
-        Boolean(initialState.architecture) ||
-        Boolean(initialState.modelType) ||
+        Boolean(initialState.architecture) || Boolean(initialState.modelType) ||
         String(initialState.status).toLowerCase() !== "all" ||
         String(initialState.favorite).toLowerCase() !== "all" ||
         String(initialState.creatorFavorite).toLowerCase() !== "all" ||
         ["downloaded","updates","not_downloaded"].includes(String(initialState.downloadStatus).toLowerCase()) ||
-        Boolean(initialState.searchText) ||
-        initialState.sourceSearchActive ||
-        initialState.media ||
-        Boolean(initialState.sort) ||
+        Boolean(initialState.searchText) || initialState.sourceSearchActive || initialState.media || Boolean(initialState.sort) ||
         (initialState.allSourceCount && initialState.sources.length !== initialState.allSourceCount);
-    const initialWindowReady = needsFilteredWindow
-        ? resetFeedWindow({preserveScroll:true})
-        : Promise.resolve(null);
 
-    async function restoreFeedReturnPosition(){
-        let shouldRestore=false;
-        let target=0;
-        let targetWindowStart=0;
-        try{
-            shouldRestore=sessionStorage.getItem(feedRestorePendingKey)==="1";
-            target=Math.max(0,Number.parseInt(sessionStorage.getItem(feedReturnScrollKey)||"0",10)||0);
-            targetWindowStart=Math.max(0,Number.parseInt(sessionStorage.getItem(feedReturnWindowStartKey)||"0",10)||0);
-            if(shouldRestore) sessionStorage.removeItem(feedRestorePendingKey);
-        }catch(_){ }
-        if(!shouldRestore) return;
-
-        if("scrollRestoration" in history) history.scrollRestoration="manual";
-        try{ await initialWindowReady; }catch(_){ }
-
-        // With a bounded Feed, scrollY is relative to the current 120-card
-        // window. Restore that exact server offset instead of rebuilding every
-        // chunk that once appeared above it.
-        if(targetWindowStart !== windowStart){
-            try{
-                await fetchChunk(targetWindowStart,{mode:"replace",limit:replaceSize});
-            }catch(_){ }
+    async function initializePosition(){
+        const operation=++positionOperation;
+        if(!snapshot && needsFilteredWindow){
+            await fetchChunk(0,{mode:"replace",limit:replaceSize});
         }
-
-        const restore=()=>window.scrollTo(0,Math.min(target,Math.max(0,document.documentElement.scrollHeight-window.innerHeight)));
-        restore();
-        requestAnimationFrame(()=>{
-            restore();
-            requestAnimationFrame(restore);
-        });
-        setTimeout(restore,120);
-        setTimeout(restore,350);
+        if(operation !== positionOperation) return;
+        if(restoreRequested){
+            let target=snapshot?.y || 0;
+            let start=snapshot?.start || 0;
+            if(!snapshot){
+                try{
+                    target=Math.max(0,Number(sessionStorage.getItem(feedReturnScrollKey)) || 0);
+                    start=Math.max(0,Number(sessionStorage.getItem(feedReturnWindowStartKey)) || 0);
+                }catch(_){ }
+                if(start !== windowStart) await fetchChunk(start,{mode:"replace",limit:replaceSize});
+            }
+            if(operation !== positionOperation) return;
+            window.scrollTo({top:target,behavior:"instant"});
+            if(snapshot?.anchor){
+                const card=mountedCards().find(item=>item.dataset.id === snapshot.anchor.id);
+                if(card) window.scrollBy({top:card.getBoundingClientRect().top-snapshot.anchor.top,behavior:"instant"});
+            }
+        }else{
+            window.scrollTo({top:0,behavior:"instant"});
+        }
+        finishPositioning(operation);
     }
-
-    restoreFeedReturnPosition();
+    initializePosition();
 }
