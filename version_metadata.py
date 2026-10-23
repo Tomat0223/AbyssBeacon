@@ -67,7 +67,7 @@ def _session(source):
     import requests
     from secrets_manager import get_source_token
     session = requests.Session()
-    session.headers.update({"User-Agent": "AbyssBeacon/1.5.0", "Accept": "application/json"})
+    session.headers.update({"User-Agent": "AbyssBeacon/1.5.1", "Accept": "application/json"})
     if source == "civitaired":
         from scanners.civitaired import _credentials
         for key, value in _credentials().items():
