@@ -94,7 +94,7 @@ function initializeFeedWindowing(){
             video.removeAttribute("src");delete video.dataset.previewBound;
         });
         const anchor=captureViewport().find(item=>item.bottom > 0 && item.top < window.innerHeight);
-        const state={url:window.location.href,html:copy.innerHTML,
+        const state={url:window.location.href,html:copy.innerHTML,columns:gridColumnCount(),
             start:windowStart,total,dataset:{...feed.dataset},
             y:Math.max(0,window.scrollY || 0),
             anchor:anchor ? {id:anchor.card.dataset.id,top:anchor.top} : null,
@@ -189,7 +189,7 @@ function initializeFeedWindowing(){
     function captureViewport(){
         return mountedCards().filter(visibleCard).map(card=>{
             const rect=card.getBoundingClientRect();
-            return {card,top:rect.top,bottom:rect.bottom};
+            return {card,top:rect.top,bottom:rect.bottom,left:rect.left};
         });
     }
 
@@ -200,14 +200,54 @@ function initializeFeedWindowing(){
         preserveViewportBy(anchor ? anchor.card.getBoundingClientRect().top-anchor.top : 0);
     }
 
+    function gridColumnCount(){
+        // Resolved CSS tracks describe the actual responsive layout. Counting
+        // the first mounted row is unreliable when that row is incomplete.
+        const tracks=getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/);
+        return Math.max(1,tracks.filter(track=>/^\d+(?:\.\d+)?px$/.test(track)).length);
+    }
+
     function rowChunkSize(){
-        const cards=mountedCards().filter(visibleCard);
-        const first=cards[0];
-        const columns=first
-            ? cards.filter(card=>card.offsetTop === first.offsetTop).length
-            : 1;
+        const columns=gridColumnCount();
         return Math.max(columns,Math.floor(chunkSize/columns)*columns);
     }
+
+    function rowWindowLimit(){
+        const columns=gridColumnCount();
+        return Math.max(columns,Math.floor(maxMountedCards/columns)*columns);
+    }
+
+    function clearRowAlignment(){
+        grid.querySelectorAll(":scope > [data-feed-row-start]").forEach(card=>{
+            card.style.removeProperty("grid-column-start");
+            delete card.dataset.feedRowStart;
+        });
+    }
+
+    function restoreRowAlignment(anchors){
+        clearRowAlignment();
+        const cards=mountedCards().filter(visibleCard);
+        const surviving=(anchors || []).filter(anchor=>anchor.card.isConnected && visibleCard(anchor.card));
+        const anchor=surviving.find(item=>item.bottom>0 && item.top<window.innerHeight) || surviving[0];
+        if(!anchor || !cards.length) return;
+        const columns=gridColumnCount();
+        const gap=Number.parseFloat(getComputedStyle(grid).columnGap) || 0;
+        const pitch=(grid.getBoundingClientRect().width+gap)/columns;
+        const oldColumn=Math.max(0,Math.min(columns-1,Math.round((anchor.left-grid.getBoundingClientRect().left)/pitch)));
+        const index=cards.indexOf(anchor.card);
+        const leading=(oldColumn-index%columns+columns)%columns;
+        // A partial backwards page (or hidden cards) can insert fewer than a
+        // whole visible row. Keep its leading cells empty rather than moving
+        // the model already under the user's eyes into a different column.
+        if(leading){
+            cards[0].style.gridColumnStart=String(leading+1);
+            cards[0].dataset.feedRowStart="1";
+        }
+    }
+
+    // A deliberate viewport resize may reflow the grid. Discard the old row
+    // offset before it can create implicit columns in the narrower layout.
+    window.addEventListener("resize",clearRowAlignment,{passive:true});
 
     function releaseCard(card){
         try{ window.modelRadarReleaseCardVideoPreviews?.(card); }catch(_){ }
@@ -224,7 +264,7 @@ function initializeFeedWindowing(){
     // otherwise moves retained models into different columns on every page.
     function pruneTopToLimit(protectedCards){
         const cards=mountedCards();
-        let overflow=Math.max(0,cards.length-maxMountedCards);
+        let overflow=Math.max(0,cards.length-rowWindowLimit());
         if(!overflow) return 0;
         const previous=cards.slice(0,overflow).reverse().find(visibleCard);
         if(previous){
@@ -235,7 +275,7 @@ function initializeFeedWindowing(){
         // The user may have reversed direction while the request was in
         // flight. Discard the new tail instead of removing a visible model.
         if(cards.slice(0,overflow).some(card=>protectedCards.has(card))){
-            removeCards(cards.slice(maxMountedCards));
+            removeCards(cards.slice(rowWindowLimit()));
             return 0;
         }
         removeCards(cards.slice(0,overflow));
@@ -245,7 +285,7 @@ function initializeFeedWindowing(){
 
     function pruneBottomToLimit(protectedCards){
         const cards=mountedCards();
-        const overflow=Math.max(0,cards.length-maxMountedCards);
+        const overflow=Math.max(0,cards.length-rowWindowLimit());
         if(!overflow) return 0;
         if(cards.slice(cards.length-overflow).some(card=>protectedCards.has(card))) return pruneTopToLimit(protectedCards);
         removeCards(cards.slice(cards.length-overflow));
@@ -366,6 +406,8 @@ function initializeFeedWindowing(){
                 }else{
                     marker.remove();
                 }
+                window.modelRadarFilterCards?.();
+                restoreRowAlignment(viewport);
                 pruneTopToLimit(protectedCards);
             }else if(mode === "prepend"){
                 const existingCards=mountedCards();
@@ -377,6 +419,8 @@ function initializeFeedWindowing(){
                 grid.prepend(fragment);
                 windowStart=Number(data.offset || 0);
 
+                window.modelRadarFilterCards?.();
+                restoreRowAlignment(viewport);
                 pruneBottomToLimit(protectedCards);
             }
 
@@ -388,7 +432,10 @@ function initializeFeedWindowing(){
             if(typeof window.modelRadarFilterCards === "function") window.modelRadarFilterCards();
             // Include pruning, filtering and top-sentinel visibility in the same
             // measurement, rather than compensating an intermediate layout.
-            if(viewport) restoreViewport(viewport);
+            if(viewport){
+                restoreRowAlignment(viewport);
+                restoreViewport(viewport);
+            }
             if(preservedScrollY !== null){
                 const restorePreservedScroll=()=>window.scrollTo(
                     0,
@@ -547,7 +594,9 @@ function initializeFeedWindowing(){
         const fragment=htmlToFragment(snapshot.html);
         if(fragment.querySelectorAll(".model-card").length > maxMountedCards) snapshot=null;
         else{
+            const columns=gridColumnCount();
             removeCards(mountedCards());grid.replaceChildren(fragment);
+            if(snapshot.columns !== columns) clearRowAlignment();
             Object.assign(feed.dataset,snapshot.dataset || {});
             windowStart=snapshot.start;total=Math.max(0,Number(snapshot.total) || 0);
             window.modelRadarRestoreFeedFilters?.(snapshot.filters);

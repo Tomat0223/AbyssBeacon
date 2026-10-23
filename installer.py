@@ -379,7 +379,7 @@ def install_directory(comfy_root, model, source, prefs, filename="", file_data=N
     category = comfy_category_for_model(model, filename, file_data)
     layout = str(prefs.get("install_layout") or "simple").lower()
     architecture = safe_component(
-        model.get("architecture") or model.get("base_model") or "Other",
+        download_architecture(model, file_data or {}),
         "Other",
     )
     source_label = safe_component(
@@ -401,17 +401,34 @@ def _version_metadata(model, file_data):
     if isinstance(card, str):
         try: card = json.loads(card or "{}")
         except Exception: card = {}
-    versions = card.get("versions") if isinstance(card, dict) else []
-    if not isinstance(versions, list): versions = []
-    wanted_id = str(file_data.get("version_id") or "")
+    containers = [card] if isinstance(card, dict) else []
+    for source in ("tensorhub", "seaart", "civitai", "civitaired", "huggingface", "modelscope"):
+        nested = card.get(source) if isinstance(card, dict) else None
+        if isinstance(nested, dict):
+            containers.append(nested)
+    versions = [version for container in containers
+                for version in (container.get("versions") if isinstance(container.get("versions"), list) else [])
+                if isinstance(version, dict)]
+    wanted_id = str(file_data.get("version_id") or file_data.get("model_ver_no") or "")
     wanted_name = str(file_data.get("version") or "").casefold()
-    for version in versions:
-        if not isinstance(version, dict): continue
-        if wanted_id and str(version.get("id") or "") == wanted_id:
-            return version
-        if wanted_name and str(version.get("name") or "").casefold() == wanted_name:
-            return version
-    return {}
+    if wanted_id:
+        matches = [v for v in versions if str(v.get("id") or v.get("version_id") or "") == wanted_id]
+    else:
+        matches = [v for v in versions if wanted_name and str(v.get("name") or "").casefold() == wanted_name]
+    return matches[0] if len(matches) == 1 else {}
+
+
+def download_architecture(model, file_data):
+    """Resolve the selected artifact, without borrowing a sibling version's base."""
+    from scanners.common.processors import classify_architecture
+
+    for metadata in (file_data, _version_metadata(model, file_data)):
+        for key in ("architecture", "base_model", "baseModel"):
+            value = metadata.get(key)
+            if value and str(value).strip().casefold() not in {"other", "unknown"}:
+                canonical = classify_architecture(value)
+                return canonical if canonical != "Other" else str(value).strip()
+    return model.get("architecture") or model.get("base_model") or "Other"
 
 
 def _list_value(value):
@@ -448,7 +465,7 @@ def build_info_text(model, file_data, source, installed_filename):
         f"Creator: {model.get('author') or ''}",
         f"Source: {SOURCE_LABELS.get(str(source).lower(), source)}",
         f"Source URL: {model.get('url') or ''}",
-        f"Architecture: {model.get('architecture') or model.get('base_model') or ''}",
+        f"Architecture: {download_architecture(model, file_data)}",
         f"Model type: {model.get('model_type') or ''}",
         f"Version: {file_data.get('version') or version.get('name') or ''}",
         f"Installed file: {installed_filename}",

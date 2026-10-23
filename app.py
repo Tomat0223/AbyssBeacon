@@ -2348,6 +2348,11 @@ def _queue_local_install(item, snapshot, version, file_data):
     model_id=int(item.get("model_id") or 0)
     source_name=str(item.get("source") or "").lower()
     file_index=int(file_data.get("_download_index"))
+    # A newly released queued version may not be in the saved snapshot yet.
+    file_data=dict(file_data)
+    for key in ("architecture", "base_model", "baseModel"):
+        if not file_data.get(key) and version.get(key):
+            file_data[key]=version[key]
     # Resolve target exactly as /download/source does.
     target=str(file_data.get("download_url") or "").strip()
     if source_name=="civitaired":

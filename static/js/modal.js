@@ -1436,6 +1436,12 @@ function initializeModal(){
                                 event.preventDefault();
                                 event.stopPropagation();
                                 if (link.dataset.installing === "true") return;
+                                // Capture identity before awaiting: the shared details panel can
+                                // display another model while this download is running.
+                                const downloadModelId = details.dataset.modelId;
+                                const downloadModelName =
+                                    details.querySelector(".download-model-name")?.textContent?.trim() ||
+                                    details.querySelector(".model-detail-title")?.textContent?.trim() || "model";
                                 const original = link.textContent;
                                 link.dataset.installing = "true";
                                 link.textContent = "…";
@@ -1477,17 +1483,9 @@ function initializeModal(){
                                     const row = link.closest(".download-file");
                                     const info = row?.querySelector(".download-file-info span");
                                     if (info && data.path) info.textContent = `Installed → ${data.path}`;
-                                    const modelName =
-                                        details.querySelector(".download-model-name")?.textContent?.trim() ||
-                                        details.querySelector(".model-detail-title")?.textContent?.trim() ||
-                                        "model";
-
-                                    // The server has already recorded download history.
-                                    // Update the visible feed/creator card immediately
-                                    // rather than requiring a browser refresh.
-                                    markModelRadarCardDownloaded(details.dataset.modelId);
-
-                                    showModelRadarToast(`Successfully downloaded "${modelName}"`);
+                                    // Update the originating card, even if another card is open.
+                                    markModelRadarCardDownloaded(downloadModelId);
+                                    showModelRadarToast(`Successfully downloaded "${downloadModelName}"`);
                                 } catch (error) {
                                     link.textContent = "!";
                                     link.title = error.message || "Local install failed";
