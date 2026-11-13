@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "AbyssBeacon Download Companion",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Authorize a selected CivitAI Red file in Firefox and hand its download to AbyssBeacon's local installer.",
   "browser_specific_settings": {
     "gecko": {
@@ -25,6 +25,7 @@
     "http://127.0.0.1/*",
     "https://civitai.red/api/download/models/*",
     "https://b2.civitai.com/file/civitai-modelfiles/*",
+    "https://b2-large.civitai.com/file/civitai-modelfiles/*",
     "https://civitai.com/api/download/models/*",
     "https://civitai-delivery-worker-prod.5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com/*"
   ],

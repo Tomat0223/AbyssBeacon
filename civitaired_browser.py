@@ -16,7 +16,7 @@ _BRIDGE_PATH = "/abyssbeacon-red-bridge"
 def _storage_url(value):
     parsed = urlparse(str(value or ""))
     approved = (
-        parsed.hostname == "b2.civitai.com"
+        parsed.hostname in {"b2.civitai.com", "b2-large.civitai.com"}
         and parsed.path.startswith("/file/civitai-modelfiles/")
     ) or parsed.hostname == "civitai-delivery-worker-prod.5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com"
     return (parsed.scheme == "https" and approved
@@ -73,7 +73,7 @@ def resolve_download(target_url, referer="", progress_callback=None, timeout=300
 <meta name="abyssbeacon-red-bridge" content="1"><title>AbyssBeacon browser authorization</title>
 </head><body style="font:18px system-ui;max-width:760px;margin:70px auto;padding:24px">
 <h1>Connecting to AbyssBeacon</h1><p id="bridge-status">The Firefox companion will open the selected CivitAI Red file using your existing browser session.</p>
-<p>If this page stays here, load the AbyssBeacon Firefox companion through <strong>about:debugging → This Firefox → Load Temporary Add-on</strong>, then refresh this page.</p>
+<p>If this page stays here, check that the signed AbyssBeacon Download Companion is enabled in <strong>about:addons</strong>, then refresh this page.</p>
 <p>Your file will be installed by AbyssBeacon using your configured folders. Keep AbyssBeacon running.</p></body></html>''', "text/html")
                 return
             if self.path != _BRIDGE_PATH + "/pending" or not self.authorized():
@@ -161,7 +161,7 @@ def resolve_download(target_url, referer="", progress_callback=None, timeout=300
             captured.wait(.25)
         if not captured.is_set():
             if not attached.is_set():
-                raise RuntimeError("Firefox companion did not connect. Load its manifest.json in about:debugging, then retry.")
+                raise RuntimeError("Firefox companion did not connect. Check that the signed add-on is enabled in about:addons, then retry.")
             raise RuntimeError("Browser authorization timed out. Complete verification in your normal Firefox and retry the selected file.")
         return state["url"], {"Referer": "https://civitai.red/", "Accept": "*/*"}
     finally:

@@ -6,7 +6,7 @@ const bridgePath = "/abyssbeacon-red-bridge";
 function storageUrl(value) {
     try {
         const url = new URL(value);
-        const approved = (url.hostname === "b2.civitai.com"
+        const approved = (["b2.civitai.com", "b2-large.civitai.com"].includes(url.hostname)
             && url.pathname.startsWith("/file/civitai-modelfiles/"))
             || url.hostname === "civitai-delivery-worker-prod.5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com";
         return url.protocol === "https:" && approved
@@ -42,7 +42,7 @@ async function trace(session, event, details = {}, destination = "") {
         if (!permissions.data_collection?.includes("technicalAndInteraction")) return;
     } catch (_) { return; }
     if (!session) return;
-    const data = {event, extension: "0.2.0"};
+    const data = {event, extension: "0.2.1"};
     try {
         if (details.url) {
             const parsed = new URL(details.url);
@@ -163,6 +163,7 @@ browser.webRequest.onBeforeRequest.addListener(details => {
     if (!selected || !storageUrl(details.url)) return {};
     return handoff(selected, details.url);
 }, {urls: [...downloadRoutes, "https://b2.civitai.com/file/civitai-modelfiles/*",
+    "https://b2-large.civitai.com/file/civitai-modelfiles/*",
     "https://civitai-delivery-worker-prod.5ac0637cfd0766c97916cefa3764fbdf.r2.cloudflarestorage.com/*"]}, ["blocking"]);
 
 browser.tabs.onRemoved.addListener(tabId => {
